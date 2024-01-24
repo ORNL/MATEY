@@ -17,7 +17,7 @@ class MultisetSampler(Sampler[T_co]):
                  rank=0, distributed=True) -> None:
         self.batch_size = batch_size
         self.sub_dsets = dataset.sub_dsets
-        if distributed: 
+        if distributed:
             self.sub_samplers = [base_sampler(dataset, drop_last=drop_last) for dataset in self.sub_dsets]
         else:
             self.sub_samplers = [base_sampler(dataset) for dataset in self.sub_dsets]
@@ -33,10 +33,10 @@ class MultisetSampler(Sampler[T_co]):
         samplers = [iter(sampler) for sampler in self.sub_samplers]
         sampler_choices = list(range(len(samplers)))
         generator = torch.Generator()
-        generator.manual_seed(100*self.epoch+10*self.seed+self.rank)
+        generator.manual_seed(5000*self.epoch+100*self.seed+self.rank)
         count = 0
         while len(sampler_choices) > 0:
-            count += 1
+            # count += 1 # old location of count update, leads to missed batches
             index_sampled = torch.randint(0, len(sampler_choices), size=(1,), generator=generator).item()
             dset_sampled = sampler_choices[index_sampled]
             offset = max(0, self.dataset.offsets[dset_sampled])
@@ -46,6 +46,7 @@ class MultisetSampler(Sampler[T_co]):
                 for i in range(self.batch_size):
                     queue.append(next(samplers[dset_sampled]) + offset)
                 if len(queue) == self.batch_size:
+                    count += 1  # new location of count update, only update if successful
                     for d in queue:
                         yield d
             except Exception as err:
@@ -55,7 +56,7 @@ class MultisetSampler(Sampler[T_co]):
                 continue
             if count >= self.max_samples:
                 break
-    
+
     def __len__(self) -> int:
         return len(self.dataset)
 

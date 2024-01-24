@@ -1,9 +1,10 @@
 from ruamel.yaml import YAML
 import logging
+import ast
 
 class YParams():
   """ Yaml file parser """
-  def __init__(self, yaml_filename, config_name, print_params=False):
+  def __init__(self, yaml_filename, config_name=None, print_params=False):
     self._yaml_filename = yaml_filename
     self._config_name = config_name
     self.params = {}
@@ -12,13 +13,24 @@ class YParams():
       print("------------------ Configuration ------------------")
 
     with open(yaml_filename) as _file:
+      if config_name is None:
+        for key, val in YAML().load(_file).items():
+          try:
+            val=ast.literal_eval(val)
+          except:
+            pass
+          if True: print(key, val)
+          if val =='None': val = None
 
-      for key, val in YAML().load(_file)[config_name].items():
-        if print_params: print(key, val)
-        if val =='None': val = None
+          self.params[key] = val
+          self.__setattr__(key, val)
+      else:
+        for key, val in YAML().load(_file)[config_name].items():
+          if print_params: print(key, val)
+          if val =='None': val = None
 
-        self.params[key] = val
-        self.__setattr__(key, val)
+          self.params[key] = val
+          self.__setattr__(key, val)
 
     if print_params:
       print("---------------------------------------------------")

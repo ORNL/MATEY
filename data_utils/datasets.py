@@ -10,9 +10,12 @@ import os
 try:
     from mixed_dset_sampler import MultisetSampler
     from hdf5_datasets import *
+    from netcdf_datasets import *
 except ImportError:
     from .mixed_dset_sampler import MultisetSampler
     from .hdf5_datasets import *
+    from .netcdf_datasets import *
+    from .exodus_datasets import *
 import os
 import glob
 
@@ -23,13 +26,26 @@ DSET_NAME_TO_OBJECT = {
             'incompNS': IncompNSDataset,
             'diffre2d': DiffRe2DDataset,
             'compNS': CompNSDataset,
+            'thermalcollision2d': CollisionDataset,
+            'liquidMetalMHD': MHDDataset,
             }
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, train_offset=0):
     # paths, types, include_string = zip(*paths)
-    dataset = MixedDataset(paths, n_steps=params.n_steps, train_val_test=params.train_val_test, split=split,
+    
+    leadtime_max=1 #finetuning higher priority
+    if hasattr(params, 'leadtime_max_finetuning'):
+        leadtime_max = params.leadtime_max_finetuning
+    elif hasattr(params, 'leadtime_max'):
+        leadtime_max = params.leadtime_max
+
+    dataset = MixedDataset(paths, n_steps=params.n_steps, train_val_test=params.train_val_test if hasattr(params, 'train_val_test')  else None, split=split,
                             tie_fields=params.tie_fields, use_all_fields=params.use_all_fields, enforce_max_steps=params.enforce_max_steps, 
-                            train_offset=train_offset)
+                            train_offset=train_offset, patch_size=params.patch_size, 
+                            dt = params.dt if hasattr(params,'dt') else 1,
+                            leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
+                            refine_ratio=params.refine_ratio if hasattr(params, 'refine_ratio')  else None,
+                            gammaref=params.gammaref if hasattr(params, 'gammaref')  else None)
     # dataset = IncompNSDataset(paths[0], n_steps=params.n_steps, train_val_test=params.train_val_test, split=split)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
@@ -43,6 +59,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, train_off
     dataloader = DataLoader(dataset,
                             batch_size=int(params.batch_size),
                             num_workers=params.num_data_workers,
+                            prefetch_factor=4,
                             shuffle=False, #(sampler is None),
                             sampler=sampler, # Since validation is on a subset, use a fixed random subset,
                             drop_last=True,
@@ -51,9 +68,9 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, train_off
     
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False, 
-                  enforce_max_steps=False, train_offset=0):
+                  enforce_max_steps=False, train_offset=0, patch_size=None, refine_ratio=None, gammaref=None):
         super().__init__()
         # Global dicts used by Mixed DSET. 
         self.train_offset = train_offset
@@ -66,9 +83,15 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
+        if refine_ratio is not None and gammaref is not None:
+            print("Warning: both refine_ratio and gammaref: %.2f, %.2f are provided in config"%(refine_ratio, gammaref))
+            print("We will use gammaref value for adaptivity")
+            refine_ratio = None
+
         for dset, path, include_string in zip(self.type_list, self.path_list, self.include_string):
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
-                                                 dt=dt, train_val_test=train_val_test, split=split)
+                                                 dt=dt, leadtime_max = leadtime_max, train_val_test=train_val_test, split=split,
+                                                 patch_size=patch_size, refine_ratio=refine_ratio, gammaref=gammaref)
             # Check to make sure our dataset actually exists with these settings
             try:
                 len(subdset)
@@ -103,7 +126,8 @@ class MixedDataset(Dataset):
                         'swe': [3],
                         'incompNS': [0, 1, 2],
                         'compNS': [0, 1, 2, 3],
-                        'diffre2d': [4, 5]
+                        'diffre2d': [4, 5],
+                        'thermalcollision2d':[0, 1, 2, 6],
                         }
         elif self.use_all_fields:
             cur_max = 0
@@ -123,14 +147,27 @@ class MixedDataset(Dataset):
         return subset_dict
 
     def __getitem__(self, index):
-        file_idx = np.searchsorted(self.offsets, index, side='right')-1 #which dataset are we are on
-        local_idx = index - max(self.offsets[file_idx], 0)
+        
+        if hasattr(index, '__len__') and len(index)==2:
+            leadtime=index[1]
+            index = index[0]
+            dset_idx = np.searchsorted(self.offsets, index, side='right')-1 #which dataset are we are on
+            local_idx = index - max(self.offsets[dset_idx], 0) #which sample inside the dataset dset_idx
+            local_idx = [local_idx, leadtime]
+        else:
+            dset_idx = np.searchsorted(self.offsets, index, side='right')-1 #which dataset are we are on
+            local_idx = index - max(self.offsets[dset_idx], 0) #which sample inside the dataset dset_idx
+
         try:
-            x, bcs, y = self.sub_dsets[file_idx][local_idx]
+            variables = self.sub_dsets[dset_idx][local_idx]
+            if len(variables)==4:
+                x, bcs, y, leadtime = variables
+            elif len(variables)==5:
+                x, bcs, y, refineind, leadtime = variables
+                return x, dset_idx, torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()]), bcs, y, refineind, leadtime
         except:
-            print('FAILED AT ', file_idx, local_idx, index,int(os.environ.get("RANK", 0)))
-            thisvariabledoesntexist
-        return x, file_idx, torch.tensor(self.subset_dict[self.sub_dsets[file_idx].get_name()]), bcs, y
+            print('FAILED AT ', dset_idx, local_idx, index,int(os.environ.get("RANK", 0)))
+        return x, dset_idx, torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()]), bcs, y, leadtime
     
     def __len__(self):
         return sum([len(dset) for dset in self.sub_dsets])

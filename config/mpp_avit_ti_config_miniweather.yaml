@@ -10,12 +10,12 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: '~/MPP_red_token' # Output path
+  exp_dir: 'MPP_red_token' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 32 #1
+  batch_size: 4 #1
   max_epochs: 800
   scheduler_epochs: -1
   epoch_size: 200 #2000 # Artificial epoch size
@@ -24,10 +24,11 @@ basic_config: &basic_config
   scheduler: 'cosine' # Only cosine implemented
   warmup_steps: 1000 # Warmup when not using DAdapt
   learning_rate: -1 # -1 means use DAdapt
-  weight_decay: 1e-3
-  n_states: 12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
+  weight_decay: 1e-3 
+  n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
   dt: 1 # Striding of data - Not currently implemented > 1
+  #leadtime_max: 10 #prediction lead time range [1, leadtime_max]
   n_steps: 16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 5  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
@@ -35,8 +36,7 @@ basic_config: &basic_config
   model_type: 'avit' # Only option so far
   block_type: 'axial' # Which type of block to use - if axial, next two fields must be set to define axial ops
   time_type: 'attention' # Conditional on block type
-  space_type: 'axial_attention' # Conditional on block type
-  #space_type: '2D_attention' # Conditional on block type
+  space_type: '2D_attention' # Conditional on block type
   tie_fields: !!bool False # Whether to use 1 embedding per field per data
   embed_dim: 192 # Dimension of internal representation - 192/384/768/1024 for Ti/S/B/L
   num_heads: 3 # Number of heads for attention - 3/6/12/16 for Ti/S/B/L
@@ -44,8 +44,9 @@ basic_config: &basic_config
   patch_size: [[16, 16]] #, [32, 32], [64, 64]] #
   adaptive: !!bool False
   sts_model: !!bool False
+  adap_samp: !!bool False
   nrefines: 0 #number of coarse tokens picked to be refined
-  bias_type: 'PositionAreaBias'  # Options rel, continuous, none
+  bias_type: 'none'  # Options rel, continuous, none
   # Data settings
   train_val_test: [.8, .1, .1]
   augmentation: !!bool False # Augmentation not implemented
@@ -59,30 +60,18 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '128'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '512'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
-              # ['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
-              ['/Users/plc/Documents/Git/multiple_physics_pretraining/PDEBench/2D/shallow-water', 'swe', ''],
+              #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
+              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_designed', 'thermalcollision2d', ''],
               ]
-              #              ['~/PDEBench/2D/NS_incom', 'incompNS', ''],
-              #              ['~/PDEBench/2D/CFD/2D_Train_Rand', compNS, '128'],
-              #               ['~/PDEBench/2D/CFD/2D_Train_Rand', compNS, '512'],
-              #              ['~/PDEBench/2D/CFD/2D_Train_Turb', compNS, ''],
-              #              ['~/PDEBench/2D/diffusion-reaction', 'diffre2d', ''],
-              #              ]
   valid_data_paths: [
               #['/home/6pz/data/PDEBench_Data/2D/shallow-water', 'swe', ''],
               #['/home/6pz/data/PDEBench_Data/2D/NS_incom', 'incompNS', ''],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '128'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '512'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
-              # ['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
-              ['/Users/plc/Documents/Git/multiple_physics_pretraining/PDEBench/2D/shallow-water', 'swe', ''],
+              #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
+              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_designed', 'thermalcollision2d', ''],
               ]
-              #              ['~/PDEBench/2D/NS_incom', 'incompNS', ''],
-              #              ['~/PDEBench/2D/CFD/2D_Train_Rand', compNS, '128'],
-              #               ['~/PDEBench/2D/CFD/2D_Train_Rand', compNS, '512'],
-              #              ['~/PDEBench/2D/CFD/2D_Train_Turb', compNS, ''],
-              #              ['~/PDEBench/2D/diffusion-reaction', 'diffre2d', ''],
-              #              ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 
 
@@ -104,7 +93,7 @@ finetune: &finetune
   freeze_middle: !!bool False # Whether to freeze the middle layers of the model
   freeze_processor: !!bool False
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
-
+  
 
 frozen: &frozen
   <<: *finetune
