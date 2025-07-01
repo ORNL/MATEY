@@ -1,10 +1,10 @@
-# MATEY ![MATEY](https://code.ornl.gov/uploads/-/system/group/avatar/24838/Matey_logo_single.png?width=48)
 
-MATEY is a Multiscale AdapTivE trustworthY codebase for developing spatiotemporal foundation models of physcial systems.
+# MATEY ![MATEY](https://github.com/ORNL/MATEY/blob/main/imgs/Matey_logo_single.png?raw=true?)
+MATEY is a Multiscale AdapTivE trustworthY codebase for developing transformer-based spatiotemporal foundation models of physcial systems.
 
 ## Installation
 - Running jobs on Frontier (Conda env installed)
-    * ROCM 6.3.1 (recommended), `source /lustre/orion/world-shared/stf218/junqi/forge/matey-env-rocm631.sh`; see the usage example in ``
+    * ROCM 6.3.1 (recommended), `source /lustre/orion/world-shared/stf218/junqi/forge/matey-env-rocm631.sh`; see the usage example in `./examples/submit_JHTDB_demo.sh`
     * ROCM 6.0.0 (outdated), `conda activate /lustre/orion/proj-shared/lrn037/gounley1/conda600whl`; see the usage example in `submit_batch.sh`
     * ROMC 6.0.0 (world-shared) (outdated), `source /lustre/orion/world-shared/lrn037/gounley1/env600.sh`; see the usage example in `submit_batch.sh`
 - Install your own virtual env
@@ -14,9 +14,7 @@ MATEY is a Multiscale AdapTivE trustworthY codebase for developing spatiotempora
 ## Running
  
 ### Slurm Launch
-- see the slurm job example, `sbatch submit_batch.sh`
-### Single Device
-- `python train_basic.py "--run_name", "demo", "--config", "basic_config", "--yaml_config", "./config/mpp_avit_ti_config.yaml"`
+- see the slurm job scripts inside `./examples`, e.g., `sbatch submit_batch.sh`
 
 ## Publications & Presentations
 - Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley, MATEY: multiscale adaptive foundation models for spatiotemporal physical systems. [arXiv:2412.20601](https://arxiv.org/abs/2412.20601)
