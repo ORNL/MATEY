@@ -55,6 +55,7 @@ coverage.xml
 .pytest_cache/
 cover/
 
+Dev_BLASNET/
 # Translations
 *.mo
 *.pot
@@ -74,6 +75,9 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+
+# demo_example
+demo_example/
 
 # PyBuilder
 .pybuilder/
