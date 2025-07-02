@@ -16,6 +16,20 @@ MATEY is a Multiscale AdapTivE trustworthY codebase for developing transformer-b
 ### Slurm Launch
 - see the slurm job scripts inside `./examples`, e.g., `sbatch submit_batch.sh`
 
+## Train MATEY using your own datasets
+
+### Data loading
+- Add script to load from your data files in `./matey/data_utils/<your_dataset_scripts>`; see `hdf5_3Ddatasets.py`, `thewell_datasets.py` or `blasnet_3Ddatasets.py` for reference.
+- Add your dataset name to `DSET_NAME_TO_OBJECT` inside `./matey/data_utils/dataset.py`.
+- Set your data directory in your config file 
+
+### Model configuring
+- Define your model architectures and data configurations in <your_config_yaml_file>, see examples in `./examples/config/Demo_*.ymal`.
+
+### Submit jobs
+- Update <your_slurm_job_script> with as `export yaml_config=directory of <your_config_yaml_file>`
+- submit job with `sbatch <your_slurm_job_script>`  
+
 ## Publications & Presentations
 - Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley, MATEY: multiscale adaptive foundation models for spatiotemporal physical systems. [arXiv:2412.20601](https://arxiv.org/abs/2412.20601)
 - Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley, MATEY: multiscale adaptive foundation models for spatiotemporal physical systems, NeurIPS 2024 Workshop on  Machine Learning and the Physical Sciences. [accepted]  
