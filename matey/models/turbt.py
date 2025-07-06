@@ -241,8 +241,8 @@ class TurbT(BaseModel):
             #prediction at current level = Refine(pred from previous level) + prediction at current level
             #x_correct[:,var_index,...] = x_pred + x_correct[:,var_index,...] 
             x_correct = x_correct + x_pred 
-            if imod==self.nhlevels-1:
-                x_correct=x_correct[:,state_labels[0],...] * data_std[-1] + data_mean[-1]
+        if imod==self.nhlevels-1:
+            x_correct=x_correct[:,state_labels[0],...] * data_std[-1] + data_mean[-1]
         #since no T dim: b c d h w
         #x_correct=x_correct[:,var_index,...] * data_std[-1] + data_mean[-1]
         return x_correct #B,C_all,D,H,W for imod<nlevels-1; B,C_sys,D,H,W
