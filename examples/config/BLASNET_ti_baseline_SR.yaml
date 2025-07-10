@@ -15,15 +15,15 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 32  
-  max_epochs: 5 #100
+  batch_size: 4  
+  max_epochs: 100
   scheduler_epochs: -1
-  epoch_size: 20 
+  epoch_size: 2 
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
   optimizer: 'AdamW' #'adan' # adam, adan, whatever else i end up adding - adan did better on HP sweep
   scheduler: 'cosine' # Only cosine implemented
   warmup_steps: 100 # Warmup when not using DAdapt
-  learning_rate: 1e-3 # -1 means use DAdapt
+  learning_rate: 1e-5 # -1 means use DAdapt
   weight_decay: 1e-3
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted

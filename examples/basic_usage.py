@@ -99,7 +99,6 @@ if __name__ == '__main__':
 
     #check if groups are defined properly
     check_sp(trainer.sequence_parallel_groups, global_rank)
-    
     with profile_function(enabled=trainer.profiling, logdir="./log_profiler_section_8worker_pinmem_prefetch_factor2") as prof:
         trainer.train()
         prof.step()

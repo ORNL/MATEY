@@ -2,16 +2,16 @@
 #SBATCH -A LRN037
 #SBATCH -J matey
 #SBATCH -o %x-%j.out
-#SBATCH -t 00:10:00
+#SBATCH -t 00:30:00
 #SBATCH -p batch
 #SBATCH -N 1
-##SBATCH -q debug
+###SBATCH -q debug
 #SBATCH -C nvme
 
 export OMP_NUM_THREADS=1
 
 export master_node=$SLURMD_NODENAME
-export run_name="demo"
+export run_name="demo_SR_inp3"
 export config="basic_config"
 export yaml_config=./config/BLASNET_ti_baseline_SR.yaml
 
