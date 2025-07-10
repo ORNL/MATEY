@@ -9,6 +9,8 @@ from .positionbias_modules import positionbias_mod
 import sys
 from operator import mul
 from functools import reduce
+import os
+import matplotlib.pyplot as plt
 
 class BaseModel(nn.Module):
     """
@@ -39,6 +41,7 @@ class BaseModel(nn.Module):
                 if all(isinstance(ps, int) for ps in patch_size) and len(patch_size)==3:
                     patch_size = [patch_size]
                 # multiply the patch_size by the SR_ratio elementwise
+                # SR_ratio=[1,1,1]
                 output_patch_size = []
                 for ps in patch_size:
                     output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
@@ -438,8 +441,42 @@ class BaseModel(nn.Module):
         x_coarsen = rearrange(x_coarsen, 't b c (d h w) -> t b c d h w', d=ntokendim[0], h=ntokendim[1], w=ntokendim[2])
         if patch_ids is None or len(patch_ids)==0: # no refinement; reconstruct from coarsen patches
             x_coarsen = rearrange(x_coarsen, 't b c d h w -> (t b) c d h w')
+
+            # print("Plot results.")
+            # # print('x_coarsen:',x_coarsen.shape)
+            # os.makedirs("./plots_patch", exist_ok=True)
+
+            # x_coarse_slice = x_coarsen[0, 0, 2, :, :].cpu().detach().numpy()
+
+            # # Compute shared color limits
+            # vmin = x_coarse_slice.min()
+            # vmax = x_coarse_slice.max()
+
+            # # Plot
+            # fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+
+            # im0 = axs[0].imshow(x_coarse_slice, cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+            # axs[0].set_title("1st Slice")
+            # fig.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04)
+
+
+
+
             x_coarsen = debed_ensemble[-1](x_coarsen)
+            # print('x_coarsen:',x_coarsen.shape)
             x_coarsen = rearrange(x_coarsen, '(t b) c d h w -> t b c d h w', t=T)
+            # print('x_coarsen:',x_coarsen.shape)
+
+            # x_coarse_slice = x_coarsen[0, 0, 0, 2, :, :].cpu().detach().numpy()
+
+            # im1 = axs[1].imshow(x_coarse_slice, cmap='viridis', origin='lower')
+            # axs[1].set_title("2nd  Slice")
+            # fig.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04)
+
+            # plt.tight_layout()
+            # plt.savefig('./plots_patch/patch_slice.png', dpi=300)
+            # plt.close()
+
             return x_coarsen
         ########################################################
         raise ValueError("the following code breaks in MG test")

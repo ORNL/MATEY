@@ -243,22 +243,38 @@ class hMLP_output(nn.Module):
         self.smooth = smooth
     
         modulelist = []
-        for ilayer in range(self.nconv-1):
-            in_chans_ilayer = embed_dim if ilayer==0 else embed_dim//4
-            embed_ilayer = embed_dim//4
-            ks_ilayer = self.ks[-(ilayer+1)]
-            if self.notransposed:
-                modulelist.append(UpsampleConv3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, bias=False))
-            else:
-                modulelist.append(nn.ConvTranspose3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, stride=ks_ilayer, bias=False))
-            modulelist.append(RMSInstanceNormSpace(embed_ilayer, affine=True))
-            modulelist.append(nn.GELU())
+        # for ilayer in range(self.nconv-1):
+        #     in_chans_ilayer = embed_dim if ilayer==0 else embed_dim//4
+        #     embed_ilayer = embed_dim//4
+        #     ks_ilayer = self.ks[-(ilayer+1)]
+        #     if self.notransposed:
+        #         modulelist.append(UpsampleConv3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, bias=False))
+        #     else:
+        #         modulelist.append(nn.ConvTranspose3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, stride=ks_ilayer, bias=False))
+        #     modulelist.append(RMSInstanceNormSpace(embed_ilayer, affine=True))
+        #     modulelist.append(nn.GELU())
+
+        for ilayer in range(self.nconv - 1):
+            in_chans_ilayer = embed_dim if ilayer == 0 else embed_dim // 4
+            embed_ilayer = embed_dim // 4
+            scale = self.ks[-(ilayer + 1)]  # This is your upsampling factor per axis (tuple)
+
+            modulelist.append(nn.Sequential(
+                nn.Upsample(scale_factor=scale, mode='trilinear', align_corners=False),
+                nn.Conv3d(in_chans_ilayer, embed_ilayer, kernel_size=3, padding=1, bias=False),
+                RMSInstanceNormSpace(embed_ilayer, affine=True),
+                nn.GELU()
+            ))
         self.out_proj = torch.nn.Sequential(*modulelist)
         if self.notransposed:
             out_head = UpsampleConv3d(embed_dim//4, out_chans, kernel_size=self.ks[0])
             self.out_head = out_head
         else:
-            self.out_head = nn.ConvTranspose3d(embed_dim//4, out_chans, kernel_size=self.ks[0], stride=self.ks[0])
+            # self.out_head = nn.ConvTranspose3d(embed_dim//4, out_chans, kernel_size=self.ks[0], stride=self.ks[0])
+            self.out_head = nn.Sequential(
+                                nn.Upsample(scale_factor=self.ks[0], mode='trilinear', align_corners=False),
+                                nn.Conv3d(embed_dim // 4, out_chans, kernel_size=3, padding=1)
+                            )
             if self.smooth:
                 self.smooth = nn.Conv3d(out_chans, out_chans, kernel_size=self.ks[0], stride=1, groups=out_chans, padding="same", padding_mode="reflect")
             """

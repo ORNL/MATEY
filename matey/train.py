@@ -26,6 +26,8 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+import sys
+import matplotlib.pyplot as plt
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -400,6 +402,17 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def total_variation_3d(self,x):
+        """
+        x: tensor of shape (B, C, T, D, H, W)
+        Returns: scalar total variation loss
+        """
+        tv_z = torch.abs(x[:, :, :, 1:, :, :] - x[:, :, :, :-1, :, :]).mean()
+        tv_y = torch.abs(x[:, :, :, :, 1:, :] - x[:, :, :, :, :-1, :]).mean()
+        tv_x = torch.abs(x[:, :, :, :, :, 1:] - x[:, :, :, :, :, :-1]).mean()
+        
+        return tv_z + tv_y + tv_x
+
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -452,13 +465,29 @@ class Trainer:
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                # print('inp:',inp.shape)
+                inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
+                # print('inp_reshaped:',inp_reshaped.shape)
+                inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
+                # print('inp_up:',inp_up.shape)
+                inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
+                # print('inp_out:',inp_out.shape)
+                # inp = inp_out
+                # print('inp:',inp.shape)
+                # print('tar:',tar.shape)
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                # print('output:',output.shape)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
+
+                # output = output + inp_out
+                # print('output_final:',output.shape)
+                # tvd_loss = self.total_variation_3d(output)
+                # print("TVD loss:",tvd_loss)
                 residuals = output - tar
                 if self.params.pei_debug:
                     checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
@@ -466,6 +495,7 @@ class Trainer:
                 # Differentiate between log and accumulation losses
                 #B,C,D,H,W->B,C
                 raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
+                interp_nrmse = ((inp_out-tar).pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
                 # Scale loss for accum
                 loss = raw_loss.mean() / self.params.accum_grad
                 # Logging
@@ -475,6 +505,42 @@ class Trainer:
                     logs['train_nrmse'] += log_nrmse 
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+
+                    if self.global_rank == 0:
+                        print("Plot results - training.")
+                        os.makedirs(f"{self.params.experiment_dir}/plots_train", exist_ok=True)
+
+                        tar_slice = tar[0, 0, 0, 64, :, :].cpu().detach().numpy()
+                        out_slice = output.unsqueeze(1)[0, 0, 0, 64, :, :].cpu().detach().numpy()
+                        in_slice = inp[0, 0, 0, 8, :, :].cpu().detach().numpy()
+
+                        # Compute shared color limits
+                        vmin = tar_slice.min()
+                        vmax = tar_slice.max()
+
+                        # Plot
+                        fig, axs = plt.subplots(1, 3, figsize=(12, 5))
+
+                        im0 = axs[0].imshow(tar_slice, cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+                        axs[0].set_title("Target Slice")
+                        fig.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04)
+
+                        im1 = axs[1].imshow(out_slice, cmap='viridis', origin='lower')
+                        axs[1].set_title("Output Slice")
+                        fig.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04)
+
+                        im2 = axs[2].imshow(in_slice, cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+                        axs[2].set_title("Input Slice")
+                        fig.colorbar(im2, ax=axs[2], fraction=0.046, pad=0.04)
+
+                        for ax in axs:
+                            ax.axis('off')
+
+                        plt.tight_layout()
+                        plt.savefig(f'{self.params.experiment_dir}/plots_train/target_vs_output_slice_{batch_idx}.png', dpi=300)
+                        plt.close()
+
+
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
@@ -482,6 +548,12 @@ class Trainer:
                     print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
+                total_norm = 0
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                print('Gradient norm:', total_norm ** 0.5)
                 backward_end = self.timer.get_time()
                 backward_time = backward_end - forward_end
                 # Only take step once per accumulation cycle
@@ -498,7 +570,7 @@ class Trainer:
                         optimizer_step = self.timer.get_time() - backward_end
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
-                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
+                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss {interp_nrmse}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
                         batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
@@ -585,6 +657,14 @@ class Trainer:
                 with torch.no_grad():
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    # print('inp:',inp.shape)
+                    inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
+                    # print('inp_reshaped:',inp_reshaped.shape)
+                    inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
+                    # print('inp_up:',inp_up.shape)
+                    inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
+                    # print('inp_out:',inp_out.shape)
+                    # inp = inp_out
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
@@ -592,7 +672,44 @@ class Trainer:
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
+                    output = output.unsqueeze(1)#+inp_out
                     residuals = output - tar
+
+                    if self.global_rank == 0:
+                        print("Plot results.")
+                        os.makedirs(f"{self.params.experiment_dir}/plots", exist_ok=True)
+
+                        tar_slice = tar[0, 0, 0, 64, :, :].cpu().detach().numpy()
+                        out_slice = output[0, 0, 0, 64, :, :].cpu().detach().numpy()
+                        in_slice = inp[0, 0, 0, 8, :, :].cpu().detach().numpy()
+
+                        # Compute shared color limits
+                        vmin = tar_slice.min()
+                        vmax = tar_slice.max()
+
+                        # Plot
+                        fig, axs = plt.subplots(1, 3, figsize=(12, 5))
+
+                        im0 = axs[0].imshow(tar_slice, cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+                        axs[0].set_title("Target Slice")
+                        fig.colorbar(im0, ax=axs[0], fraction=0.046, pad=0.04)
+
+                        im1 = axs[1].imshow(out_slice, cmap='viridis', origin='lower')
+                        axs[1].set_title("Output Slice")
+                        fig.colorbar(im1, ax=axs[1], fraction=0.046, pad=0.04)
+
+                        im2 = axs[2].imshow(in_slice, cmap='viridis', origin='lower', vmin=vmin, vmax=vmax)
+                        axs[2].set_title("Input Slice")
+                        fig.colorbar(im2, ax=axs[2], fraction=0.046, pad=0.04)
+
+                        for ax in axs:
+                            ax.axis('off')
+
+                        plt.tight_layout()
+                        plt.savefig(f'{self.params.experiment_dir}/plots/target_vs_output_slice_{idx}.png', dpi=300)
+                        plt.close()
+
+
                     # Differentiate between log and accumulation losses
                     raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
                     raw_loss = raw_loss.sqrt().mean()
@@ -639,9 +756,9 @@ class Trainer:
                 self.val_sampler.set_epoch(epoch)
             start = self.timer.get_time()
             self.check_memory("before train %d"%epoch)
-            # with torch.autograd.detect_anomaly(check_nan=True):
-            with record_function_opt("train_one_epoch", enabled=self.profiling):
-                tr_time, data_time, train_logs = self.train_one_epoch()
+            with torch.autograd.detect_anomaly(check_nan=True):
+                with record_function_opt("train_one_epoch", enabled=self.profiling):
+                    tr_time, data_time, train_logs = self.train_one_epoch()
 
             self.check_memory("after train %d"%epoch)
             valid_start = self.timer.get_time()
@@ -692,3 +809,4 @@ class Trainer:
             self.single_print('Time taken for epoch {} is {} sec'.format(epoch + 1, self.timer.get_time()-start))
             self.single_print('Train loss: {}. Valid loss: {}'.format(train_logs['train_nrmse'], valid_logs['valid_nrmse']))
 
+    
