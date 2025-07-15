@@ -25,6 +25,7 @@ def build_avit(params):
                 num_heads=params.num_heads,
                 processor_blocks=params.processor_blocks,
                 n_states=params.n_states,
+                n_states_cond=params.n_states_cond if hasattr(params, 'n_states_cond') else None,
                 SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                 sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                 sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
@@ -45,9 +46,9 @@ class AViT(BaseModel):
         processor_blocks (int): Number of blocks (consisting of spatial mixing - temporal attention)
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads=None, embed_dim=768,  space_type="axial_attention", time_type="attention", num_heads=12, processor_blocks=8, n_states=6,
+    def __init__(self, tokenizer_heads=None, embed_dim=768,  space_type="axial_attention", time_type="attention", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 
@@ -143,7 +144,9 @@ class AViT(BaseModel):
             x = self.add_localpatches(x, xlocal, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
+        conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
+
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
         x, data_mean, data_std = normalize_spatiotemporal_persample(x)
@@ -166,8 +169,19 @@ class AViT(BaseModel):
             posbias = self.posbias[imod](t_pos_area, use_zpos=True if D>1 else False) # b t d h w c -> b t d h w c_emb
             posbias=rearrange(posbias,'b t d h w c -> t b c d h w')
             x = x + posbias
+
+        # Repeat the steps for conditioning if present
+        if conditioning:
+            assert len(self.tokenizer_heads_params[tkhead_name]) <= 1 # not tested with STS
+
+            c_pre = self.get_unified_preembedding(cond_dict["fields"], cond_dict["labels"], ilevel=imod, conditioning=conditioning)
+            c = self.get_structured_sequence(c_pre, -1, tkhead_name, conditioning)
+
         # Process
         for iblk, blk in enumerate(self.blocks):
+            if conditioning:
+                x = x + c
+
             if iblk==0:
                 x = blk(x, bcs, leadtime=leadtime, sequence_parallel_group=sequence_parallel_group)
             else:
