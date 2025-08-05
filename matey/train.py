@@ -564,7 +564,7 @@ class Trainer:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
 
-            inp, file_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+            inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             try:
                 refineind = data["refineind"].to(self.device)
             except:
