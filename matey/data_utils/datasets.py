@@ -215,13 +215,25 @@ class MixedDataset(Dataset):
             local_idx = index - max(self.offsets[dset_idx], 0) #which sample inside the dataset dset_idx
             
         variables = self.sub_dsets[dset_idx][local_idx]
-        assert len(variables) == 4 or len(variables) == 5
-        if len(variables)==4:
-            x, bcs, y, leadtime = variables
-            return x, dset_idx, torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()]), bcs, y, leadtime
-        elif len(variables)==5:
-            x, bcs, y, refineind, leadtime = variables
-            return x, dset_idx, torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()]), bcs, y, refineind, leadtime
+        #assuming variables in order: 
+        #   x, bcs, y, leadtime
+        #   x, bcs, y, refineind, leadtime
+        datasamples={} 
+        assert len(variables) in [4, 5]
+
+        x, bcs, y = variables[:3]
+        leadtime = variables[-1]
+        datasamples["input"] = x
+        datasamples["label"] = y
+        datasamples["bcs"] = bcs
+        datasamples["leadtime"] = leadtime
+        datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
+        datasamples["dset_idx"] = dset_idx
+        if len(variables) == 5:
+            refineind = variables[-2]
+            datasamples["refineind"] = refineind
+
+        return datasamples
 
     def __len__(self):
         return sum([len(dset) for dset in self.sub_dsets])

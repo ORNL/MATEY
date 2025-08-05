@@ -429,12 +429,12 @@ class Trainer:
             self.single_print('Training batch:', batch_idx, "of Total:", num_batches)
             ##############################################################################################################
             with record_function_opt("data loading", enabled=self.profiling):
-                data = next(data_iter) 
+                data = next(data_iter)
+                inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                 try:
-                    inp, dset_index, field_labels, bcs, tar, leadtime =  data
-                    refineind = None
+                    refineind = data["refineind"].to(self.device)
                 except:
-                    inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data  
+                    refineind = None
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -559,15 +559,16 @@ class Trainer:
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
             ##############################################################################################################
             try:
-                data = next(valid_iter) 
+                data = next(valid_iter)
             except:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
+
+            inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             try:
-                inp, dset_index, field_labels, bcs, tar, leadtime =  data
-                refineind = None
+                refineind = data["refineind"].to(self.device)
             except:
-                inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data
+                refineind = None
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
