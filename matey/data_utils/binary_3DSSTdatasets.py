@@ -266,10 +266,12 @@ class BaseBinary3DSSTDataset(Dataset):
         file_pointers = {}
         for it in range(self.nsteps_input): # first nsteps_input: input sequence
             ####p_10.040000
-            next_idx = time_idx + (it*self.dt)
+            next_idx = (time_idx+it) * self.dt + self.time_start
             file_pointers[next_idx] = []
             for var in self.field_names:
-                filepath = filename_0.replace(f"{self.field_names[0]}_{time_idx*self.tscale}",f"{var}_{next_idx*self.tscale}")
+                old = f"{self.field_names[0]}_{(time_idx*self.dt + self.time_start)*self.tscale:.6f}"
+                new = f"{var}_{next_idx*self.tscale:.6f}"
+                filepath = filename_0.replace(old, new)
                 filepath = f'{self.path}/{filepath}'
                 try:
                     with open(filepath, 'rb') as temp_file:
@@ -277,10 +279,12 @@ class BaseBinary3DSSTDataset(Dataset):
                 except Exception as e:
                     raise RuntimeError(f'Failed to open file {filepath}. An error occured: {e}')
         it = self.nsteps_input + leadtime - 1 # last one: label/output/target
-        next_idx = time_idx + (it*self.dt)
+        next_idx = (time_idx+it) * self.dt  + self.time_start
         file_pointers[next_idx] = []
         for var in self.field_names:
-            filepath = filename_0.replace(f"{self.field_names[0]}_{time_idx*self.tscale}",f"{var}_{next_idx*self.tscale}")
+            old = f"{self.field_names[0]}_{(time_idx*self.dt + self.time_start)*self.tscale:.6f}"
+            new = f"{var}_{next_idx*self.tscale:.6f}"
+            filepath = filename_0.replace(old, new)
             filepath = f'{self.path}/{filepath}'
             try:
                 with open(filepath, 'rb') as temp_file:
