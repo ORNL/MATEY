@@ -261,7 +261,7 @@ class hMLP_output(nn.Module):
 
             modulelist.append(nn.Sequential(
                 nn.Upsample(scale_factor=scale, mode='trilinear', align_corners=False),
-                nn.Conv3d(in_chans_ilayer, embed_ilayer, kernel_size=3, padding=1, bias=False),
+                nn.Conv3d(in_chans_ilayer, embed_ilayer, kernel_size=3, padding=1, bias=False, padding_mode='reflect'),
                 RMSInstanceNormSpace(embed_ilayer, affine=True),
                 nn.GELU()
             ))
@@ -273,7 +273,7 @@ class hMLP_output(nn.Module):
             # self.out_head = nn.ConvTranspose3d(embed_dim//4, out_chans, kernel_size=self.ks[0], stride=self.ks[0])
             self.out_head = nn.Sequential(
                                 nn.Upsample(scale_factor=self.ks[0], mode='trilinear', align_corners=False),
-                                nn.Conv3d(embed_dim // 4, out_chans, kernel_size=3, padding=1)
+                                nn.Conv3d(embed_dim // 4, out_chans, kernel_size=3, padding=1, padding_mode='reflect')
                             )
             if self.smooth:
                 self.smooth = nn.Conv3d(out_chans, out_chans, kernel_size=self.ks[0], stride=1, groups=out_chans, padding="same", padding_mode="reflect")

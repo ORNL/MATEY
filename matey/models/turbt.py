@@ -129,8 +129,6 @@ class TurbT(BaseModel):
         return filtered, blockdict  
     
     def sequence_factor_short(self, x, ilevel, tkhead_name, tspace_dims, nfact=2):
-        if nfact<2:
-            return x
         B, C, TL = x.shape
         embed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"]
         ########################################################################
@@ -140,6 +138,11 @@ class TurbT(BaseModel):
             ntokendim.append(dim//ps_c[idim])
         assert TL==tspace_dims[0]*reduce(mul, ntokendim), f"{TL}, {tspace_dims}, {ntokendim}"
         d, h, w=ntokendim
+        if h//nfact<4:
+            print(f"Warning (sequence_factor_short): in level {ilevel}, local blocks ({(d, h, w)}) are too small to be split into {nfact}, reset to {max(1, h//4)} for preserving 4 points", flush=True)
+            nfact = max(1, h//4)
+        if nfact<2:
+            return x, nfact
         if d==1:
             nfactd=1
         else:
@@ -149,7 +152,7 @@ class TurbT(BaseModel):
         x = x.unfold(3, d//nfactd, d//nfactd).unfold(4, h//nfact, h//nfact).unfold(5, w//nfact, w//nfact) 
         #b,c,t,nfactd,nfact,nfact,d',h',w'  
         x = rearrange(x, 'b c t nd nh nw d h w -> (b nd nh nw) c (t d h w)')
-        return x
+        return x, nfact
     
     def sequence_factor_long(self, x, ilevel, tkhead_name, tspace_dims, nfact=2):
         if nfact<2:
@@ -206,22 +209,22 @@ class TurbT(BaseModel):
         local_att = imod>0
         if local_att:
             #each mode similar cost
-            nfact=2**(2*imod)//blockdict["nproc_blocks"][-1]
+            nfact=2**(2*imod)#//blockdict["nproc_blocks"][-1]
             """
             #FIXME: temporary, currently hard-coded: pass as nfactor=4//ps 
             ps = self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"][-1].patch_size
             nfact=4//ps[-1]
             """
-            x=self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
+            x, nfact =self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
-            #print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
+            # print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
             if iblk==0:
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask_padding, local_att=local_att)
             else:
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask_padding, local_att=local_att)
         #self.debug_nan(x_padding, message="attention block")
         if local_att:
-            nfact=2**(2*imod)//blockdict["nproc_blocks"][-1]
+            # nfact=2**(2*imod)#//blockdict["nproc_blocks"][-1]
             #nfact=4//ps[-1]
             x=self.sequence_factor_long(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
         ################################################################################

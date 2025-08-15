@@ -42,7 +42,7 @@ class ViT_all2all(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6,
-                 drop_path=0.0, sts_train=False, sts_model=False, leadtime=False, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
@@ -58,18 +58,6 @@ class ViT_all2all(BaseModel):
         self.processor_blocks=processor_blocks
         self.replace_patch=replace_patch
         assert not (self.replace_patch and self.sts_model)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.InstanceNorm1d):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
 
     def expand_sts_model(self):
         """ Appends addition sts blocks"""
@@ -161,9 +149,7 @@ class ViT_all2all(BaseModel):
         ######### Denormalize ########
         #t b c d h w
         x = x[:,:,state_labels[0],...]
-        # print('state_labels:',state_labels[0])
         x = x * data_std + data_mean 
-        # print('x,shape:',x.shape)
         ################################################################################
         if returnbase4train:
             xbase = xbase * data_std + data_mean

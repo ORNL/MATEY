@@ -92,6 +92,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             refine_ratio=params.refine_ratio if hasattr(params, 'refine_ratio')  else None,
                             gammaref=params.gammaref if hasattr(params, 'gammaref')  else None,
                             SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else None,
+                            data_augmentation=params.data_augmentation if hasattr(params, 'data_augmentation') else False,
                             group_id=rank, group_rank=group_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
@@ -105,12 +106,12 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
     dataloader = DataLoader(dataset,
                             batch_size=int(params.batch_size),
                             num_workers=params.num_data_workers,
-                            #prefetch_factor=2,
+                            prefetch_factor=2,
                             shuffle=False, #(sampler is None),
                             sampler=sampler, # Since validation is on a subset, use a fixed random subset,
                             drop_last=True,
                             pin_memory=torch.cuda.is_available(), 
-                            #persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                            persistent_workers=True, #ask dataloaders not destroyed after each epoch
                             )
     return dataloader, dataset, sampler
 
@@ -119,7 +120,7 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, refine_ratio=None, gammaref=None, SR_ratio=None,
-                  group_id=0, group_rank=0, group_size=1):
+                  data_augmentation=None, group_id=0, group_rank=0, group_size=1):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
@@ -147,7 +148,7 @@ class MixedDataset(Dataset):
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
                                                  dt=dt, leadtime_max = leadtime_max, train_val_test=train_val_test, split=split,
                                                  tokenizer_heads=tokenizer_heads, refine_ratio=refine_ratio, gammaref=gammaref, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
-                                                 group_id=group_id, group_rank=group_rank, group_size=group_size)
+                                                 data_augmentation=data_augmentation,group_id=group_id, group_rank=group_rank, group_size=group_size)
             # Check to make sure our dataset actually exists with these settings
             try:
                 len(subdset)

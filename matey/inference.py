@@ -30,8 +30,11 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import zoom
+from .utils.metrics import SSIM3D, remove_edges
+from .data_utils.blasnet_3Ddatasets import SR_Benchmark
 
-class Trainer:
+
+class Inferencer:
     def __init__(self, params, global_rank, local_rank, device):
         self.device = device
         self.params = params
@@ -40,12 +43,11 @@ class Trainer:
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         self.log_to_screen = self.params.log_to_screen
         # Basic setup
-        self.train_loss = nn.MSELoss()
         self.startEpoch = 0
         self.epoch = 0
         self.n_calls = 0
         self.cubic_interp = self.params.cubic_interp if hasattr(self.params, "cubic_interp") else False
-        self.diff_learning = self.params.difference_learning if hasattr(self.params, "difference_learning") else False
+        self.SSIM = SSIM3D()
         self.mp_type = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.half
 
         self.profiling = self.params.profiling if hasattr(self.params, "profiling") else False
@@ -76,15 +78,13 @@ class Trainer:
             if self.params.sts_model:
                 self.params.sts_model=False
         #checking input_states value
-        labels_total=[self.train_dataset.subset_dict[dset] for dset in self.train_dataset.subset_dict]
+        labels_total=[self.valid_dataset.subset_dict[dset] for dset in self.valid_dataset.subset_dict]
         labels_total = [item  for sublist in labels_total for item in sublist]
         if self.params.n_states<max(labels_total)+1:
             print(f"Warning, reserved n_states {self.params.n_states} is too small for datasets, set it to {max(labels_total)+1} instead")
             self.params.n_states = max(labels_total)+1
 
         self.initialize_model()
-        self.initialize_optimizer()
-        self.initialize_scheduler()
         self.timer=Timer(enable_sync=self.params.enable_sync)
         if self.params.resuming:
             if self.params.pretrained:
@@ -94,8 +94,6 @@ class Trainer:
                     #model construction  (same with pretrained) --> expand input and output (same with expanded) and freeeze --> load saved finetuned weights
                 self.expand_model_pretraining()
                 self.freeze_model_pretraining()
-                self.initialize_optimizer()
-                self.initialize_scheduler()
             #print("Loading best checkpoint (default) %s"%params.best_checkpoint_path)
             #try:
             #    self.restore_checkpoint(self.params.best_checkpoint_path)
@@ -118,8 +116,6 @@ class Trainer:
             self.freeze_model_pretraining()
             self.iters = 0
             self.startEpoch = 0
-            self.initialize_optimizer()
-            self.initialize_scheduler()
 
         if self.params.resuming == False and hasattr(self.params, "startfrom_path"):
             self.restore_checkpoint(self.params.startfrom_path)
@@ -127,8 +123,6 @@ class Trainer:
             if self.sts_model and not self.params.sts_model:
                 self.expand_model_pretraining_sts_model()
             self.startEpoch = 0
-            self.initialize_optimizer()
-            self.initialize_scheduler()
             self.single_print(f'After loading and expanding, model parameter count: {sum([p.numel() for p in self.model.parameters()])}')
 
             if self.global_rank == 0:
@@ -171,17 +165,13 @@ class Trainer:
             if self.global_rank == 0 and self.params.data_augmentation:
                 print(f"Data augmentation is enabled: {self.params.data_augmentation}", flush=True)
                 
-        self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
-                          dist.is_initialized(), split='train', rank=in_rank, group_rank=group_rank, group_size=parallel_group_size, 
-                          num_replicas=num_replicas, train_offset=self.params.embedding_offset)
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
-                          dist.is_initialized(), split='val',   rank=in_rank, group_rank=group_rank, group_size=parallel_group_size,
+                          dist.is_initialized(), split='test',   rank=in_rank, group_rank=group_rank, group_size=parallel_group_size,
                           num_replicas=num_replicas)
         
-        self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
+        self.single_print("valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
-            self.train_sampler.set_epoch(0)
-            self.val_sampler.set_epoch(0)
+            self.val_sampler.set_epoch(1)
     
     def initialize_model(self):
         if self.params.model_type == 'avit':
@@ -291,7 +281,6 @@ class Trainer:
         dcp.load(state_dict, checkpoint_id=checkpoint_path)
         set_model_state_dict(self.model, model_state_dict=state_dict["model_state"])
         if self.params.resuming:  #restore checkpoint is used for finetuning as well as resuming. If finetuning (i.e., not resuming), restore checkpoint does not load optimizer state, instead uses config specified lr.
-            set_optimizer_state_dict(self.model, self.optimizer, optim_state_dict=state_dict["optimizer_state_dict"])
             iters_epoch = torch.load(os.path.join(checkpoint_path,"iters_epoch.pth"), map_location='cuda:{}'.format(self.local_rank) if torch.cuda.is_available() else torch.device('cpu'))
             self.iters = iters_epoch["iters"]
             self.startEpoch = iters_epoch['epoch']
@@ -301,7 +290,6 @@ class Trainer:
 
     def restore_checkpoint(self, checkpoint_path):
         print(f"restoring checkpoint........{checkpoint_path}")
-        print("before", self.optimizer.param_groups[0]['lr'])
         """
         print("before pei debug scheduler")
         current_lrs = self.scheduler.get_last_lr()
@@ -335,17 +323,11 @@ class Trainer:
                     self.model.load_state_dict(new_state_dict)
             if self.params.resuming:  #restore checkpoint is used for finetuning as well as resuming. If finetuning (i.e., not resuming), restore checkpoint does not load optimizer state, instead uses config specified lr.
                 self.iters = checkpoint['iters']
-                #note the order for sequentialLR: lr -> optimizer, see https://github.com/pytorch/pytorch/issues/119168
-                if self.scheduler is not None:
-                    self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                self.startEpoch = checkpoint['epoch']
-                self.epoch = self.startEpoch
+
             else:
                 self.iters = 0
             self.model = self.model.to(self.device)
         print(f"epoch:{self.epoch}")
-        print("after", self.optimizer.param_groups[0]['lr'])
 
     def expand_model_pretraining(self):
         # See how much we need to expand the projections
@@ -410,272 +392,26 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
-    def train_one_epoch(self):
-
-        self.epoch += 1
-        tr_time = 0
-        data_time = 0
-        data_start = self.timer.get_time()
-        self.model.train()
-        logs = {'train_rmse': torch.zeros(1).to(self.device),
-                'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device)}
-        steps = 0
-        grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
-        grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
-        loss_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
-        loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
-        self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
-        sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
-
-        data_iter = iter(self.train_data_loader)
-
-        curriculum = self.params.curriculum if hasattr(self.params, "curriculum") else 0
-        if curriculum > 0:
-            curriculum_steps = self.params.curriculum_steps if hasattr(self.params, "curriculum_steps") else 20
-            if self.n_calls < curriculum:
-                # For the first curriculum epochs, use 1 sample
-                self.params.epoch_size = 1
-            else:
-                # After curriculum epochs, increase sample size every curriculum_steps epochs
-                steps_since_curr = self.n_calls - curriculum
-                new_sample_count = 2 + steps_since_curr // curriculum_steps
-                self.params.epoch_size = new_sample_count
-                if self.global_rank == 0:
-                    print(f"Setting epoch size to {self.params.epoch_size} based on n_calls {self.n_calls}")
-        num_batches = min(len(self.train_data_loader), self.params.epoch_size)
+    def total_variation_3d(self,x):
+        """
+        x: tensor of shape (B, C, T, D, H, W)
+        Returns: scalar total variation loss
+        """
+        tv_z = torch.abs(x[:, :, :, 1:, :, :] - x[:, :, :, :-1, :, :]).mean()
+        tv_y = torch.abs(x[:, :, :, :, 1:, :] - x[:, :, :, :, :-1, :]).mean()
+        tv_x = torch.abs(x[:, :, :, :, :, 1:] - x[:, :, :, :, :, :-1]).mean()
         
-        self.optimizer.zero_grad(set_to_none=True)
-        for batch_idx in range(num_batches):
-            steps += 1
-            self.single_print('Training batch:', batch_idx, "of Total:", num_batches)
-            ##############################################################################################################
-            with record_function_opt("data loading", enabled=self.profiling):
-                data = next(data_iter) 
-                try:
-                    inp, dset_index, field_labels, bcs, tar, leadtime =  data
-                    refineind = None
-                except:
-                    inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data  
-                try:
-                    blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
-                except:
-                    blockdict = None
-                #if self.group_rank==0:
-                #    print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
-            dset_type = self.train_dataset.sub_dsets[dset_index[0]].type
-            tkhead_name = self.train_dataset.sub_dsets[dset_index[0]].tkhead_name
-            loss_counts[dset_type] += 1
-            data_time += self.timer.get_time() - data_start
-            dtime = self.timer.get_time() - data_start
-
-            self.model.require_backward_grad_sync = ((1+batch_idx) % self.params.accum_grad == 0)
-            with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
-                model_start = self.timer.get_time()
-                tar = tar.to(self.device)
-                inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                # noise_level = 1e-4
-                # inp = inp + noise_level * torch.randn_like(inp)
-                # print('inp:',inp.shape)
-                inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
-                inp_up_linear = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                if self.cubic_interp:
-                    inp_reshaped = inp_reshaped.detach().cpu().numpy()
-                    tar_reshaped = rearrange(tar, 'b t c d h w -> (b t) c d h w').detach().cpu().numpy()
-                    inp_up = np.zeros_like(tar_reshaped, dtype=inp_reshaped.dtype)
-                    # Loop over batch and channels
-                    for b in range(inp_reshaped.shape[0]):
-                        for c in range(inp_reshaped.shape[1]):
-                            # Apply tricubic interpolation (order=3)
-                            inp_up[b, c] = zoom(inp_reshaped[b, c], zoom=8, order=3,mode='nearest')
-
-                    inp_up = torch.tensor(inp_up, dtype=inp.dtype, device=self.device)
-                else:
-                    inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
-                inp_up_linear = rearrange(inp_up_linear, '(t b) c1 d h w -> t b c1 d h w',t=inp.shape[0], b=inp.shape[1])
-                inp = inp_out
-                # inp = tar
-
-
-                imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
-                                    sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
-                output = torch.clamp(output, min=-10, max=10)
-                if self.diff_learning:
-                    output = output.unsqueeze(1) + inp_out  # Residual connection
-                else:
-                    output = output.unsqueeze(1)
-                ###full resolution###
-                spatial_dims = tuple(range(tar.ndim))[3:] # T,B,C,D,H,W
-
-                residuals = output - tar
-                if self.params.pei_debug:
-                    checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
-                                           self.device, self.params.debug_outdir, istep=steps, imod=-1)
-                # Differentiate between log and accumulation losses
-                #B,C,D,H,W->B,C
-                raw_loss = residuals.pow(2).mean(spatial_dims)
-                nrmse_loss = raw_loss/ (1e-7 + tar.pow(2).mean(spatial_dims))
-                interp_nrmse = (((inp_out-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
-                interp_lin_nrmse = (((inp_up_linear-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
-                # Scale loss for accum
-                loss = raw_loss.mean() / self.params.accum_grad
-
-                # Compute channel-wise RMSE
-                per_channel_mse = raw_loss  # shape: (t*b, c)
-                per_channel_rmse = raw_loss.sqrt().mean(dim=[0,1])  # shape: (c,)
-                per_channel_mse_interp = (inp_out-tar).pow(2).mean(spatial_dims)  # shape: (t*b, c)
-                per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=[0,1])
-                # Print results
-                channel_names = ["rho", "ux", "uy", "uz"]
-
-                # Logging
-                with torch.no_grad():
-                    logs['train_l1'] += F.l1_loss(output, tar)
-                    log_nrmse = nrmse_loss.sqrt().mean()
-                    logs['train_nrmse'] += log_nrmse 
-                    loss_logs[dset_type] += loss.item()
-                    logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
-
-                    if self.global_rank == 0 and self.n_calls%5==0:
-                        print("Plot results - training.")
-                        os.makedirs(f"{self.params.experiment_dir}/plots_train", exist_ok=True)
-
-                        tar_slice = tar[0, 0, :, 64, :, :].cpu().detach().numpy()       # Shape: [num_vars, H, W]
-                        out_slice = output[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice = inp[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice_low = inp_reshaped[0, :, 8, :, :]
-                        if isinstance(in_slice_low, torch.Tensor):
-                            in_slice_low = in_slice_low.detach().cpu().numpy()
-                        elif not isinstance(in_slice_low, np.ndarray):
-                            raise TypeError(f"Unsupported type for in_slice_low: {type(in_slice_low)}")
-
-                        num_vars = tar_slice.shape[0]
-                        fig, axs = plt.subplots(4, num_vars, figsize=(4*num_vars, 12))
-
-                        for i in range(num_vars):
-                            vmin = tar_slice[i].min()
-                            vmax = tar_slice[i].max()
-
-                            name = channel_names[i]
-                            rmse_out = per_channel_rmse[i].item()
-                            rmse_interp = per_channel_rmse_interp[i].item()
-
-                            im0 = axs[0, i].imshow(tar_slice[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
-                            axs[0, i].set_title(f"Target Var {i}")
-                            fig.colorbar(im0, ax=axs[0, i], fraction=0.046, pad=0.04)
-
-                            im1 = axs[1, i].imshow(out_slice[i], cmap='hot', origin='lower')
-                            axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
-                            fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
-
-                            im2 = axs[2, i].imshow(in_slice[i], cmap='hot', origin='lower')
-                            axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
-                            fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
-
-                            im3 = axs[3, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
-                            axs[3, i].set_title(f"Input low-res Var {i}")
-                            fig.colorbar(im3, ax=axs[3, i], fraction=0.046, pad=0.04)
-
-                        for ax_row in axs:
-                            for ax in ax_row:
-                                ax.axis('off')
-
-                        # Add loss in super title
-                        fig.suptitle(f"Training - Batch {batch_idx} | Rank {self.global_rank} | Sample mean,std {tar_slice.mean(),tar_slice.std()} | Output mean, std {out_slice.mean(),out_slice.std()}", fontsize=16)
-
-                        plt.tight_layout(rect=[0, 0, 1, 0.96])  # leave space for suptitle
-                        plt.savefig(f'{self.params.experiment_dir}/plots_train/slices_rank{self.global_rank}_batch{batch_idx}.png', dpi=300)
-                        plt.close()
-
-
-                #################################
-                forward_end = self.timer.get_time()
-                forward_time = forward_end-model_start
-                if torch.isnan(loss) or  not torch.isfinite(loss):
-                    print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
-                with record_function_opt("model backward", enabled=self.profiling):
-                    self.gscaler.scale(loss).backward()
-                total_norm = 0.0
-                grad_info = []
-
-                for name, p in self.model.named_parameters():
-                    if p.grad is not None:
-                        grad = p.grad.data
-                        norm = grad.norm(2).item()
-                        total_norm += norm ** 2
-
-                        if not torch.isfinite(grad).all():
-                            print(f"Non-finite gradient detected in: {name}")
-                            print(f"grad min: {grad.min().item():.3e}, max: {grad.max().item():.3e}, mean: {grad.mean().item():.3e}")
-                        grad_info.append(f"{name}: {norm:.3e}")
-
-                total_norm = total_norm ** 0.5
-
-                print(f"Total Gradient Norm: {total_norm:.4e}")
-
-                backward_end = self.timer.get_time()
-                backward_time = backward_end - forward_end
-                # Only take step once per accumulation cycle
-                optimizer_step = 0
-                with record_function_opt("optimization", enabled=self.profiling):
-                    if self.model.require_backward_grad_sync:
-                        self.gscaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
-                        self.gscaler.step(self.optimizer)
-                        self.gscaler.update()
-                        self.optimizer.zero_grad(set_to_none=True)
-                        if self.scheduler is not None and self.params.scheduler != 'steplr':
-                            self.scheduler.step()
-                        optimizer_step = self.timer.get_time() - backward_end
-                tr_time += self.timer.get_time() - model_start
-                if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
-                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss tricubic {interp_nrmse} Interp loss trilinear {interp_lin_nrmse}")
-                if self.log_to_screen:
-                    print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
-                        batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
-                data_start = self.timer.get_time()
-            self.check_memory("train-end %d"%batch_idx)
-        if self.params.scheduler == 'steplr':
-            self.scheduler.step()
-        logs = {k: v/steps for k, v in logs.items()}
-        with record_function_opt("log_dist_update", enabled=self.profiling):
-            # If distributed, do lots of logging things
-            if dist.is_initialized():
-                for key in sorted(logs.keys()):
-                    dist.all_reduce(logs[key].detach())
-                    logs[key] = float(logs[key]/dist.get_world_size())
-                for key in sorted(loss_logs.keys()):
-                    dist.all_reduce(loss_logs[key].detach())
-                for key in sorted(grad_logs.keys()):
-                    dist.all_reduce(grad_logs[key].detach())
-                for key in sorted(loss_counts.keys()):
-                    dist.all_reduce(loss_counts[key].detach())
-                for key in sorted(grad_counts.keys()):
-                    dist.all_reduce(grad_counts[key].detach())
-
-            for key in loss_logs.keys():
-                logs[f'{key}/train_nrmse'] = loss_logs[key] / loss_counts[key]
-
-            self.iters += steps
-            if self.global_rank == 0:
-                logs['iters'] = self.iters
-            self.single_print('all reduces executed!')
-            self.n_calls += 1
-
-
-        return tr_time, data_time, logs
+        return tv_z + tv_y + tv_x
 
     def validate_one_epoch(self, full=False, cutoff_skip=False):
         self.model.eval()
         self.single_print('STARTING VALIDATION!!!')
         logs = {'valid_rmse':  torch.zeros(1).to(self.device),
                 'valid_nrmse': torch.zeros(1).to(self.device),
-                'valid_interp': torch.zeros(1).to(self.device),
-                'valid_l1':    torch.zeros(1).to(self.device)}
+                'valid_interp_nrmse': torch.zeros(1).to(self.device),
+                'valid_l1':    torch.zeros(1).to(self.device),
+                'valid_ssim':  torch.zeros(1).to(self.device),
+                'valid_interp_ssim':  torch.zeros(1).to(self.device),}
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -683,6 +419,8 @@ class Trainer:
         loss_interp_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_rmse_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_dset_counts    = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_ssim_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_interp_ssim_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
 
         self.single_print('val_loader_size', len(self.valid_data_loader), len(self.valid_dataset))
         steps = 0
@@ -690,8 +428,7 @@ class Trainer:
         if full:
             cutoff = len(self.valid_data_loader)
         else:
-            cutoff = 2 #40
-
+            cutoff = 2 #40 
         for idx in range(cutoff):
             self.check_memory("validate-data")
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
@@ -715,6 +452,12 @@ class Trainer:
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
+            if self.valid_dataset.sub_dsets[dset_index[0]].split == 'train':
+                mean,std = self.valid_dataset.sub_dsets[dset_index[0]].get_mean_std()
+                mean,std = torch.tensor(mean, device = self.device), torch.tensor(std, device = self.device)
+            elif self.valid_dataset.sub_dsets[dset_index[0]].split == 'test':
+                mean,std = self.valid_dataset.sub_dsets[dset_index[0]].get_mean_std_test()
+                mean,std = torch.tensor(mean, device = self.device), torch.tensor(std, device = self.device)
             if loss_dset_counts[dset_type]>cutoff: 
                 break
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
@@ -741,6 +484,9 @@ class Trainer:
                         inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
                     # print('inp_up:',inp_up.shape)
                     inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
+                    var_inp = torch.var(inp_out, dim=(0,1,3,4,5))
+                    if self.global_rank ==0:
+                        print('Input variance per channel:', var_inp)
                     # print('inp_out:',inp_out.shape)
                     inp = inp_out
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
@@ -750,11 +496,37 @@ class Trainer:
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
-                    if self.diff_learning:
-                        output = output.unsqueeze(1)+inp_out
-                    else:
-                        output = output.unsqueeze(1)
+                    output = output.unsqueeze(1)#+inp_out
                     residuals = output - tar
+
+                    output_rescaled = (output * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
+                    tar_rescaled = (tar * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
+                    inp_up_rescaled = (inp_up * std.view(1,1, -1, 1, 1, 1) + mean.view(1,1, -1, 1, 1, 1)).squeeze(0)
+
+                    output_rescaled = remove_edges(output_rescaled)
+                    tar_rescaled = remove_edges(tar_rescaled)
+                    inp_up_rescaled = remove_edges(inp_up_rescaled)
+
+                    ssimrho = self.SSIM(output_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
+                    ssimux = self.SSIM(output_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
+                    ssimuy = self.SSIM(output_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
+                    ssimuz = self.SSIM(output_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
+
+                    ssim_avg = (ssimrho + ssimux + ssimuy + ssimuz)/4.0
+                    logs['valid_ssim'] += ssim_avg
+
+
+                    ssimrho_interp = self.SSIM(inp_up_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
+                    ssimux_interp = self.SSIM(inp_up_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
+                    ssimuy_interp = self.SSIM(inp_up_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
+                    ssimuz_interp = self.SSIM(inp_up_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
+
+                    ssim_interp_avg = (ssimrho_interp + ssimux_interp + ssimuy_interp + ssimuz_interp)/4.0
+                    logs['valid_interp_ssim'] += ssim_interp_avg
+
+                    if self.global_rank == 0:
+                        print(f'Batch: {idx}, SSIM rho: {ssimrho}, SSIM ux: {ssimux}, SSIM uy: {ssimuy}, SSIM uz: {ssimuz}')
+                        print(f'Batch: {idx}, SSIM rho interp: {ssimrho_interp}, SSIM ux interp: {ssimux_interp}, SSIM uy interp: {ssimuy_interp}, SSIM uz interp: {ssimuz_interp}')
 
                     # Flatten t and b into one dimension for easier channel-wise averaging
                     inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
@@ -772,7 +544,7 @@ class Trainer:
 
                     if self.global_rank == 0:
                         print("Plot results.")
-                        os.makedirs(f"{self.params.experiment_dir}/plots", exist_ok=True)
+                        os.makedirs(f"{self.params.experiment_dir}/inference/plots", exist_ok=True)
 
                         tar_slice = tar[0, 0, :, 64, :, :].cpu().detach().numpy()
                         out_slice = output[0, 0, :, 64, :, :].cpu().detach().numpy()
@@ -811,25 +583,31 @@ class Trainer:
                                 ax.axis('off')
 
                         plt.tight_layout()
-                        plt.savefig(f'{self.params.experiment_dir}/plots/target_vs_output_slice_{idx}.png', dpi=300)
+                        plt.savefig(f'{self.params.experiment_dir}/inference/plots/target_vs_output_slice_{idx}.png', dpi=300)
                         plt.close()
 
 
                     # Differentiate between log and accumulation losses
                     raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
+                    # in BLASTNET paper they call it NRMSE but it's actually NMSE and they calculate it on the rescaled data!
+                    # raw_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))
                     raw_loss = raw_loss.sqrt().mean()
                     interp_loss = (((inp-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
+                    # interp_loss = (((inp_up_rescaled - tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
                     raw_l1_loss = F.l1_loss(output, tar)
                     raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
                     logs['valid_nrmse'] += raw_loss
                     logs['valid_l1']    += raw_l1_loss
                     logs['valid_rmse']  += raw_rmse_loss
-                    logs['valid_interp']  += interp_loss
+                    logs['valid_interp_nrmse']  += interp_loss
 
                     loss_dset_logs[dset_type]      += raw_loss
                     loss_l1_dset_logs[dset_type]   += raw_l1_loss
                     loss_interp_dset_logs[dset_type]   += interp_loss
                     loss_rmse_dset_logs[dset_type] += raw_rmse_loss
+                    loss_ssim_dset_logs[dset_type] += ssim_avg
+                    loss_interp_ssim_dset_logs[dset_type] += ssim_interp_avg
+
                     if self.global_rank == 0:
                         print(f"Epoch {self.epoch} Batch {idx} Rank 0: Valid Loss {raw_loss.item()} Interp loss {interp_loss}")
                     #################################        
@@ -847,78 +625,40 @@ class Trainer:
                 dist.all_reduce(loss_interp_dset_logs[key])
                 dist.all_reduce(loss_rmse_dset_logs[key])
                 dist.all_reduce(loss_dset_counts[key])
+                dist.all_reduce(loss_ssim_dset_logs[key])
+                dist.all_reduce(loss_interp_ssim_dset_logs[key])
 
         for key in loss_dset_logs.keys():
             logs[f'{key}/valid_nrmse'] = loss_dset_logs[key]     / loss_dset_counts[key]
             logs[f'{key}/valid_l1']    = loss_l1_dset_logs[key]  / loss_dset_counts[key]
-            logs[f'{key}/valid_interp'] = loss_interp_dset_logs[key]  / loss_dset_counts[key]
+            logs[f'{key}/valid_interp_nrmse'] = loss_interp_dset_logs[key]  / loss_dset_counts[key]
             logs[f'{key}/valid_rmse']  = loss_rmse_dset_logs[key]/ loss_dset_counts[key]
+            logs[f'{key}/valid_ssim']  = loss_ssim_dset_logs[key]/ loss_dset_counts[key]
+            logs[f'{key}/valid_interp_ssim']  = loss_interp_ssim_dset_logs[key]/ loss_dset_counts[key]
         self.single_print('DONE SYNCING - NOW LOGGING')
 
         return logs
 
-    def train(self):
+    def infer(self):
         if self.global_rank == 0:
             summary(self.model)
-        self.single_print("Starting Training Loop...")
+        self.single_print("Starting Inference...")
         best_valid_loss = 1.e6
-        for epoch in range(self.startEpoch, self.params.max_epochs):
-            if dist.is_initialized():
-                self.train_sampler.set_epoch(epoch)
-                self.val_sampler.set_epoch(epoch)
-            start = self.timer.get_time()
-            self.check_memory("before train %d"%epoch)
-            with torch.autograd.detect_anomaly(check_nan=True):
-                with record_function_opt("train_one_epoch", enabled=self.profiling):
-                    tr_time, data_time, train_logs = self.train_one_epoch()
+        if dist.is_initialized():
+            self.val_sampler.set_epoch(0)
+        start = self.timer.get_time()
+        valid_start = self.timer.get_time()
+        # Only do full validation set on last epoch - don't waste time
+        with record_function_opt("validate_one_epoch", enabled=self.profiling):
+            valid_logs = self.validate_one_epoch(full = True)
 
-            self.check_memory("after train %d"%epoch)
-            valid_start = self.timer.get_time()
-            # Only do full validation set on last epoch - don't waste time
-            with record_function_opt("validate_one_epoch", enabled=self.profiling):
-                if epoch==self.params.max_epochs-1:
-                    valid_logs = self.validate_one_epoch(full = True)
-                else:
-                    valid_skip=False
-                    valid_skipsteps = self.params.valid_skipsteps if hasattr(self.params, 'valid_skipsteps') else 1
-                    if epoch%valid_skipsteps>0:
-                        valid_skip=True
-                    valid_logs = self.validate_one_epoch(cutoff_skip=valid_skip)
+        post_start = self.timer.get_time()
+        gc.collect()
+        torch.cuda.empty_cache()
 
-            self.check_memory("after validate %d"%epoch)
-            post_start = self.timer.get_time()
-            train_logs.update(valid_logs)
-            train_logs['time/train_time'] = valid_start-start
-            train_logs['time/train_data_time'] = data_time
-            train_logs['time/train_compute_time'] = tr_time
-            train_logs['time/valid_time'] = post_start-valid_start
-            gc.collect()
-            torch.cuda.empty_cache()
-            self.check_memory("after memory clean %d"%epoch)
+        cur_time = self.timer.get_time()
+        self.single_print(f'Time valid: {post_start-valid_start}. For postprocessing:{cur_time-post_start}')
+        self.single_print('Time taken for validation is {} sec'.format(self.timer.get_time()-start))
+        self.single_print('Valid loss: {} Valid Interp loss: {}'.format( valid_logs['valid_nrmse'], valid_logs['valid_interp_nrmse']))
+        self.single_print('Valid SSIM: {} Valid Interp SSIM: {}'.format( valid_logs['valid_ssim'], valid_logs['valid_interp_ssim']))
 
-            if self.global_rank == 0:
-                logs_config = {}
-                for k, v in train_logs.items():
-                    if isinstance(v, torch.Tensor):
-                        logs_config[k] = v.cpu().item()
-                    else:
-                        logs_config[k] = v
-                with open(os.path.join(self.params.experiment_dir, f"train_log_epoch{epoch}.json"), 'w') as fp:
-                    json.dump(logs_config, fp)
-            if self.global_rank == 0:
-                if self.params.save_checkpoint:
-                    print("checkpoint saved:",self.params.checkpoint_path )
-                    self.save_checkpoint(self.params.checkpoint_path)
-                if epoch % self.params.checkpoint_save_interval == 0:
-                    self.save_checkpoint(self.params.checkpoint_path + f'_epoch{epoch}')
-                if  valid_logs['valid_nrmse']>0 and valid_logs['valid_nrmse'] <= best_valid_loss:
-                    print("Best checkpoint saved:",self.params.best_checkpoint_path )
-                    self.save_checkpoint(self.params.best_checkpoint_path)
-                    best_valid_loss = valid_logs['valid_nrmse']
-
-            cur_time = self.timer.get_time()
-            self.single_print(f'Time for train {valid_start-start}. For valid: {post_start-valid_start}. For postprocessing:{cur_time-post_start}')
-            self.single_print('Time taken for epoch {} is {} sec'.format(epoch + 1, self.timer.get_time()-start))
-            self.single_print('Train loss: {}. Valid loss: {} Valid Interp loss: {}'.format(train_logs['train_nrmse'], valid_logs['valid_nrmse'], valid_logs['valid_interp']))
-
-    

@@ -29,10 +29,10 @@ class MultisetSampler(Sampler):
 
     def __iter__(self):
         samplers = [iter(sampler) for sampler in self.sub_samplers]
-        # generator = torch.Generator().manual_seed(5000*self.epoch+100*self.seed+self.rank)
-        # perm      = torch.randperm(len(self.iset_choices), generator=generator)
-        # choices_t = self.iset_choices[perm][:self.max_samples]
-        choices_t = self.iset_choices[:self.max_samples]
+        generator = torch.Generator().manual_seed(5000*self.epoch+100*self.seed+self.rank)
+        perm      = torch.randperm(len(self.iset_choices), generator=generator)
+        choices_t = self.iset_choices[perm][:self.max_samples]
+        # choices_t = self.iset_choices[:self.max_samples]
         offsets = [max(0, off) for off in self.dataset.offsets]
         
         for subset_idx in choices_t:
@@ -80,7 +80,7 @@ class MultisetSampler(Sampler):
             epoch (int): Epoch number.
         """
         for sampler in self.sub_samplers:
-            # sampler.set_epoch(epoch)
-            sampler.set_epoch(0)
+            sampler.set_epoch(epoch)
+            # sampler.set_epoch(0)
         self.epoch = epoch
 

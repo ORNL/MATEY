@@ -32,7 +32,7 @@ class BaseBLASNET3DDataset(Dataset):
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
-                 gammaref=None, tkhead_name=None, SR_ratio=None,
+                 gammaref=None, tkhead_name=None, SR_ratio=None, data_augmentation=False,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
 
@@ -50,6 +50,7 @@ class BaseBLASNET3DDataset(Dataset):
         if SR_ratio is None:
             SR_ratio=[1,1,1]
         self.SR_ratio=SR_ratio
+        self.data_augmentation = data_augmentation
         self.time_index, self.sample_index, self.field_names, self.type, self.cubsizes, self.case_str, self.split_level = self._specifics()
         self._get_directory_stats(path)
         self.title = self.type
@@ -519,7 +520,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         with open(path, 'r') as file:
             reader = csv.DictReader(file)
             datadict= {col: [] for col in reader.fieldnames}
-            for row in reader:
+            for i, row in enumerate(reader):
                 for col in reader.fieldnames:
                     datadict[col].append(row[col])
         return datadict
@@ -584,7 +585,60 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     #normalize by mean and std
     def normalize(self,sample, mean, std):
         return (sample - mean)/std
-    
+
+    def rot90_3D(self,input,k,dims):
+        #input is C,H,W,D
+        #C is rho,u,v,w
+        #dims is 0,1,2 for x,y,z
+        #preserves the divergence
+        assert len(dims) == 2
+        for i in range(k):
+            #plus 1 because of channel
+            swp = (dims[0]+1,dims[1]+1)
+            input = torch.rot90(input, k=1, dims=swp)
+            
+            #plus 1 because of rho
+            input[[swp[0],swp[1]]] = input[[swp[1],swp[0]]]
+            
+            input[swp[0]] = -input[swp[0]]
+        return input
+
+    def rot_dx(self,dx_list,k,dims):
+        assert len(dims) == 2
+        for i in range(k):
+            dx_list[[dims[0],dims[1]]] = dx_list[[dims[1],dims[0]]]
+        return dx_list[0],dx_list[1],dx_list[2]
+
+    def flip_3D(self,input,dims):
+        #input is C,H,W,D
+        #dims is 0,1,2 for x,y,z
+        #plus 1 because of channel
+        #preserves the divergence
+        assert len(dims) == 1
+        swp = [dims[0]+1]
+        input = torch.flip(input, dims=swp)
+        input[swp[0]] = -input[swp[0]]
+        return input
+
+    #data augmentation
+    def random_rot90_3D(self,X,Y,dx,dy,dz):
+        dx_list = torch.tensor([dx,dy,dz]).reshape(3,1)
+        k = np.random.randint(0,4)
+        axis = np.random.choice([0,1,2],2,replace=False)
+        X=self.rot90_3D(X,k,axis)
+        Y=self.rot90_3D(Y,k,axis)
+        dx,dy,dz = self.rot_dx(dx_list,k,axis)
+        return X,Y,dx,dy,dz
+
+    #data augmentation
+    def random_flip_3D(self,X,Y):
+        for axis in range(3):
+            p = np.random.rand()
+            if p > 0.5:
+                X=self.flip_3D(X,[axis])
+                Y=self.flip_3D(Y,[axis])
+        return X,Y
+
     def _reconstruct_sample(self,idx):    
         hash_id = self.datadict['hash'][idx]
         scalars = self.field_names
@@ -611,6 +665,11 @@ class SR_Benchmark(BaseBLASNET3DDataset):
             dz = torch.tensor(np.float32(self.datadict['dz [m]'][idx]))
         else:
             dz = dx
+        #manually transfrom with rotations and flips
+        if self.split=="train" and self.data_augmentation:
+            X,Y,dx,dy,dz = self.random_rot90_3D(torch.from_numpy(X),torch.from_numpy(Y),dx,dy,dz)
+            X,Y = self.random_flip_3D(X,Y)
+            X,Y = X.numpy(), Y.numpy()
         #return: T,C,D,H,W
         return X[np.newaxis,...].transpose((0, 1, 4, 2, 3)),Y[np.newaxis,...].transpose((0, 1, 4, 2, 3)), [dz, dx, dy]
 

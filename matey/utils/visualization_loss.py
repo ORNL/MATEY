@@ -104,7 +104,7 @@ def plot_curves(all_epochs, all_trains, all_vals, case_names, outname=""):
     for i, name in enumerate(case_names):
         marker = markers[i % len(markers)]
         color = colors[i % len(colors)]
-        axs[1].plot(all_epochs[name], all_trains[name],
+        axs[1].plot(all_epochs[name], all_vals[name],
                 marker=marker, linestyle='--', mfc='none',
         #axs[1].plot(all_epochs[name], all_vals[name],
         #         marker='s', linestyle='--', mfc='none',
@@ -113,7 +113,7 @@ def plot_curves(all_epochs, all_trains, all_vals, case_names, outname=""):
     axs[1].set_ylabel('Validation Loss')
     axs[1].set_title('Validation Loss vs. Epoch')
     axs[1].legend()
-    axs[1].set_ylim(ylim)
+    # axs[1].set_ylim(ylim)
     axs[1].grid(True)
     axs[1].set_yscale('log')
 
