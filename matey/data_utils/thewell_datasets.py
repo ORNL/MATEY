@@ -312,9 +312,9 @@ class acoustic_scattering_maze(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]] 
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]] 
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -330,9 +330,9 @@ class acoustic_scattering_inclusions(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -348,9 +348,9 @@ class acoustic_scattering_discontinuous(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -366,9 +366,9 @@ class active_matter(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -384,9 +384,9 @@ class convective_envelope_rsg(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -402,9 +402,9 @@ class euler_multi_quadrants_openBC(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -420,9 +420,9 @@ class euler_multi_quadrants_periodicBC(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -438,9 +438,9 @@ class helmholtz_staircase(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -456,9 +456,9 @@ class MHD_64(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -474,9 +474,9 @@ class MHD_256(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -492,9 +492,9 @@ class gray_scott_reaction_diffusion(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -510,9 +510,9 @@ class planetswe(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -528,9 +528,9 @@ class post_neutron_star_merger(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -546,9 +546,9 @@ class rayleigh_benard(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -564,9 +564,9 @@ class rayleigh_taylor_instability(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -582,9 +582,9 @@ class shear_flow(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -600,9 +600,9 @@ class supernova_explosion_64(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -618,9 +618,9 @@ class supernova_explosion_128(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -636,9 +636,9 @@ class turbulence_gravity_cooling(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -654,9 +654,9 @@ class turbulent_radiative_layer_2D(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic
@@ -672,9 +672,9 @@ class turbulent_radiative_layer_3D(TheWellDataset):
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
@@ -690,9 +690,9 @@ class viscoelastic_instability(TheWellDataset):
         spatial_dims = 2
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
-    field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names = _specifics.__func__()[0]
+    field_names += [varname+str(idim) for varname in  _specifics.__func__()[1] for idim in [0,1]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics.__func__()[2] for idim in [0,1]for jdim in [0,1]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0] # Non-periodic

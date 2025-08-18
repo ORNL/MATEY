@@ -248,7 +248,7 @@ class SWEDataset(BaseHDF5DirectoryDataset):
         type = 'swe'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = list(f.keys())
@@ -284,7 +284,7 @@ class DiffRe2DDataset(BaseHDF5DirectoryDataset):
         type = 'diffre2d'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = list(f.keys())
@@ -324,7 +324,7 @@ class IncompNSDataset(BaseHDF5DirectoryDataset):
         type = 'incompNS'
         split_level = 'file'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = f['velocity'].shape[0]
@@ -367,7 +367,7 @@ class PDEArenaINS(BaseHDF5DirectoryDataset):
         type = 'pa_ins'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = f['Vx'].shape[0]
@@ -421,7 +421,7 @@ class CompNSDataset(BaseHDF5DirectoryDataset):
         type = 'compNS'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = f['Vx'].shape[0]
@@ -482,7 +482,7 @@ class BurgersDataset(BaseHDF5DirectoryDataset):
         type = 'burgers'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = f['tensor'].shape[0]
@@ -520,7 +520,7 @@ class DiffSorb1DDataset(BaseHDF5DirectoryDataset):
         type = 'diffsorb'
         split_level = 'sample'
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_stats(self, f):
         samples = list(f.keys())

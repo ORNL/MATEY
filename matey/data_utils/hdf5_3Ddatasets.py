@@ -339,7 +339,7 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         #cubsizes=[1024,1024,512] #x,y,z
         #cubsizes=[1024,1024,1024]
         return time_index, sample_index, field_names, type, cubsizes
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         time_dict={}
@@ -444,7 +444,7 @@ class TaylorGreen(BaseHDF53DDataset):
         #cubsizes=[256, 256, 256] #nx, ny,nz
         cubsizes=[-1,-1,-1] #[512, 512, 256]; [768, 768, 384]; [1024, 1024, 512]
         return time_index, sample_index, field_names, type, cubsizes
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         time_dict={}

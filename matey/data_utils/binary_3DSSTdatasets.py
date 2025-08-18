@@ -422,7 +422,7 @@ class sstF4R32Dataset(BaseBinary3DSSTDataset):
         dt = int(dt/tscale)  # re-scale to integer iteration value
         gridsizes = [514, 512, 256] # [nx+2, ny, nz]
         return time_index, sample_index, field_names, type, cubsizes, dt, tscale, gridsizes  # Do not change order of first 3
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic
@@ -442,7 +442,7 @@ class sstPiF050Gn0050Dataset(BaseBinary3DSSTDataset):
         #assert self.leadtime_max==0 and self.nsteps_input==1, \
         #f"Assertion failed: For {type} data, only discrete snapshots are available. So leadtime should be 0. But, `n_steps`={self.nsteps_input} and `leadtime_max`={self.leadtime_max}."
         return time_index, sample_index, field_names, type, cubsizes, dt, tscale, gridsizes  # Do not change order of first 3
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic

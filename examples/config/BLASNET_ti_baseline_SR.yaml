@@ -15,7 +15,7 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 4  
+  batch_size: 2  
   max_epochs: 100
   scheduler_epochs: -1
   epoch_size: 2 
@@ -23,17 +23,23 @@ basic_config: &basic_config
   optimizer: 'AdamW' #'adan' # adam, adan, whatever else i end up adding - adan did better on HP sweep
   scheduler: 'cosine' # Only cosine implemented
   warmup_steps: 100 # Warmup when not using DAdapt
-  learning_rate: 1e-5 # -1 means use DAdapt
+  learning_rate: 1e-4 # -1 means use DAdapt
   weight_decay: 1e-3
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
   dt: 1 # Striding of data - Not currently implemented > 1
+  difference_learning: !!bool True # Whether to use difference learning
+  curriculum: 200 # Number of epochs to use for curriculum learning - 0 means no curriculum. If data loader is random, this makes no sense.
+  curriculum_steps: 10 # Number of steps to use for curriculum learning
+  data_augmentation: !!bool False # Whether to use data augmentation - 3D flip and rotation
+  cubic_interp: !!bool True # Whether to use cubic interpolation for upsampling, if false uses linear
   leadtime_max: 0 #prediction lead time range [1, leadtime_max]
   n_steps: 1 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  
   # Model settings
-  model_type:  'vit_all2all' # no need for time_type and space_type inputs
+  model_type:  'turbt' # no need for time_type and space_type inputs
+  # model_type:  'vit_all2all' # no need for time_type and space_type inputs
   #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
   #time_type: 'all2all_time' # 
   #space_type: 'all2all' #
@@ -48,6 +54,11 @@ basic_config: &basic_config
     - head_name: "tk-3D"
       patch_size: [[8, 8, 8]]
   SR_ratio: [8, 8, 8]
+  hierarchical:
+    filtersize: 2
+    nlevels: 3 #[2^3, 2^2, 2^1, 2^0]
+  notransposed: !!bool False # when True, do not use conv_transposed due to checkerboard artifacts; Default, False
+  # sp_groupsize: 2 #sequence_parallel_groupsize
   sts_model: !!bool False
   sts_train: !!bool False  #when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly
   #gammaref: 0.2 #pick all tokens that with variances larger than gammaref*max_variance to refine
@@ -61,10 +72,10 @@ basic_config: &basic_config
   extended_names: !!bool False # Whether to use extended names - not currently implemented
   embedding_offset: 0  # Use when adding extra finetuning fields
   train_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/zhangp/BLASTNET/SR/blastnet-momentum-3d-sr-dataset/train_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/c/csalah/data/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   valid_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/zhangp/BLASTNET/SR/blastnet-momentum-3d-sr-dataset/val_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/c/csalah/data/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

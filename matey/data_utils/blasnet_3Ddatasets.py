@@ -261,7 +261,7 @@ class H2vitairliDataset(BaseBLASNET3DDataset):
         cubsizes=[256, 128, 128]
         split_level="case" 
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         case_dict={}
@@ -334,7 +334,7 @@ class H2jetDataset(BaseBLASNET3DDataset):
         #this is a 2D dataset; axial and streamwise (https://blastnet.github.io/sharma2024.html) 
         split_level="case" 
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         case_dict={}
@@ -416,7 +416,7 @@ class FHITsnapshots(BaseBLASNET3DDataset):
         cubsizes=[256, 256, 256] 
         split_level="snapshot"
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         skip="passive-fhit-dns-r1/./data/UX_ms-1_id000.dat" #damaged file
@@ -495,7 +495,7 @@ class HITDNSsnapshots(BaseBLASNET3DDataset):
         cubsizes=[256, 256, 256] #[2040,2040,2048] 
         split_level="case"
         return time_index, sample_index, field_names, type, cubsizes, case_str,split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _get_filesinfo(self, file_paths):
         case_dict={}
@@ -563,7 +563,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         cubsizes=[128, 128, 128] 
         split_level="snapshot"
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def _getpathfromcsv(self, path):
         #convert csv to dict

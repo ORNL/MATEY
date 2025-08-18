@@ -223,7 +223,7 @@ class  MHDDataset(BaseExodusDirectoryDataset):
         type = 'liquidMetalMHD'
         split_level = None #not used, since one trajectory per file
         return time_index, sample_index, field_names, type, split_level
-    field_names = _specifics()[2] #class attributes
+    field_names = _specifics.__func__()[2] #class attributes
 
     def get_min_max(self):
         #FIXME: the values have changed with varying configs

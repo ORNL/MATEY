@@ -9,12 +9,12 @@ torchinfo
 wandb
 tqdm
 zarr
-ruamel.yaml==0.17.32
-ruamel.yaml.clib==0.2.7
+#ruamel.yaml==0.17.32
+#ruamel.yaml.clib==0.2.7
 mpi4py
 #if run into errors like "src/mpi4py.MPI.c:6:10: fatal error: Python.h: No such file or directory", check https://stackoverflow.com/questions/21530577/fatal-error-python-h-no-such-file-or-directory
 scipy
 matplotlib
 netCDF4
-flash-attn
+#flash-attn
 git+https://github.com/sandialabs/exodusii.git

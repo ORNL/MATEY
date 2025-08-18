@@ -1,32 +1,36 @@
 #!/bin/bash
-#SBATCH -A LRN037
+#SBATCH -A m4724
+#SBATCH -C gpu
+#SBATCH -q regular
 #SBATCH -J matey
 #SBATCH -o %x-%j.out
-#SBATCH -t 00:30:00
-#SBATCH -p batch
+#SBATCH -t 00:01:00
 #SBATCH -N 1
-###SBATCH -q debug
-#SBATCH -C nvme
+#SBATCH --gres=gpu:2
+#SBATCH -c 32
 
 export OMP_NUM_THREADS=1
 
 export master_node=$SLURMD_NODENAME
-export run_name="demo_SR_inp3"
-export config="basic_config"
+export config="basic_config" 
+export run_name="demo_SR"
 export yaml_config=./config/BLASNET_ti_baseline_SR.yaml
 
-source /lustre/orion/world-shared/stf218/junqi/forge/matey-env-rocm631.sh
+export SLURM_CPU_BIND="cores"
+
+module load conda
+module load cuda
+conda activate matey_env
+
 export PYTHONPATH="${PYTHONPATH}:$(dirname "$PWD")"
 
-export MIOPEN_USER_DB_PATH=/mnt/bb/$USER/MIOPEN$SLURM_JOB_ID
-#"/tmp/cache"
-export MIOPEN_CUSTOM_CACHE_DIR=${MIOPEN_USER_DB_PATH}
-rm -rf ${MIOPEN_USER_DB_PATH}
-mkdir -p ${MIOPEN_USER_DB_PATH}
 
 export MASTER_ADDR=$(hostname -i)
 export MASTER_PORT=3442
-##export NCCL_DEBUG=INFO 
+# srun -N$SLURM_JOB_NUM_NODES -n$((SLURM_JOB_NUM_NODES*8)) -c7 --gpu-bind=closest python basic_usage.py \
+# --run_name $run_name --config $config --yaml_config $yaml_config --use_ddp
 
-srun -N$SLURM_JOB_NUM_NODES -n$((SLURM_JOB_NUM_NODES*8)) -c7 --gpu-bind=closest python basic_usage.py \
---run_name $run_name --config $config --yaml_config $yaml_config --use_ddp
+srun -N1 -n2 -c7 bash -c '
+export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
+python basic_usage.py --run_name SR_TT_test --config basic_config \
+  --yaml_config ./config/BLASNET_ti_baseline_SR.yaml --use_ddp'

@@ -21,8 +21,12 @@ def setup_dist(params):
     #num_gpus_per_node = torch.cuda.device_count()
     world_size = int(os.environ['SLURM_NTASKS'])
     global_rank = rank = int(os.environ['SLURM_PROCID'])
-    local_rank = int(os.environ['SLURM_LOCALID'])
-
+    local_rank = 0 #int(os.environ['SLURM_LOCALID'])
+    print(f"[Rank {os.environ.get('SLURM_PROCID')}] "
+      f"SLURM_LOCALID={os.environ.get('SLURM_LOCALID')} "
+      f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+      f"torch.cuda.device_count()={torch.cuda.device_count()}",
+      flush=True)
     os.environ['WORLD_SIZE'] = str(world_size)
     os.environ['RANK'] = str(global_rank)
     os.environ['LOCAL_RANK'] = str(local_rank)
