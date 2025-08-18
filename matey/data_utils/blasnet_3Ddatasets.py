@@ -8,6 +8,9 @@ import glob
 from .shared_utils import get_top_variance_patchids, plot_checking
 import json
 import csv
+from .utils import closest_factors
+from functools import reduce
+from operator import mul
 
 class BaseBLASNET3DDataset(Dataset):
     """
@@ -59,6 +62,12 @@ class BaseBLASNET3DDataset(Dataset):
         self.tkhead_name=tkhead_name
         self.refine_ratio = refine_ratio
         self.gammaref = gammaref
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
+        #make sure all GPUs in the same data group conduct the same augmentation operation
+        self.rng = np.random.default_rng(seed=self.group_rank)
 
     def get_name(self):
         return self.type
@@ -173,6 +182,13 @@ class BaseBLASNET3DDataset(Dataset):
         else:
             raise ValueError("unknown %s"%self.split_level)
         ########################################
+        
+        #start index and end size of local split for current 
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
+
         bcs = self._get_specific_bcs()
         if self.type!="SR":
             if self.leadtime_max>0:
@@ -196,6 +212,40 @@ class BaseBLASNET3DDataset(Dataset):
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        H, W, D = self.cubsizes #x,y,z
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                    torch.arange(nproc_blocks[1]),  
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
+
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
 
 class H2vitairliDataset(BaseBLASNET3DDataset):
     @staticmethod
@@ -623,8 +673,10 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     #data augmentation
     def random_rot90_3D(self,X,Y,dx,dy,dz):
         dx_list = torch.tensor([dx,dy,dz]).reshape(3,1)
-        k = np.random.randint(0,4)
-        axis = np.random.choice([0,1,2],2,replace=False)
+        #k = np.random.randint(0,4)
+        #axis = np.random.choice([0,1,2],2,replace=False)
+        k = self.rng.integers(0,4)
+        axis = self.rng.choice([0,1,2], size=2, replace=False)
         X=self.rot90_3D(X,k,axis)
         Y=self.rot90_3D(Y,k,axis)
         dx,dy,dz = self.rot_dx(dx_list,k,axis)
@@ -633,7 +685,8 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     #data augmentation
     def random_flip_3D(self,X,Y):
         for axis in range(3):
-            p = np.random.rand()
+            #p = np.random.rand()
+            p = self.rng.random() 
             if p > 0.5:
                 X=self.flip_3D(X,[axis])
                 Y=self.flip_3D(Y,[axis])
