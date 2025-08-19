@@ -186,11 +186,11 @@ class BaseBLASNET3DDataset(Dataset):
         #start index and end size of local split for current 
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
-        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
 
         bcs = self._get_specific_bcs()
         if self.type!="SR":
+            trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
             if self.leadtime_max>0:
                 inp=trajectory[:-1]
                 tar=trajectory[-1]
@@ -199,6 +199,12 @@ class BaseBLASNET3DDataset(Dataset):
                 tar=inp[-1]
         else:
             inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
+            #blockdict has dims for full resoluton output; need to convert to LR inputs
+
+            inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
+            tar = tar[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
+
 
         for tk in self.tokenizer_heads:
             if tk["head_name"] == self.tkhead_name:

@@ -188,7 +188,7 @@ class TurbT(BaseModel):
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
         #self.debug_nan(x, message="input")
-        x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+        x, data_mean, data_std = normalize_spatiotemporal_persample(x,sequence_parallel_group=sequence_parallel_group)
         #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:
@@ -209,7 +209,7 @@ class TurbT(BaseModel):
         local_att = imod>0
         if local_att:
             #each mode similar cost
-            nfact=2**(2*imod)#//blockdict["nproc_blocks"][-1]
+            nfact=2**(2*imod)//blockdict["nproc_blocks"][-1]
             """
             #FIXME: temporary, currently hard-coded: pass as nfactor=4//ps 
             ps = self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"][-1].patch_size

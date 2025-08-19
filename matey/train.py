@@ -474,6 +474,7 @@ class Trainer:
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
                 # noise_level = 1e-4
                 # inp = inp + noise_level * torch.randn_like(inp)
                 # print('inp:',inp.shape)
@@ -540,7 +541,7 @@ class Trainer:
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
 
-                    if self.global_rank == 0 and self.n_calls%5==0:
+                    if self.global_rank == 0 and self.n_calls%5==0 and False:
                         print("Plot results - training.")
                         os.makedirs(f"{self.params.experiment_dir}/plots_train", exist_ok=True)
 
@@ -770,7 +771,7 @@ class Trainer:
                     channel_names = ["rho", "ux", "uy", "uz"]
 
 
-                    if self.global_rank == 0:
+                    if self.global_rank == 0 and False:
                         print("Plot results.")
                         os.makedirs(f"{self.params.experiment_dir}/plots", exist_ok=True)
 
