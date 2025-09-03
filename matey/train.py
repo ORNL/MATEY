@@ -391,6 +391,25 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def stitch_blocks(self, blocks, full_size, block_size):
+        """
+            blocks: list of 8 arrays [num_vars, block_size, block_size, block_size]
+            full_size: final spatial size (128 for high-res, 16 for low-res)
+            block_size: spatial size per block (64 for high-res, 8 for low-res)
+        """
+        arr = np.empty((blocks[0].shape[0], full_size, full_size, full_size), dtype=blocks[0].dtype)
+        idx = 0
+        for i in range(2):       # depth
+            for j in range(2):   # height
+                for k in range(2):  # width
+                    arr[:, 
+                        i*block_size:(i+1)*block_size, 
+                        j*block_size:(j+1)*block_size, 
+                        k*block_size:(k+1)*block_size
+                    ] = blocks[idx]
+                    idx += 1
+        return arr
+
     def freeze_model_pretraining(self):
         if self.params.freeze_middle:
             try:
@@ -474,11 +493,12 @@ class Trainer:
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+                # print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
                 # noise_level = 1e-4
                 # inp = inp + noise_level * torch.randn_like(inp)
                 # print('inp:',inp.shape)
                 inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
+                inp_low = inp_reshaped.clone()
                 inp_up_linear = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
                 if self.cubic_interp:
                     inp_reshaped = inp_reshaped.detach().cpu().numpy()
@@ -510,7 +530,7 @@ class Trainer:
                 else:
                     output = output.unsqueeze(1)
                 ###full resolution###
-                spatial_dims = tuple(range(tar.ndim))[3:] # T,B,C,D,H,W
+                spatial_dims = tuple(range(tar.ndim))[2:] # T,B,C,D,H,W
 
                 residuals = output - tar
                 if self.params.pei_debug:
@@ -525,14 +545,20 @@ class Trainer:
                 # Scale loss for accum
                 loss = raw_loss.mean() / self.params.accum_grad
 
+                # Flatten t and b into one dimension for easier channel-wise averaging
+                inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
+                output_flat = output.view(-1, output.shape[2], *output.shape[3:])  # shape: (t*b, c, d, h, w)
+                tar_flat = tar.view(-1, tar.shape[2], *tar.shape[3:])  # shape: (t*b, c, d, h, w)
                 # Compute channel-wise RMSE
-                per_channel_mse = raw_loss  # shape: (t*b, c)
-                per_channel_rmse = raw_loss.sqrt().mean(dim=[0,1])  # shape: (c,)
-                per_channel_mse_interp = (inp_out-tar).pow(2).mean(spatial_dims)  # shape: (t*b, c)
-                per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=[0,1])
+                spatial_dims = tuple(range(tar_flat.ndim))[2:] # T,B,C,D,H,W
+                per_channel_mse = ((output_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
+                per_channel_rmse = per_channel_mse.sqrt().mean(dim=0)  # shape: (c,)
+                per_channel_mse_interp = ((inp_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
+                per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=0)
+                
+                spatial_dims = tuple(range(tar.ndim))[2:] # T,B,C,D,H,W
                 # Print results
                 channel_names = ["rho", "ux", "uy", "uz"]
-
                 # Logging
                 with torch.no_grad():
                     logs['train_l1'] += F.l1_loss(output, tar)
@@ -541,18 +567,37 @@ class Trainer:
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
 
-                    if self.global_rank == 0 and self.n_calls%5==0 and False:
+                    if self.n_calls%self.params.checkpoint_save_interval==0:
+                        chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_out = [torch.zeros_like(output[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_inp_low = [torch.zeros_like(inp_low[0,:,:,:,:]) for _ in range(dist.get_world_size())]
+
+                        dist.all_gather(chunks_tar, tar[0,0,:,:,:,:])
+                        dist.all_gather(chunks_out, output[0,0,:,:,:,:])
+                        dist.all_gather(chunks_inp, inp[0,0,:,:,:,:])
+                        dist.all_gather(chunks_inp_low,inp_low[0,:,:,:,:])
+
+                        if self.global_rank == 0:
+                            tar_chunks = [c.cpu().detach().numpy() for c in chunks_tar]
+                            out_chunks = [c.cpu().detach().numpy() for c in chunks_out]
+                            inp_chunks = [c.cpu().detach().numpy() for c in chunks_inp]
+                            inp_low_chunks = [c.cpu().detach().numpy() for c in chunks_inp_low]
+
+                    if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
+
+                        full_tar = self.stitch_blocks(tar_chunks, full_size=128, block_size=64)
+                        full_out = self.stitch_blocks(out_chunks, full_size=128, block_size=64)
+                        full_inp = self.stitch_blocks(inp_chunks, full_size=128, block_size=64)
+                        full_inp_low = self.stitch_blocks(inp_low_chunks, full_size=16, block_size=8)
                         print("Plot results - training.")
                         os.makedirs(f"{self.params.experiment_dir}/plots_train", exist_ok=True)
 
-                        tar_slice = tar[0, 0, :, 64, :, :].cpu().detach().numpy()       # Shape: [num_vars, H, W]
-                        out_slice = output[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice = inp[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice_low = inp_reshaped[0, :, 8, :, :]
-                        if isinstance(in_slice_low, torch.Tensor):
-                            in_slice_low = in_slice_low.detach().cpu().numpy()
-                        elif not isinstance(in_slice_low, np.ndarray):
-                            raise TypeError(f"Unsupported type for in_slice_low: {type(in_slice_low)}")
+                        slice_idx = 64  # mid-plane
+                        tar_slice = full_tar[:, slice_idx, :, :]
+                        out_slice = full_out[:, slice_idx, :, :]
+                        inp_slice = full_inp[:, slice_idx, :, :]
+                        in_slice_low = full_inp_low[:, 8, :, :]
 
                         num_vars = tar_slice.shape[0]
                         fig, axs = plt.subplots(4, num_vars, figsize=(4*num_vars, 12))
@@ -573,7 +618,7 @@ class Trainer:
                             axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
-                            im2 = axs[2, i].imshow(in_slice[i], cmap='hot', origin='lower')
+                            im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
                             axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
 
@@ -600,23 +645,23 @@ class Trainer:
                     print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
-                total_norm = 0.0
-                grad_info = []
+                # total_norm = 0.0
+                # grad_info = []
 
-                for name, p in self.model.named_parameters():
-                    if p.grad is not None:
-                        grad = p.grad.data
-                        norm = grad.norm(2).item()
-                        total_norm += norm ** 2
+                # for name, p in self.model.named_parameters():
+                #     if p.grad is not None:
+                #         grad = p.grad.data
+                #         norm = grad.norm(2).item()
+                #         total_norm += norm ** 2
 
-                        if not torch.isfinite(grad).all():
-                            print(f"Non-finite gradient detected in: {name}")
-                            print(f"grad min: {grad.min().item():.3e}, max: {grad.max().item():.3e}, mean: {grad.mean().item():.3e}")
-                        grad_info.append(f"{name}: {norm:.3e}")
+                #         if not torch.isfinite(grad).all():
+                #             print(f"Non-finite gradient detected in: {name}")
+                #             print(f"grad min: {grad.min().item():.3e}, max: {grad.max().item():.3e}, mean: {grad.mean().item():.3e}")
+                #         grad_info.append(f"{name}: {norm:.3e}")
 
-                total_norm = total_norm ** 0.5
+                # total_norm = total_norm ** 0.5
 
-                print(f"Total Gradient Norm: {total_norm:.4e}")
+                # print(f"Total Gradient Norm: {total_norm:.4e}")
 
                 backward_end = self.timer.get_time()
                 backward_time = backward_end - forward_end
@@ -726,6 +771,7 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     # print('inp:',inp.shape)
                     inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
+                    inp_low = inp_reshaped.clone()
                     # print('inp_reshaped:',inp_reshaped.shape)
                     if self.cubic_interp:
                         inp_reshaped = inp_reshaped.detach().cpu().numpy()
@@ -761,7 +807,6 @@ class Trainer:
                     inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
                     output_flat = output.view(-1, output.shape[2], *output.shape[3:])  # shape: (t*b, c, d, h, w)
                     tar_flat = tar.view(-1, tar.shape[2], *tar.shape[3:])  # shape: (t*b, c, d, h, w)
-
                     # Compute channel-wise RMSE
                     per_channel_mse = ((output_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
                     per_channel_rmse = per_channel_mse.sqrt().mean(dim=0)  # shape: (c,)
@@ -770,22 +815,40 @@ class Trainer:
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
 
+                    if self.n_calls%self.params.checkpoint_save_interval==0:
+                        chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_out = [torch.zeros_like(output[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_inp_low = [torch.zeros_like(inp_low[0,:,:,:,:]) for _ in range(dist.get_world_size())]
 
-                    if self.global_rank == 0 and False:
-                        print("Plot results.")
-                        os.makedirs(f"{self.params.experiment_dir}/plots", exist_ok=True)
+                        dist.all_gather(chunks_tar, tar[0,0,:,:,:,:])
+                        dist.all_gather(chunks_out, output[0,0,:,:,:,:])
+                        dist.all_gather(chunks_inp, inp[0,0,:,:,:,:])
+                        dist.all_gather(chunks_inp_low,inp_low[0,:,:,:,:])
 
-                        tar_slice = tar[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        out_slice = output[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice = inp[0, 0, :, 64, :, :].cpu().detach().numpy()
+                        if self.global_rank == 0:
+                            tar_chunks = [c.cpu().detach().numpy() for c in chunks_tar]
+                            out_chunks = [c.cpu().detach().numpy() for c in chunks_out]
+                            inp_chunks = [c.cpu().detach().numpy() for c in chunks_inp]
+                            inp_low_chunks = [c.cpu().detach().numpy() for c in chunks_inp_low]
 
-                        # Compute shared color limits
-                        vmin = tar_slice.min()
-                        vmax = tar_slice.max()
+                    if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
 
-                        # Plot
+                        full_tar = self.stitch_blocks(tar_chunks, full_size=128, block_size=64)
+                        full_out = self.stitch_blocks(out_chunks, full_size=128, block_size=64)
+                        full_inp = self.stitch_blocks(inp_chunks, full_size=128, block_size=64)
+                        full_inp_low = self.stitch_blocks(inp_low_chunks, full_size=16, block_size=8)
+                        print("Plot results - valid.")
+                        os.makedirs(f"{self.params.experiment_dir}/plots_valid", exist_ok=True)
+
+                        slice_idx = 64  # mid-plane
+                        tar_slice = full_tar[:, slice_idx, :, :]
+                        out_slice = full_out[:, slice_idx, :, :]
+                        inp_slice = full_inp[:, slice_idx, :, :]
+                        in_slice_low = full_inp_low[:, 8, :, :]
+
                         num_vars = tar_slice.shape[0]
-                        fig, axs = plt.subplots(3, num_vars, figsize=(4*num_vars, 12))
+                        fig, axs = plt.subplots(4, num_vars, figsize=(4*num_vars, 12))
 
                         for i in range(num_vars):
                             vmin = tar_slice[i].min()
@@ -803,16 +866,21 @@ class Trainer:
                             axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
-                            im2 = axs[2, i].imshow(in_slice[i], cmap='hot', origin='lower')
+                            im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
                             axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
+
+                            im3 = axs[3, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
+                            axs[3, i].set_title(f"Input low-res Var {i}")
+                            fig.colorbar(im3, ax=axs[3, i], fraction=0.046, pad=0.04)
 
                         for ax_row in axs:
                             for ax in ax_row:
                                 ax.axis('off')
 
-                        plt.tight_layout()
-                        plt.savefig(f'{self.params.experiment_dir}/plots/target_vs_output_slice_{idx}.png', dpi=300)
+
+                        plt.tight_layout(rect=[0, 0, 1, 0.96])  # leave space for suptitle
+                        plt.savefig(f'{self.params.experiment_dir}/plots_valid/slices_rank{self.global_rank}_batch{idx}.png', dpi=300)
                         plt.close()
 
 

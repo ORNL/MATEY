@@ -67,7 +67,7 @@ class BaseBLASNET3DDataset(Dataset):
         self.group_size=group_size
         self.blockdict = self._getblocksplitstat()
         #make sure all GPUs in the same data group conduct the same augmentation operation
-        self.rng = np.random.default_rng(seed=self.group_rank)
+        self.rng = np.random.default_rng(seed=self.group_id)
 
     def get_name(self):
         return self.type

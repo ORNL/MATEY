@@ -188,7 +188,8 @@ class TurbT(BaseModel):
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
         #self.debug_nan(x, message="input")
-        x, data_mean, data_std = normalize_spatiotemporal_persample(x,sequence_parallel_group=sequence_parallel_group)
+        if imod==self.nhlevels-1:
+            x, data_mean, data_std = normalize_spatiotemporal_persample(x,sequence_parallel_group=sequence_parallel_group)
         #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:

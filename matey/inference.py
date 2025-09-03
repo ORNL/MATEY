@@ -403,21 +403,50 @@ class Inferencer:
         
         return tv_z + tv_y + tv_x
 
+    def stitch_blocks(self, blocks, full_size, block_size):
+        """
+            blocks: list of 8 arrays [num_vars, block_size, block_size, block_size]
+            full_size: final spatial size (128 for high-res, 16 for low-res)
+            block_size: spatial size per block (64 for high-res, 8 for low-res)
+        """
+        arr = np.empty((blocks[0].shape[0], full_size, full_size, full_size), dtype=blocks[0].dtype)
+        idx = 0
+        for i in range(2):       # depth
+            for j in range(2):   # height
+                for k in range(2):  # width
+                    arr[:, 
+                        i*block_size:(i+1)*block_size, 
+                        j*block_size:(j+1)*block_size, 
+                        k*block_size:(k+1)*block_size
+                    ] = blocks[idx]
+                    idx += 1
+        return arr
+
     def validate_one_epoch(self, full=False, cutoff_skip=False):
         self.model.eval()
         self.single_print('STARTING VALIDATION!!!')
         logs = {'valid_rmse':  torch.zeros(1).to(self.device),
                 'valid_nrmse': torch.zeros(1).to(self.device),
+                'valid_nmse': torch.zeros(1).to(self.device),
+                'valid_mse': torch.zeros(1).to(self.device),
                 'valid_interp_nrmse': torch.zeros(1).to(self.device),
+                'valid_interp_rmse': torch.zeros(1).to(self.device),
+                'valid_interp_nmse': torch.zeros(1).to(self.device),
+                'valid_interp_mse': torch.zeros(1).to(self.device),
                 'valid_l1':    torch.zeros(1).to(self.device),
                 'valid_ssim':  torch.zeros(1).to(self.device),
                 'valid_interp_ssim':  torch.zeros(1).to(self.device),}
         if cutoff_skip:
             return logs
-        loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_rmse_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_nrmse_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_nmse_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_mse_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_l1_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
-        loss_interp_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
-        loss_rmse_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_interp_rmse_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_interp_nrmse_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_interp_nmse_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
+        loss_interp_mse_dset_logs   = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_dset_counts    = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_ssim_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
         loss_interp_ssim_dset_logs = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -468,6 +497,7 @@ class Inferencer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     # print('inp:',inp.shape)
                     inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
+                    inp_low = inp_reshaped.clone()
                     # print('inp_reshaped:',inp_reshaped.shape)
                     if self.cubic_interp:
                         inp_reshaped = inp_reshaped.detach().cpu().numpy()
@@ -484,9 +514,6 @@ class Inferencer:
                         inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
                     # print('inp_up:',inp_up.shape)
                     inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
-                    var_inp = torch.var(inp_out, dim=(0,1,3,4,5))
-                    if self.global_rank ==0:
-                        print('Input variance per channel:', var_inp)
                     # print('inp_out:',inp_out.shape)
                     inp = inp_out
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
@@ -497,36 +524,6 @@ class Inferencer:
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
                     output = output.unsqueeze(1)#+inp_out
-                    residuals = output - tar
-
-                    output_rescaled = (output * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
-                    tar_rescaled = (tar * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
-                    inp_up_rescaled = (inp_up * std.view(1,1, -1, 1, 1, 1) + mean.view(1,1, -1, 1, 1, 1)).squeeze(0)
-
-                    output_rescaled = remove_edges(output_rescaled)
-                    tar_rescaled = remove_edges(tar_rescaled)
-                    inp_up_rescaled = remove_edges(inp_up_rescaled)
-
-                    ssimrho = self.SSIM(output_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
-                    ssimux = self.SSIM(output_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
-                    ssimuy = self.SSIM(output_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
-                    ssimuz = self.SSIM(output_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
-
-                    ssim_avg = (ssimrho + ssimux + ssimuy + ssimuz)/4.0
-                    logs['valid_ssim'] += ssim_avg
-
-
-                    ssimrho_interp = self.SSIM(inp_up_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
-                    ssimux_interp = self.SSIM(inp_up_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
-                    ssimuy_interp = self.SSIM(inp_up_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
-                    ssimuz_interp = self.SSIM(inp_up_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
-
-                    ssim_interp_avg = (ssimrho_interp + ssimux_interp + ssimuy_interp + ssimuz_interp)/4.0
-                    logs['valid_interp_ssim'] += ssim_interp_avg
-
-                    if self.global_rank == 0:
-                        print(f'Batch: {idx}, SSIM rho: {ssimrho}, SSIM ux: {ssimux}, SSIM uy: {ssimuy}, SSIM uz: {ssimuz}')
-                        print(f'Batch: {idx}, SSIM rho interp: {ssimrho_interp}, SSIM ux interp: {ssimux_interp}, SSIM uy interp: {ssimuy_interp}, SSIM uz interp: {ssimuz_interp}')
 
                     # Flatten t and b into one dimension for easier channel-wise averaging
                     inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
@@ -540,23 +537,65 @@ class Inferencer:
                     per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=0)
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
+                    chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                    chunks_out = [torch.zeros_like(output[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                    chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                    chunks_inp_low = [torch.zeros_like(inp_low[0,:,:,:,:]) for _ in range(dist.get_world_size())]
 
+                    dist.all_gather(chunks_tar, tar[0,0,:,:,:,:])
+                    dist.all_gather(chunks_out, output[0,0,:,:,:,:])
+                    dist.all_gather(chunks_inp, inp[0,0,:,:,:,:])
+                    dist.all_gather(chunks_inp_low,inp_low[0,:,:,:,:])
 
                     if self.global_rank == 0:
-                        print("Plot results.")
-                        os.makedirs(f"{self.params.experiment_dir}/inference/plots", exist_ok=True)
+                        tar_chunks = [c.cpu().detach().numpy() for c in chunks_tar]
+                        out_chunks = [c.cpu().detach().numpy() for c in chunks_out]
+                        inp_chunks = [c.cpu().detach().numpy() for c in chunks_inp]
+                        inp_low_chunks = [c.cpu().detach().numpy() for c in chunks_inp_low]
 
-                        tar_slice = tar[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        out_slice = output[0, 0, :, 64, :, :].cpu().detach().numpy()
-                        in_slice = inp[0, 0, :, 64, :, :].cpu().detach().numpy()
+                    if self.global_rank == 0:
+
+                        full_tar = self.stitch_blocks(tar_chunks, full_size=128, block_size=64)
+                        full_out = self.stitch_blocks(out_chunks, full_size=128, block_size=64)
+                        full_inp = self.stitch_blocks(inp_chunks, full_size=128, block_size=64)
+                        full_inp_low = self.stitch_blocks(inp_low_chunks, full_size=16, block_size=8)
+
+                        if self.cubic_interp:
+                            full_inp_low_reshaped = np.expand_dims(full_inp_low,axis=0)
+                            full_tar_reshaped = np.expand_dims(full_tar,axis=0)
+                            full_cubic = np.zeros_like(full_tar_reshaped, dtype=full_inp_low_reshaped.dtype)
+                            # Loop over batch and channels
+                            for b in range(full_inp_low_reshaped.shape[0]):
+                                for c in range(full_inp_low_reshaped.shape[1]):
+                                    # Apply tricubic interpolation (order=3)
+                                    full_cubic[b, c] = zoom(full_inp_low_reshaped[b, c], zoom=8, order=3,mode='nearest')
+
+
+                        print("Plot results - valid.")
+
+                        # only works for batch size 1 for now!
+                        full_cubic = np.squeeze(full_cubic, axis=0)
+
+                        slice_idx = 64  # mid-plane
+                        tar_slice = full_tar[:, slice_idx, :, :]
+                        out_slice = full_out[:, slice_idx, :, :]
+                        inp_slice = full_inp[:, slice_idx, :, :]
+                        cubic_slice = full_cubic[:, slice_idx, :, :]
+                        in_slice_low = full_inp_low[:, 8, :, :]
+
+                        num_vars = tar_slice.shape[0]
+                        fig, axs = plt.subplots(5, num_vars, figsize=(5*num_vars, 12))
+
+                        os.makedirs(f"{self.params.experiment_dir}/inference/plots", exist_ok=True)
 
                         # Compute shared color limits
                         vmin = tar_slice.min()
                         vmax = tar_slice.max()
 
-                        # Plot
+
+
                         num_vars = tar_slice.shape[0]
-                        fig, axs = plt.subplots(3, num_vars, figsize=(4*num_vars, 12))
+                        fig, axs = plt.subplots(5, num_vars, figsize=(5*num_vars, 12))
 
                         for i in range(num_vars):
                             vmin = tar_slice[i].min()
@@ -571,12 +610,23 @@ class Inferencer:
                             fig.colorbar(im0, ax=axs[0, i], fraction=0.046, pad=0.04)
 
                             im1 = axs[1, i].imshow(out_slice[i], cmap='hot', origin='lower')
-                            axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
+                            # axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
+                            axs[1, i].set_title(f"{name} (Output)", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
-                            im2 = axs[2, i].imshow(in_slice[i], cmap='hot', origin='lower')
-                            axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
+                            im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
+                            # axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
+                            axs[2, i].set_title(f"{name} (Interp Input-blocked)", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
+
+                            im3 = axs[3, i].imshow(cubic_slice[i], cmap='hot', origin='lower')
+                            # axs[3, i].set_title(f"{name} (Interp Input Cubic)\nRMSE: {rmse_interp:.4f}", fontsize=10)
+                            axs[3, i].set_title(f"{name} (Interp Input-cubic)", fontsize=10)
+                            fig.colorbar(im3, ax=axs[3, i], fraction=0.046, pad=0.04)
+
+                            im4 = axs[4, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
+                            axs[4, i].set_title(f"Input low-res Var {i}")
+                            fig.colorbar(im4, ax=axs[4, i], fraction=0.046, pad=0.04)
 
                         for ax_row in axs:
                             for ax in ax_row:
@@ -587,55 +637,104 @@ class Inferencer:
                         plt.close()
 
 
-                    # Differentiate between log and accumulation losses
-                    raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
-                    # in BLASTNET paper they call it NRMSE but it's actually NMSE and they calculate it on the rescaled data!
-                    # raw_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))
-                    raw_loss = raw_loss.sqrt().mean()
-                    interp_loss = (((inp-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
-                    # interp_loss = (((inp_up_rescaled - tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
-                    raw_l1_loss = F.l1_loss(output, tar)
-                    raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
-                    logs['valid_nrmse'] += raw_loss
-                    logs['valid_l1']    += raw_l1_loss
-                    logs['valid_rmse']  += raw_rmse_loss
-                    logs['valid_interp_nrmse']  += interp_loss
+                        full_out = torch.tensor(full_out, device=self.device)
+                        full_tar = torch.tensor(full_tar, device=self.device)
+                        full_inp = torch.tensor(full_cubic, device=self.device)
+                        full_inp_low = torch.tensor(full_inp_low, device=self.device)
 
-                    loss_dset_logs[dset_type]      += raw_loss
-                    loss_l1_dset_logs[dset_type]   += raw_l1_loss
-                    loss_interp_dset_logs[dset_type]   += interp_loss
-                    loss_rmse_dset_logs[dset_type] += raw_rmse_loss
-                    loss_ssim_dset_logs[dset_type] += ssim_avg
-                    loss_interp_ssim_dset_logs[dset_type] += ssim_interp_avg
+                        output_rescaled = (full_out * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
+                        tar_rescaled = (full_tar * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
+                        inp_up_rescaled = (full_inp * std.view(1,1, -1, 1, 1, 1) + mean.view(1,1, -1, 1, 1, 1)).squeeze(0)
+
+                        output_rescaled = remove_edges(output_rescaled)
+                        tar_rescaled = remove_edges(tar_rescaled)
+                        inp_up_rescaled = remove_edges(inp_up_rescaled)
+
+                        ssimrho = self.SSIM(output_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
+                        ssimux = self.SSIM(output_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
+                        ssimuy = self.SSIM(output_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
+                        ssimuz = self.SSIM(output_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
+
+                        ssim_avg = (ssimrho + ssimux + ssimuy + ssimuz)/4.0
+                        logs['valid_ssim'] += ssim_avg
+
+
+                        ssimrho_interp = self.SSIM(inp_up_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
+                        ssimux_interp = self.SSIM(inp_up_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
+                        ssimuy_interp = self.SSIM(inp_up_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
+                        ssimuz_interp = self.SSIM(inp_up_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
+
+                        ssim_interp_avg = (ssimrho_interp + ssimux_interp + ssimuy_interp + ssimuz_interp)/4.0
+                        logs['valid_interp_ssim'] += ssim_interp_avg
+
+                        print(f'Batch: {idx}, SSIM rho: {ssimrho}, SSIM ux: {ssimux}, SSIM uy: {ssimuy}, SSIM uz: {ssimuz}')
+                        print(f'Batch: {idx}, SSIM rho interp: {ssimrho_interp}, SSIM ux interp: {ssimux_interp}, SSIM uy interp: {ssimuy_interp}, SSIM uz interp: {ssimuz_interp}')
+
+
+                        residuals = output_rescaled - tar_rescaled
+                        spatial_dims = tuple(range(full_out.ndim))[1:]
+                        # Differentiate between log and accumulation losses
+                        # raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ full_tar.pow(2).mean(spatial_dims))
+                        # in BLASTNET paper they call it NRMSE but it's actually NMSE and they calculate it on the rescaled data!
+                        raw_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))
+                        mse_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).mean()
+                        nrmse_loss = (((output_rescaled - tar_rescaled).pow(2).mean(spatial_dims).sqrt()) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims).sqrt())).mean()
+                        rmse_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).sqrt().mean()
+
+                        # raw_loss = raw_loss.sqrt().mean()
+                        raw_loss = raw_loss.mean()
+                        interp_loss = (((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims))/ (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
+                        interp_mse_loss = ((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).mean()
+                        interp_nrmse_loss = (((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims).sqrt())/ (1e-7 + tar_rescaled.pow(2).mean(spatial_dims).sqrt())).mean()
+                        interp_rmse_loss = ((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).sqrt().mean()
+                        # interp_loss = (((inp_up_rescaled - tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
+                        raw_l1_loss = F.l1_loss(full_out, full_tar)
+                
+                        logs['valid_nmse'] += raw_loss
+                        logs['valid_mse'] += mse_loss
+                        logs['valid_nrmse'] += nrmse_loss
+                        logs['valid_rmse']  += rmse_loss
+                        logs['valid_l1']    += raw_l1_loss
+                        logs['valid_interp_nmse']  += interp_loss
+                        logs['valid_interp_mse']  += interp_mse_loss
+                        logs['valid_interp_nrmse']  += interp_nrmse_loss
+                        logs['valid_interp_rmse']  += interp_rmse_loss
+
+                        loss_nmse_dset_logs[dset_type]      += raw_loss
+                        loss_mse_dset_logs[dset_type]      += mse_loss
+                        loss_nrmse_dset_logs[dset_type]      += nrmse_loss
+                        loss_rmse_dset_logs[dset_type]      += rmse_loss
+                        loss_l1_dset_logs[dset_type]   += raw_l1_loss
+                        loss_interp_nmse_dset_logs[dset_type]   += interp_loss
+                        loss_interp_mse_dset_logs[dset_type]   += interp_mse_loss
+                        loss_interp_nrmse_dset_logs[dset_type]   += interp_nrmse_loss
+                        loss_interp_rmse_dset_logs[dset_type]   += interp_rmse_loss
+                        loss_ssim_dset_logs[dset_type] += ssim_avg
+                        loss_interp_ssim_dset_logs[dset_type] += ssim_interp_avg
 
                     if self.global_rank == 0:
                         print(f"Epoch {self.epoch} Batch {idx} Rank 0: Valid Loss {raw_loss.item()} Interp loss {interp_loss}")
                     #################################        
             self.check_memory("validate-end")
-        self.single_print('DONE VALIDATING - NOW SYNCING')
-        logs = {k: v/steps for k, v in logs.items()}
-        if dist.is_initialized():
-            for key in sorted(logs.keys()):
-                dist.all_reduce(logs[key])
-                logs[key] = float(logs[key]/dist.get_world_size())
+        if self.global_rank == 0:
+            self.single_print('DONE VALIDATING - NOW SYNCING')
+            logs = {k: v/steps for k, v in logs.items()}
 
-            for key in sorted(loss_dset_logs.keys()):
-                dist.all_reduce(loss_dset_logs[key])
-                dist.all_reduce(loss_l1_dset_logs[key])
-                dist.all_reduce(loss_interp_dset_logs[key])
-                dist.all_reduce(loss_rmse_dset_logs[key])
-                dist.all_reduce(loss_dset_counts[key])
-                dist.all_reduce(loss_ssim_dset_logs[key])
-                dist.all_reduce(loss_interp_ssim_dset_logs[key])
+            for key in loss_nmse_dset_logs.keys():
+                logs[f'{key}/valid_nrmse'] = loss_nrmse_dset_logs[key]     / loss_dset_counts[key]
+                logs[f'{key}/valid_mse'] = loss_mse_dset_logs[key]     / loss_dset_counts[key]
+                logs[f'{key}/valid_rmse'] = loss_rmse_dset_logs[key]     / loss_dset_counts[key]
+                logs[f'{key}/valid_nmse'] = loss_nmse_dset_logs[key]     / loss_dset_counts[key]
+                logs[f'{key}/valid_l1']    = loss_l1_dset_logs[key]  / loss_dset_counts[key]
+                logs[f'{key}/valid_interp_nrmse'] = loss_interp_nrmse_dset_logs[key]  / loss_dset_counts[key]
+                logs[f'{key}/valid_interp_mse'] = loss_interp_mse_dset_logs[key]  / loss_dset_counts[key]
+                logs[f'{key}/valid_interp_rmse'] = loss_interp_rmse_dset_logs[key]  / loss_dset_counts[key]
+                logs[f'{key}/valid_interp_nmse'] = loss_interp_nmse_dset_logs[key]  / loss_dset_counts[key]
+                logs[f'{key}/valid_rmse']  = loss_rmse_dset_logs[key]/ loss_dset_counts[key]
+                logs[f'{key}/valid_ssim']  = loss_ssim_dset_logs[key]/ loss_dset_counts[key]
+                logs[f'{key}/valid_interp_ssim']  = loss_interp_ssim_dset_logs[key]/ loss_dset_counts[key]
+            self.single_print('DONE SYNCING - NOW LOGGING')
 
-        for key in loss_dset_logs.keys():
-            logs[f'{key}/valid_nrmse'] = loss_dset_logs[key]     / loss_dset_counts[key]
-            logs[f'{key}/valid_l1']    = loss_l1_dset_logs[key]  / loss_dset_counts[key]
-            logs[f'{key}/valid_interp_nrmse'] = loss_interp_dset_logs[key]  / loss_dset_counts[key]
-            logs[f'{key}/valid_rmse']  = loss_rmse_dset_logs[key]/ loss_dset_counts[key]
-            logs[f'{key}/valid_ssim']  = loss_ssim_dset_logs[key]/ loss_dset_counts[key]
-            logs[f'{key}/valid_interp_ssim']  = loss_interp_ssim_dset_logs[key]/ loss_dset_counts[key]
-        self.single_print('DONE SYNCING - NOW LOGGING')
 
         return logs
 
@@ -659,6 +758,26 @@ class Inferencer:
         cur_time = self.timer.get_time()
         self.single_print(f'Time valid: {post_start-valid_start}. For postprocessing:{cur_time-post_start}')
         self.single_print('Time taken for validation is {} sec'.format(self.timer.get_time()-start))
-        self.single_print('Valid loss: {} Valid Interp loss: {}'.format( valid_logs['valid_nrmse'], valid_logs['valid_interp_nrmse']))
-        self.single_print('Valid SSIM: {} Valid Interp SSIM: {}'.format( valid_logs['valid_ssim'], valid_logs['valid_interp_ssim']))
+        self.single_print('Validation Metrics:')
+        self.single_print('-------------------')
+
+        # Print primary losses (global)
+        self.single_print('Valid Losses:')
+        self.single_print('- RMSE: {}'.format(valid_logs['valid_rmse'].item()))
+        self.single_print('- NRMSE: {}'.format(valid_logs['valid_nrmse'].item()))
+        self.single_print('- NMSE: {}'.format(valid_logs['valid_nmse'].item()))
+        self.single_print('- MSE: {}'.format(valid_logs['valid_mse'].item()))
+        self.single_print('- L1: {}'.format(valid_logs['valid_l1'].item()))
+
+        # Print interpolated losses
+        self.single_print('Interpolated Losses:')
+        self.single_print('- Interp RMSE: {}'.format(valid_logs['valid_interp_rmse'].item()))
+        self.single_print('- Interp NRMSE: {}'.format(valid_logs['valid_interp_nrmse'].item()))
+        self.single_print('- Interp NMSE: {}'.format(valid_logs['valid_interp_nmse'].item()))
+        self.single_print('- Interp MSE: {}'.format(valid_logs['valid_interp_mse'].item()))
+
+        # Print SSIM metrics (Structural Similarity Index Metric)
+        self.single_print('SSIM Metrics:')
+        self.single_print('- SSIM: {}'.format(valid_logs['valid_ssim'].item()))
+        self.single_print('- Interp SSIM: {}'.format(valid_logs['valid_interp_ssim'].item()))
 

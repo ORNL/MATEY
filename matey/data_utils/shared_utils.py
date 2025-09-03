@@ -7,6 +7,7 @@ from einops import rearrange
 from operator import mul
 from functools import reduce
 import torch.distributed as dist
+import matplotlib.pyplot as plt
 
 def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
     # input tensor shape: [T, B, C, D, H, W]
@@ -15,6 +16,7 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
         if sequence_parallel_group is not None:
             data_mean = torch.mean(x, dim=(0, -3, -2, -1), keepdims=True)
             data_square = torch.mean(torch.square(x), dim=(0, -3, -2, -1), keepdims=True)
+            torch.set_printoptions(precision=15)
             dist.all_reduce(data_mean, op=dist.ReduceOp.SUM, group=sequence_parallel_group)
             dist.all_reduce(data_square,  op=dist.ReduceOp.SUM, group=sequence_parallel_group)
             world_size = dist.get_world_size(sequence_parallel_group)
@@ -22,8 +24,9 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
             data_square = data_square/world_size
             var = data_square - torch.square(data_mean)
             data_std  = torch.sqrt(torch.clamp(var,min=0.0))
-            if dist.get_rank(sequence_parallel_group)==0:
-                print(f"Pei debugging, data_mean {data_mean.squeeze()}, data_std {data_std.squeeze()}, {world_size}, {x.shape}", flush=True)
+            # data_std  = torch.sqrt(data_square /world_size-torch.square(data_mean))
+            # if dist.get_rank(sequence_parallel_group)==0:
+            #     print(f"Pei debugging, data_mean {data_mean.squeeze()}, data_std {data_std.squeeze()}, {world_size}, {x.shape}", flush=True)
         else:
             data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdims=True)
  
