@@ -75,3 +75,101 @@ def ssim3D(img1, img2, window_size = 9, size_average = True):
 
 def remove_edges(arr):
     return arr[:,:,1:-1,1:-1,1:-1]
+
+def torch_dx(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=2,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+def torch_dy(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=3,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+def torch_dz(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=4,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+    
+def torch_diff(phi, dx,dy,dz): # x is a 3D tensor (batch, channel, x, y, z)
+    diff_x = torch_dx(phi, dx)
+    diff_y = torch_dy(phi, dy)
+    diff_z = torch_dz(phi, dz)
+    return diff_x, diff_y, diff_z
+
+
+class GradLoss(nn.Module):
+    def __init__(self):
+        super(GradLoss, self).__init__()
+
+    def forward(self, input,target):
+        nbatch = input.shape[0]
+        #just use dx=1 for everything
+        dx = torch.ones(nbatch,device=input.device)
+        dy = torch.ones(nbatch,device=input.device)
+        dz = torch.ones(nbatch,device=input.device)
+
+        ri = input[:,0:1,:,:,:]
+        ui = input[:,1:2,:,:,:]
+        vi = input[:,2:3,:,:,:]
+        wi = input[:,3:4,:,:,:]
+
+        rt = target[:,0:1,:,:,:]
+        ut = target[:,1:2,:,:,:]
+        vt = target[:,2:3,:,:,:]
+        wt = target[:,3:4,:,:,:]
+
+        dxri = torch_dx(ri,dx)
+        dyri = torch_dy(ri,dy)
+        dzri = torch_dz(ri,dz)
+        dxui = torch_dx(ui,dx)
+        dyui = torch_dy(ui,dy)
+        dzui = torch_dz(ui,dz)
+        dxvi = torch_dx(vi,dx)
+        dyvi = torch_dy(vi,dy)
+        dzvi = torch_dz(vi,dz)
+        dxwi = torch_dx(wi,dx)
+        dywi = torch_dy(wi,dy)
+        dzwi = torch_dz(wi,dz)
+
+        dxrt = torch_dx(rt,dx)
+        dyrt = torch_dy(rt,dy)
+        dzrt = torch_dz(rt,dz)
+        dxut = torch_dx(ut,dx)
+        dyut = torch_dy(ut,dy)
+        dzut = torch_dz(ut,dz)
+        dxvt = torch_dx(vt,dx)
+        dyvt = torch_dy(vt,dy)
+        dzvt = torch_dz(vt,dz)
+        dxwt = torch_dx(wt,dx)
+        dywt = torch_dy(wt,dy)
+        dzwt = torch_dz(wt,dz)
+
+        total_loss = F.mse_loss(dxri,dxrt) + F.mse_loss(dyri,dyrt) + F.mse_loss(dzri,dzrt) + \
+                        F.mse_loss(dxui,dxut) + F.mse_loss(dyui,dyut) + F.mse_loss(dzui,dzut) + \
+                        F.mse_loss(dxvi,dxvt) + F.mse_loss(dyvi,dyvt) + F.mse_loss(dzvi,dzvt) + \
+                        F.mse_loss(dxwi,dxwt) + F.mse_loss(dywi,dywt) + F.mse_loss(dzwi,dzwt)
+        
+        return total_loss

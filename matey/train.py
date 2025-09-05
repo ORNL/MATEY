@@ -30,6 +30,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import zoom
+from .utils.metrics import GradLoss
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -438,7 +439,8 @@ class Trainer:
         self.model.train()
         logs = {'train_rmse': torch.zeros(1).to(self.device),
                 'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device)}
+                'train_l1': torch.zeros(1).to(self.device),
+                'train_grad': torch.zeros(1).to(self.device)}
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -472,10 +474,10 @@ class Trainer:
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter) 
                 try:
-                    inp, dset_index, field_labels, bcs, tar, leadtime =  data
+                    inp, dset_index, field_labels, bcs, tar, inp_up, leadtime =  data
                     refineind = None
                 except:
-                    inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data  
+                    inp, dset_index, field_labels, bcs, tar, refineind, inp_up, leadtime = data  
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -493,31 +495,17 @@ class Trainer:
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
+                inp_up = inp_up.to(self.device)
                 # print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
                 # noise_level = 1e-4
                 # inp = inp + noise_level * torch.randn_like(inp)
                 # print('inp:',inp.shape)
                 inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
                 inp_low = inp_reshaped.clone()
-                inp_up_linear = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                if self.cubic_interp:
-                    inp_reshaped = inp_reshaped.detach().cpu().numpy()
-                    tar_reshaped = rearrange(tar, 'b t c d h w -> (b t) c d h w').detach().cpu().numpy()
-                    inp_up = np.zeros_like(tar_reshaped, dtype=inp_reshaped.dtype)
-                    # Loop over batch and channels
-                    for b in range(inp_reshaped.shape[0]):
-                        for c in range(inp_reshaped.shape[1]):
-                            # Apply tricubic interpolation (order=3)
-                            inp_up[b, c] = zoom(inp_reshaped[b, c], zoom=8, order=3,mode='nearest')
-
-                    inp_up = torch.tensor(inp_up, dtype=inp.dtype, device=self.device)
-                else:
-                    inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
-                inp_up_linear = rearrange(inp_up_linear, '(t b) c1 d h w -> t b c1 d h w',t=inp.shape[0], b=inp.shape[1])
-                inp = inp_out
+                # set input as interpolated data
+                inp = inp_up
                 # inp = tar
-
 
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
@@ -526,7 +514,7 @@ class Trainer:
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
                 output = torch.clamp(output, min=-10, max=10)
                 if self.diff_learning:
-                    output = output.unsqueeze(1) + inp_out  # Residual connection
+                    output = output.unsqueeze(1) + inp_up  # Residual connection
                 else:
                     output = output.unsqueeze(1)
                 ###full resolution###
@@ -540,21 +528,21 @@ class Trainer:
                 #B,C,D,H,W->B,C
                 raw_loss = residuals.pow(2).mean(spatial_dims)
                 nrmse_loss = raw_loss/ (1e-7 + tar.pow(2).mean(spatial_dims))
-                interp_nrmse = (((inp_out-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
-                interp_lin_nrmse = (((inp_up_linear-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
-                # Scale loss for accum
-                loss = raw_loss.mean() / self.params.accum_grad
+                interp_nrmse = (((inp_up-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
+                
 
-                # Flatten t and b into one dimension for easier channel-wise averaging
-                inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
-                output_flat = output.view(-1, output.shape[2], *output.shape[3:])  # shape: (t*b, c, d, h, w)
-                tar_flat = tar.view(-1, tar.shape[2], *tar.shape[3:])  # shape: (t*b, c, d, h, w)
-                # Compute channel-wise RMSE
-                spatial_dims = tuple(range(tar_flat.ndim))[2:] # T,B,C,D,H,W
-                per_channel_mse = ((output_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                per_channel_rmse = per_channel_mse.sqrt().mean(dim=0)  # shape: (c,)
-                per_channel_mse_interp = ((inp_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=0)
+                if self.params.grad_loss_alpha>0:
+                    # Scale loss for accum
+                    loss = (1.0-self.params.grad_loss_alpha)*raw_loss.mean() / self.params.accum_grad
+                    self.grad_loss = GradLoss()
+                    # calculate gradient loss. squeeze the T dim
+                    grad_loss = self.grad_loss(output.squeeze(1), tar.squeeze(1))/self.params.accum_grad
+                    loss += self.params.grad_loss_alpha*grad_loss
+                    if self.global_rank ==0:
+                        print("Using grad loss with alpha %f, grad loss %f"%(self.params.grad_loss_alpha, grad_loss.item()))
+                else:
+                    # Scale loss for accum
+                    loss = raw_loss.mean() / self.params.accum_grad
                 
                 spatial_dims = tuple(range(tar.ndim))[2:] # T,B,C,D,H,W
                 # Print results
@@ -566,6 +554,7 @@ class Trainer:
                     logs['train_nrmse'] += log_nrmse 
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                    logs['train_grad'] += grad_loss.item() if self.params.grad_loss_alpha>0 else 0.0
 
                     if self.n_calls%self.params.checkpoint_save_interval==0:
                         chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
@@ -607,19 +596,17 @@ class Trainer:
                             vmax = tar_slice[i].max()
 
                             name = channel_names[i]
-                            rmse_out = per_channel_rmse[i].item()
-                            rmse_interp = per_channel_rmse_interp[i].item()
 
                             im0 = axs[0, i].imshow(tar_slice[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
                             axs[0, i].set_title(f"Target Var {i}")
                             fig.colorbar(im0, ax=axs[0, i], fraction=0.046, pad=0.04)
 
                             im1 = axs[1, i].imshow(out_slice[i], cmap='hot', origin='lower')
-                            axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
+                            axs[1, i].set_title(f"{name} (Output)", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
                             im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
-                            axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
+                            axs[2, i].set_title(f"{name} (Interp Input)", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
 
                             im3 = axs[3, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
@@ -679,7 +666,7 @@ class Trainer:
                         optimizer_step = self.timer.get_time() - backward_end
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
-                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss tricubic {interp_nrmse} Interp loss trilinear {interp_lin_nrmse}")
+                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss {interp_nrmse}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
                         batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
@@ -748,10 +735,10 @@ class Trainer:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
             try:
-                inp, dset_index, field_labels, bcs, tar, leadtime =  data
+                inp, dset_index, field_labels, bcs, tar, inp_up, leadtime =  data
                 refineind = None
             except:
-                inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data
+                inp, dset_index, field_labels, bcs, tar, refineind, inp_up, leadtime = data
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -769,27 +756,12 @@ class Trainer:
                 with torch.no_grad():
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    inp_up = inp_up.to(self.device)
                     # print('inp:',inp.shape)
                     inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
                     inp_low = inp_reshaped.clone()
-                    # print('inp_reshaped:',inp_reshaped.shape)
-                    if self.cubic_interp:
-                        inp_reshaped = inp_reshaped.detach().cpu().numpy()
-                        tar_reshaped = rearrange(tar, 'b t c d h w -> (b t) c d h w').detach().cpu().numpy()
-                        inp_up = np.zeros_like(tar_reshaped, dtype=inp_reshaped.dtype)
-                        # Loop over batch and channels
-                        for b in range(inp_reshaped.shape[0]):
-                            for c in range(inp_reshaped.shape[1]):
-                                # Apply tricubic interpolation (order=3)
-                                inp_up[b, c] = zoom(inp_reshaped[b, c], zoom=8, order=3,mode='nearest')
 
-                        inp_up = torch.tensor(inp_up, dtype=inp.dtype, device=self.device)
-                    else:
-                        inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                    # print('inp_up:',inp_up.shape)
-                    inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
-                    # print('inp_out:',inp_out.shape)
-                    inp = inp_out
+                    inp = inp_up
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
@@ -798,20 +770,11 @@ class Trainer:
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
                     if self.diff_learning:
-                        output = output.unsqueeze(1)+inp_out
+                        output = output.unsqueeze(1)+inp_up
                     else:
                         output = output.unsqueeze(1)
                     residuals = output - tar
 
-                    # Flatten t and b into one dimension for easier channel-wise averaging
-                    inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
-                    output_flat = output.view(-1, output.shape[2], *output.shape[3:])  # shape: (t*b, c, d, h, w)
-                    tar_flat = tar.view(-1, tar.shape[2], *tar.shape[3:])  # shape: (t*b, c, d, h, w)
-                    # Compute channel-wise RMSE
-                    per_channel_mse = ((output_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                    per_channel_rmse = per_channel_mse.sqrt().mean(dim=0)  # shape: (c,)
-                    per_channel_mse_interp = ((inp_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                    per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=0)
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
 
@@ -855,19 +818,17 @@ class Trainer:
                             vmax = tar_slice[i].max()
 
                             name = channel_names[i]
-                            rmse_out = per_channel_rmse[i].item()
-                            rmse_interp = per_channel_rmse_interp[i].item()
 
                             im0 = axs[0, i].imshow(tar_slice[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
                             axs[0, i].set_title(f"Target Var {i}")
                             fig.colorbar(im0, ax=axs[0, i], fraction=0.046, pad=0.04)
 
                             im1 = axs[1, i].imshow(out_slice[i], cmap='hot', origin='lower')
-                            axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
+                            axs[1, i].set_title(f"{name} (Output)", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
                             im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
-                            axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
+                            axs[2, i].set_title(f"{name} (Interp Input)", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
 
                             im3 = axs[3, i].imshow(in_slice_low[i], cmap='hot', origin='lower')

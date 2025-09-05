@@ -11,6 +11,9 @@ import csv
 from .utils import closest_factors
 from functools import reduce
 from operator import mul
+from einops import rearrange
+from scipy.ndimage import zoom
+import torch.nn.functional as F
 
 class BaseBLASNET3DDataset(Dataset):
     """
@@ -36,7 +39,7 @@ class BaseBLASNET3DDataset(Dataset):
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
                  gammaref=None, tkhead_name=None, SR_ratio=None, data_augmentation=False,
-                 group_id=0, group_rank=0, group_size=1):
+                 cubic_interp=False, group_id=0, group_rank=0, group_size=1):
         super().__init__()
 
         np.random.seed(2024)
@@ -54,6 +57,7 @@ class BaseBLASNET3DDataset(Dataset):
             SR_ratio=[1,1,1]
         self.SR_ratio=SR_ratio
         self.data_augmentation = data_augmentation
+        self.cubic_interp = cubic_interp
         self.time_index, self.sample_index, self.field_names, self.type, self.cubsizes, self.case_str, self.split_level = self._specifics()
         self._get_directory_stats(path)
         self.title = self.type
@@ -200,11 +204,21 @@ class BaseBLASNET3DDataset(Dataset):
         else:
             inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
             #blockdict has dims for full resoluton output; need to convert to LR inputs
+        
+            if self.cubic_interp:
+                    inp_up = np.zeros_like(tar, dtype=inp.dtype)
+                    # Loop over batch and channels
+                    for b in range(inp.shape[0]):
+                        for c in range(inp.shape[1]):
+                            # Apply tricubic interpolation (order=3)
+                            inp_up[b, c] = zoom(inp[b, c], zoom=(self.SR_ratio[0], self.SR_ratio[1], self.SR_ratio[2]), order=3,mode='nearest')
+            else:
+                inp_up = F.interpolate(torch.tensor(inp), scale_factor=(self.SR_ratio[0], self.SR_ratio[1], self.SR_ratio[2]), mode='trilinear', align_corners=True)
+            
 
             inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
             tar = tar[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
-
-
+            inp_up = inp_up[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
         for tk in self.tokenizer_heads:
             if tk["head_name"] == self.tkhead_name:
@@ -213,8 +227,8 @@ class BaseBLASNET3DDataset(Dataset):
         if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
             refineind = get_top_variance_patchids(patch_size, inp, self.gammaref, self.refine_ratio)
 
-            return inp, torch.as_tensor(bcs), tar, refineind, leadtime
-        return inp, torch.as_tensor(bcs), tar, leadtime
+            return inp, torch.as_tensor(bcs), tar, refineind, inp_up, leadtime
+        return inp, torch.as_tensor(bcs), tar, inp_up, leadtime
 
     def __len__(self):
         return self.len
