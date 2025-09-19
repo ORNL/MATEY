@@ -493,20 +493,14 @@ class Trainer:
             self.model.require_backward_grad_sync = ((1+batch_idx) % self.params.accum_grad == 0)
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
-                tar = tar.to(self.device)
+                tar = tar.squeeze(1).to(self.device) # B,1,C,D,H,W -> B,C,D,H,W
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
                 inp_up = inp_up.to(self.device)
-                # print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
-                # noise_level = 1e-4
-                # inp = inp + noise_level * torch.randn_like(inp)
-                # print('inp:',inp.shape)
-                inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
-                inp_low = inp_reshaped.clone()
+
+                inp_low = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w').clone()
                 # set input as interpolated data
                 inp = inp_up
-                # inp = tar
-
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
@@ -514,11 +508,9 @@ class Trainer:
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
                 output = torch.clamp(output, min=-10, max=10)
                 if self.diff_learning:
-                    output = output.unsqueeze(1) + inp_up  # Residual connection
-                else:
-                    output = output.unsqueeze(1)
+                    output = output + inp_up.squeeze(0)  # Residual connection
                 ###full resolution###
-                spatial_dims = tuple(range(tar.ndim))[2:] # T,B,C,D,H,W
+                spatial_dims = tuple(range(tar.ndim))[2:] # B,C,D,H,W
 
                 residuals = output - tar
                 if self.params.pei_debug:
@@ -528,15 +520,15 @@ class Trainer:
                 #B,C,D,H,W->B,C
                 raw_loss = residuals.pow(2).mean(spatial_dims)
                 nrmse_loss = raw_loss/ (1e-7 + tar.pow(2).mean(spatial_dims))
-                interp_nrmse = (((inp_up-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
+                # squeezed T dim for the input
+                interp_nrmse = (((inp_up.squeeze(0)-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
                 
-
                 if self.params.grad_loss_alpha>0:
                     # Scale loss for accum
                     loss = (1.0-self.params.grad_loss_alpha)*raw_loss.mean() / self.params.accum_grad
                     self.grad_loss = GradLoss()
                     # calculate gradient loss. squeeze the T dim
-                    grad_loss = self.grad_loss(output.squeeze(1), tar.squeeze(1))/self.params.accum_grad
+                    grad_loss = self.grad_loss(output, tar)/self.params.accum_grad
                     loss += self.params.grad_loss_alpha*grad_loss
                     if self.global_rank ==0:
                         print("Using grad loss with alpha %f, grad loss %f"%(self.params.grad_loss_alpha, grad_loss.item()))
@@ -544,7 +536,6 @@ class Trainer:
                     # Scale loss for accum
                     loss = raw_loss.mean() / self.params.accum_grad
                 
-                spatial_dims = tuple(range(tar.ndim))[2:] # T,B,C,D,H,W
                 # Print results
                 channel_names = ["rho", "ux", "uy", "uz"]
                 # Logging
@@ -557,13 +548,13 @@ class Trainer:
                     logs['train_grad'] += grad_loss.item() if self.params.grad_loss_alpha>0 else 0.0
 
                     if self.n_calls%self.params.checkpoint_save_interval==0:
-                        chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
-                        chunks_out = [torch.zeros_like(output[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_tar = [torch.zeros_like(tar[0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_out = [torch.zeros_like(output[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp_low = [torch.zeros_like(inp_low[0,:,:,:,:]) for _ in range(dist.get_world_size())]
 
-                        dist.all_gather(chunks_tar, tar[0,0,:,:,:,:])
-                        dist.all_gather(chunks_out, output[0,0,:,:,:,:])
+                        dist.all_gather(chunks_tar, tar[0,:,:,:,:])
+                        dist.all_gather(chunks_out, output[0,:,:,:,:])
                         dist.all_gather(chunks_inp, inp[0,0,:,:,:,:])
                         dist.all_gather(chunks_inp_low,inp_low[0,:,:,:,:])
 
@@ -743,7 +734,7 @@ class Trainer:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
                 blockdict = None
-            #if self.group_rank==0:
+            # if self.group_rank==0:
             #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
@@ -754,13 +745,11 @@ class Trainer:
                 steps += 1
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
-                    tar = tar.to(self.device)
+                    tar = tar.squeeze(1).to(self.device) # B,C,D,H,W
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
                     inp_up = inp_up.to(self.device)
-                    # print('inp:',inp.shape)
-                    inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
-                    inp_low = inp_reshaped.clone()
-
+                    inp_low = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w').clone()
                     inp = inp_up
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
@@ -770,22 +759,20 @@ class Trainer:
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
                     if self.diff_learning:
-                        output = output.unsqueeze(1)+inp_up
-                    else:
-                        output = output.unsqueeze(1)
-                    residuals = output - tar
+                        output = output+inp_up.squeeze(0)  # Residual connection
 
+                    residuals = output - tar
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
 
                     if self.n_calls%self.params.checkpoint_save_interval==0:
-                        chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
-                        chunks_out = [torch.zeros_like(output[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_tar = [torch.zeros_like(tar[0,:,:,:,:]) for _ in range(dist.get_world_size())]
+                        chunks_out = [torch.zeros_like(output[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp_low = [torch.zeros_like(inp_low[0,:,:,:,:]) for _ in range(dist.get_world_size())]
 
-                        dist.all_gather(chunks_tar, tar[0,0,:,:,:,:])
-                        dist.all_gather(chunks_out, output[0,0,:,:,:,:])
+                        dist.all_gather(chunks_tar, tar[0,:,:,:,:])
+                        dist.all_gather(chunks_out, output[0,:,:,:,:])
                         dist.all_gather(chunks_inp, inp[0,0,:,:,:,:])
                         dist.all_gather(chunks_inp_low,inp_low[0,:,:,:,:])
 
@@ -848,7 +835,8 @@ class Trainer:
                     # Differentiate between log and accumulation losses
                     raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
                     raw_loss = raw_loss.sqrt().mean()
-                    interp_loss = (((inp-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
+                    # squeeze T dim for the input
+                    interp_loss = (((inp.squeeze(0)-tar).pow(2).mean(spatial_dims))/ (1e-7 + tar.pow(2).mean(spatial_dims))).sqrt().mean()
                     raw_l1_loss = F.l1_loss(output, tar)
                     raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
                     logs['valid_nrmse'] += raw_loss

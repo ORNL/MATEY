@@ -32,6 +32,7 @@ import numpy as np
 from scipy.ndimage import zoom
 from .utils.metrics import SSIM3D, remove_edges
 from .data_utils.blasnet_3Ddatasets import SR_Benchmark
+import torch.nn.functional as F
 
 
 class Inferencer:
@@ -468,10 +469,10 @@ class Inferencer:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
             try:
-                inp, dset_index, field_labels, bcs, tar, leadtime =  data
+                inp, dset_index, field_labels, bcs, tar, inp_up, leadtime =  data
                 refineind = None
             except:
-                inp, dset_index, field_labels, bcs, tar, refineind, leadtime = data
+                inp, dset_index, field_labels, bcs, tar, refineind, inp_up, leadtime = data
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -495,27 +496,13 @@ class Inferencer:
                 with torch.no_grad():
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                    # print('inp:',inp.shape)
+                    inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
+                    inp_up = inp_up.to(self.device)
+
                     inp_reshaped = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w')
                     inp_low = inp_reshaped.clone()
-                    # print('inp_reshaped:',inp_reshaped.shape)
-                    if self.cubic_interp:
-                        inp_reshaped = inp_reshaped.detach().cpu().numpy()
-                        tar_reshaped = rearrange(tar, 'b t c d h w -> (b t) c d h w').detach().cpu().numpy()
-                        inp_up = np.zeros_like(tar_reshaped, dtype=inp_reshaped.dtype)
-                        # Loop over batch and channels
-                        for b in range(inp_reshaped.shape[0]):
-                            for c in range(inp_reshaped.shape[1]):
-                                # Apply tricubic interpolation (order=3)
-                                inp_up[b, c] = zoom(inp_reshaped[b, c], zoom=8, order=3,mode='nearest')
 
-                        inp_up = torch.tensor(inp_up, dtype=inp.dtype, device=self.device)
-                    else:
-                        inp_up = F.interpolate(inp_reshaped, scale_factor=(8, 8, 8), mode='trilinear', align_corners=True)
-                    # print('inp_up:',inp_up.shape)
-                    inp_out = rearrange(inp_up, '(t b) c d h w -> t b c d h w', t=inp.shape[0], b=inp.shape[1])
-                    # print('inp_out:',inp_out.shape)
-                    inp = inp_out
+                    inp = inp_up
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
@@ -525,16 +512,6 @@ class Inferencer:
                     spatial_dims = tuple(range(output.ndim))[2:]
                     output = output.unsqueeze(1)#+inp_out
 
-                    # Flatten t and b into one dimension for easier channel-wise averaging
-                    inp_flat = inp.view(-1, inp.shape[2], *inp.shape[3:])  # shape: (t*b, c, d, h, w)
-                    output_flat = output.view(-1, output.shape[2], *output.shape[3:])  # shape: (t*b, c, d, h, w)
-                    tar_flat = tar.view(-1, tar.shape[2], *tar.shape[3:])  # shape: (t*b, c, d, h, w)
-
-                    # Compute channel-wise RMSE
-                    per_channel_mse = ((output_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                    per_channel_rmse = per_channel_mse.sqrt().mean(dim=0)  # shape: (c,)
-                    per_channel_mse_interp = ((inp_flat - tar_flat) ** 2).mean(dim=spatial_dims)  # shape: (t*b, c)
-                    per_channel_rmse_interp = per_channel_mse_interp.sqrt().mean(dim=0)
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
                     chunks_tar = [torch.zeros_like(tar[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
@@ -560,27 +537,13 @@ class Inferencer:
                         full_inp = self.stitch_blocks(inp_chunks, full_size=128, block_size=64)
                         full_inp_low = self.stitch_blocks(inp_low_chunks, full_size=16, block_size=8)
 
-                        if self.cubic_interp:
-                            full_inp_low_reshaped = np.expand_dims(full_inp_low,axis=0)
-                            full_tar_reshaped = np.expand_dims(full_tar,axis=0)
-                            full_cubic = np.zeros_like(full_tar_reshaped, dtype=full_inp_low_reshaped.dtype)
-                            # Loop over batch and channels
-                            for b in range(full_inp_low_reshaped.shape[0]):
-                                for c in range(full_inp_low_reshaped.shape[1]):
-                                    # Apply tricubic interpolation (order=3)
-                                    full_cubic[b, c] = zoom(full_inp_low_reshaped[b, c], zoom=8, order=3,mode='nearest')
-
 
                         print("Plot results - valid.")
-
-                        # only works for batch size 1 for now!
-                        full_cubic = np.squeeze(full_cubic, axis=0)
 
                         slice_idx = 64  # mid-plane
                         tar_slice = full_tar[:, slice_idx, :, :]
                         out_slice = full_out[:, slice_idx, :, :]
                         inp_slice = full_inp[:, slice_idx, :, :]
-                        cubic_slice = full_cubic[:, slice_idx, :, :]
                         in_slice_low = full_inp_low[:, 8, :, :]
 
                         num_vars = tar_slice.shape[0]
@@ -595,38 +558,29 @@ class Inferencer:
 
 
                         num_vars = tar_slice.shape[0]
-                        fig, axs = plt.subplots(5, num_vars, figsize=(5*num_vars, 12))
+                        fig, axs = plt.subplots(4, num_vars, figsize=(4*num_vars, 12))
 
                         for i in range(num_vars):
                             vmin = tar_slice[i].min()
                             vmax = tar_slice[i].max()
 
                             name = channel_names[i]
-                            rmse_out = per_channel_rmse[i].item()
-                            rmse_interp = per_channel_rmse_interp[i].item()
 
                             im0 = axs[0, i].imshow(tar_slice[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
                             axs[0, i].set_title(f"Target Var {i}")
                             fig.colorbar(im0, ax=axs[0, i], fraction=0.046, pad=0.04)
 
                             im1 = axs[1, i].imshow(out_slice[i], cmap='hot', origin='lower')
-                            # axs[1, i].set_title(f"{name} (Output)\nRMSE: {rmse_out:.4f}", fontsize=10)
                             axs[1, i].set_title(f"{name} (Output)", fontsize=10)
                             fig.colorbar(im1, ax=axs[1, i], fraction=0.046, pad=0.04)
 
                             im2 = axs[2, i].imshow(inp_slice[i], cmap='hot', origin='lower')
-                            # axs[2, i].set_title(f"{name} (Interp Input)\nRMSE: {rmse_interp:.4f}", fontsize=10)
                             axs[2, i].set_title(f"{name} (Interp Input-blocked)", fontsize=10)
                             fig.colorbar(im2, ax=axs[2, i], fraction=0.046, pad=0.04)
 
-                            im3 = axs[3, i].imshow(cubic_slice[i], cmap='hot', origin='lower')
-                            # axs[3, i].set_title(f"{name} (Interp Input Cubic)\nRMSE: {rmse_interp:.4f}", fontsize=10)
-                            axs[3, i].set_title(f"{name} (Interp Input-cubic)", fontsize=10)
+                            im3 = axs[3, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
+                            axs[3, i].set_title(f"Input low-res Var {i}")
                             fig.colorbar(im3, ax=axs[3, i], fraction=0.046, pad=0.04)
-
-                            im4 = axs[4, i].imshow(in_slice_low[i], cmap='hot', origin='lower')
-                            axs[4, i].set_title(f"Input low-res Var {i}")
-                            fig.colorbar(im4, ax=axs[4, i], fraction=0.046, pad=0.04)
 
                         for ax_row in axs:
                             for ax in ax_row:
@@ -639,7 +593,7 @@ class Inferencer:
 
                         full_out = torch.tensor(full_out, device=self.device)
                         full_tar = torch.tensor(full_tar, device=self.device)
-                        full_inp = torch.tensor(full_cubic, device=self.device)
+                        full_inp = torch.tensor(full_inp, device=self.device)
                         full_inp_low = torch.tensor(full_inp_low, device=self.device)
 
                         output_rescaled = (full_out * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
@@ -654,10 +608,16 @@ class Inferencer:
                         ssimux = self.SSIM(output_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
                         ssimuy = self.SSIM(output_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])
                         ssimuz = self.SSIM(output_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])
-
                         ssim_avg = (ssimrho + ssimux + ssimuy + ssimuz)/4.0
                         logs['valid_ssim'] += ssim_avg
 
+                        mserho = F.mse_loss(output_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])/mean[0]
+                        mseux = F.mse_loss(output_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])/mean[1]
+                        mseuy = F.mse_loss(output_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])/mean[2]
+                        mseuz = F.mse_loss(output_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])/mean[3]
+
+                        nmse_loss = (mserho + mseux + mseuy + mseuz)/4.0
+                        logs['valid_nmse'] += nmse_loss
 
                         ssimrho_interp = self.SSIM(inp_up_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])
                         ssimux_interp = self.SSIM(inp_up_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])
@@ -667,45 +627,53 @@ class Inferencer:
                         ssim_interp_avg = (ssimrho_interp + ssimux_interp + ssimuy_interp + ssimuz_interp)/4.0
                         logs['valid_interp_ssim'] += ssim_interp_avg
 
+                        mserho_interp = F.mse_loss(inp_up_rescaled[:,0:1,:,:,:], tar_rescaled[:,0:1,:,:,:])/mean[0]
+                        mseux_interp = F.mse_loss(inp_up_rescaled[:,1:2,:,:,:], tar_rescaled[:,1:2,:,:,:])/mean[1]
+                        mseuy_interp = F.mse_loss(inp_up_rescaled[:,2:3,:,:,:], tar_rescaled[:,2:3,:,:,:])/mean[2]
+                        mseuz_interp = F.mse_loss(inp_up_rescaled[:,3:4,:,:,:], tar_rescaled[:,3:4,:,:,:])/mean[3]
+
+                        nmse_interp_loss = (mserho_interp + mseux_interp + mseuy_interp + mseuz_interp)/4.0
+                        logs['valid_interp_nmse'] += nmse_interp_loss
+
                         print(f'Batch: {idx}, SSIM rho: {ssimrho}, SSIM ux: {ssimux}, SSIM uy: {ssimuy}, SSIM uz: {ssimuz}')
                         print(f'Batch: {idx}, SSIM rho interp: {ssimrho_interp}, SSIM ux interp: {ssimux_interp}, SSIM uy interp: {ssimuy_interp}, SSIM uz interp: {ssimuz_interp}')
 
 
                         residuals = output_rescaled - tar_rescaled
-                        spatial_dims = tuple(range(full_out.ndim))[1:]
+                        spatial_dims = tuple(range(full_out.ndim))[2:]
                         # Differentiate between log and accumulation losses
                         # raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ full_tar.pow(2).mean(spatial_dims))
                         # in BLASTNET paper they call it NRMSE but it's actually NMSE and they calculate it on the rescaled data!
-                        raw_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))
+                        # raw_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)) / mean.view(1, -1, 1, 1, 1)
                         mse_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).mean()
                         nrmse_loss = (((output_rescaled - tar_rescaled).pow(2).mean(spatial_dims).sqrt()) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims).sqrt())).mean()
                         rmse_loss = ((output_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).sqrt().mean()
 
                         # raw_loss = raw_loss.sqrt().mean()
-                        raw_loss = raw_loss.mean()
-                        interp_loss = (((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims))/ (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
+                        # raw_loss = raw_loss.mean()
+                        # interp_loss = (((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims))/ mean.view(1, -1, 1, 1, 1)).mean()
                         interp_mse_loss = ((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).mean()
                         interp_nrmse_loss = (((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims).sqrt())/ (1e-7 + tar_rescaled.pow(2).mean(spatial_dims).sqrt())).mean()
                         interp_rmse_loss = ((inp_up_rescaled-tar_rescaled).pow(2).mean(spatial_dims)).sqrt().mean()
                         # interp_loss = (((inp_up_rescaled - tar_rescaled).pow(2).mean(spatial_dims)) / (1e-7 + tar_rescaled.pow(2).mean(spatial_dims))).mean()
                         raw_l1_loss = F.l1_loss(full_out, full_tar)
                 
-                        logs['valid_nmse'] += raw_loss
+                        # logs['valid_nmse'] += raw_loss
                         logs['valid_mse'] += mse_loss
                         logs['valid_nrmse'] += nrmse_loss
                         logs['valid_rmse']  += rmse_loss
                         logs['valid_l1']    += raw_l1_loss
-                        logs['valid_interp_nmse']  += interp_loss
+                        # logs['valid_interp_nmse']  += interp_loss
                         logs['valid_interp_mse']  += interp_mse_loss
                         logs['valid_interp_nrmse']  += interp_nrmse_loss
                         logs['valid_interp_rmse']  += interp_rmse_loss
 
-                        loss_nmse_dset_logs[dset_type]      += raw_loss
+                        loss_nmse_dset_logs[dset_type]      += nmse_loss
                         loss_mse_dset_logs[dset_type]      += mse_loss
                         loss_nrmse_dset_logs[dset_type]      += nrmse_loss
                         loss_rmse_dset_logs[dset_type]      += rmse_loss
                         loss_l1_dset_logs[dset_type]   += raw_l1_loss
-                        loss_interp_nmse_dset_logs[dset_type]   += interp_loss
+                        loss_interp_nmse_dset_logs[dset_type]   += nmse_interp_loss
                         loss_interp_mse_dset_logs[dset_type]   += interp_mse_loss
                         loss_interp_nrmse_dset_logs[dset_type]   += interp_nrmse_loss
                         loss_interp_rmse_dset_logs[dset_type]   += interp_rmse_loss
@@ -713,7 +681,7 @@ class Inferencer:
                         loss_interp_ssim_dset_logs[dset_type] += ssim_interp_avg
 
                     if self.global_rank == 0:
-                        print(f"Epoch {self.epoch} Batch {idx} Rank 0: Valid Loss {raw_loss.item()} Interp loss {interp_loss}")
+                        print(f"Epoch {self.epoch} Batch {idx} Rank 0: Valid Loss {nmse_loss.item()} Interp loss {nmse_interp_loss}")
                     #################################        
             self.check_memory("validate-end")
         if self.global_rank == 0:

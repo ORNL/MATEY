@@ -4,6 +4,7 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
+from collections import defaultdict
 
 def extract_losses_and_alpha(log_file):
     # Matches: "Train loss: X. Valid loss: Y Valid Interp loss: Z"
@@ -43,26 +44,26 @@ def plot_losses(all_train_losses, all_valid_losses, all_interp_losses, all_alpha
         plt.title("Train, Valid, and Valid Interp Loss over Time (Concatenated)")
 
     elif mode == "separate":
-        # Assign unique colors per file (train+valid share color)
-        num_files = len(all_train_losses)
-        cmap = cm.get_cmap("tab20", num_files)  # larger set of distinct colors
+        # Assign unique colors per file or group (train+valid share color)
+        num_groups = len(all_train_losses)
+        cmap = cm.get_cmap("Set1", num_groups)  # Larger set of distinct colors
 
         for i, (train, valid, alpha) in enumerate(zip(all_train_losses, all_valid_losses, all_alphas)):
             color = cmap(i)
             if alpha is not None:
                 label = f"alpha={alpha}"
             else:
-                label = f"file {i+1}"
+                label = f"Group {i+1} (No Alpha)"
 
             plt.plot(train, label=f"Train ({label})", linewidth=1, color=color)
             plt.plot(valid, label=f"Valid ({label})", linestyle="--", linewidth=1, color=color)
 
-        plt.title("Train & Valid Loss (Per File, Unique Colors)")
+        plt.title("Train & Valid Loss (Grouped or Separate by Alpha)")
 
     else:
         raise ValueError("mode must be either 'concat' or 'separate'")
 
-    plt.xlabel("Logged Samples")
+    plt.xlabel("Epochs")
     plt.ylabel("Loss")
     plt.yscale("log")
     plt.grid(True)
@@ -70,7 +71,7 @@ def plot_losses(all_train_losses, all_valid_losses, all_interp_losses, all_alpha
 
     # Place legend outside the plot (to the right)
     plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.)
-    plt.savefig(output_path, bbox_inches="tight")
+    plt.savefig(output_path, bbox_inches="tight", dpi=200)
     print(f"Saved plot to {output_path}")
 
 def main():
@@ -90,26 +91,62 @@ def main():
     all_interp_losses = []
     all_alphas = []
 
-    # Process .out files in sorted ordaer
+    # Process .out files in sorted order
     out_files = sorted(f for f in os.listdir(log_dir) if f.endswith(".out"))
     if not out_files:
         print("No .out files found in directory.")
         sys.exit(1)
 
+    # Storage for grouping files with the same alpha
+    grouped_files = defaultdict(lambda: {'train': [], 'valid': [], 'interp': []})
+    first_no_alpha = None
+    additional_no_alpha_group = {'train': [], 'valid': [], 'interp': []}
+
     for fname in out_files:
         fpath = os.path.join(log_dir, fname)
         train_losses, valid_losses, interp_losses, alpha_value = extract_losses_and_alpha(fpath)
         if train_losses:
-            if mode == "concat":
-                all_train_losses.extend(train_losses)
-                all_valid_losses.extend(valid_losses)
-                all_interp_losses.extend(interp_losses)
-            else:
-                all_train_losses.append(train_losses)
-                all_valid_losses.append(valid_losses)
-                all_alphas.append(alpha_value)
-        else:
-            print(f"No losses found in {fname}, skipping.")
+            if alpha_value is not None:  # Group files by alpha
+                grouped_files[alpha_value]['train'].extend(train_losses)
+                grouped_files[alpha_value]['valid'].extend(valid_losses)
+                grouped_files[alpha_value]['interp'].extend(interp_losses)
+            else:  # Handle files with no alpha
+                if first_no_alpha is None:  # Keep the first no alpha file separate
+                    first_no_alpha = {'train': train_losses, 'valid': valid_losses, 'interp': interp_losses}
+                else:  # Concatenate all other no alpha files
+                    additional_no_alpha_group['train'].extend(train_losses)
+                    additional_no_alpha_group['valid'].extend(valid_losses)
+                    additional_no_alpha_group['interp'].extend(interp_losses)
+
+    # In "concat" mode, combine everything into one set
+    if mode == "concat":
+        for alpha, data in grouped_files.items():
+            all_train_losses.extend(data['train'])
+            all_valid_losses.extend(data['valid'])
+            all_interp_losses.extend(data['interp'])
+        if first_no_alpha:
+            all_train_losses.extend(first_no_alpha['train'])
+            all_valid_losses.extend(first_no_alpha['valid'])
+            all_interp_losses.extend(first_no_alpha['interp'])
+        all_train_losses.extend(additional_no_alpha_group['train'])
+        all_valid_losses.extend(additional_no_alpha_group['valid'])
+        all_interp_losses.extend(additional_no_alpha_group['interp'])
+    elif mode == "separate":
+        # Add grouped data (by alpha) to the plotting data
+        for alpha, data in grouped_files.items():
+            all_train_losses.append(data['train'])
+            all_valid_losses.append(data['valid'])
+            all_alphas.append(alpha)
+        # Add the first no-alpha file (as its own group)
+        if first_no_alpha:
+            all_train_losses.append(first_no_alpha['train'])
+            all_valid_losses.append(first_no_alpha['valid'])
+            all_alphas.append(None)  # No alpha for this group
+        # Add the concatenated additional no-alpha files (as one group)
+        if additional_no_alpha_group['train']:
+            all_train_losses.append(additional_no_alpha_group['train'])
+            all_valid_losses.append(additional_no_alpha_group['valid'])
+            all_alphas.append(None)  # No alpha for this group
 
     if not all_train_losses:
         print("No losses found in any log files.")
