@@ -1,3 +1,4 @@
+#SSIM metric and gradient loss functions taken from BLASTNET2.0: https://github.com/blastnet/blastnet2_sr_benchmark
 #SSIM functions modified from https://github.com/jinh0park/pytorch-ssim-3D
 import torch
 import torch.nn.functional as F

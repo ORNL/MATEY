@@ -78,6 +78,27 @@ for alpha_label, d in data.items():
     epochs, ssim_values = zip(*sorted(zip(d["epochs"], d["ssim"])))
     plt.plot(epochs, ssim_values, marker='o', label=alpha_label)
 
+
+# Horizontal reference lines
+reference_lines = [
+    (0.82,  'Interpolation',-0.003),
+    (0.840, 'Conv-FNO',-0.003),
+    (0.888, 'RRDB (11M)',-0.003),
+    (0.907, 'RRDB (50M)',-0.003),
+    (0.936, 'RRDB + Grad loss (50M)',-0.003),
+    (0.915, 'EDSR (11M)',+0.003),
+    (0.913, 'RCAN (12M)',-0.003)
+]
+
+for y_val, label, offset in reference_lines:
+    plt.axhline(y=y_val, color='gray', linestyle='--', linewidth=1)
+    plt.text(
+        max(epochs) * 1.02,      # x-position to the right of your data
+        y_val + offset,          # y-position offset up/down
+        f' {label} ({y_val:.3f})',
+        va='center'
+    )
+
 plt.xlabel("Epochs")
 plt.ylabel("SSIM")
 plt.title("SSIM vs Epochs for different alpha values (Tiny & Small models)")

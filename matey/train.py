@@ -527,7 +527,7 @@ class Trainer:
                     # Scale loss for accum
                     loss = (1.0-self.params.grad_loss_alpha)*raw_loss.mean() / self.params.accum_grad
                     self.grad_loss = GradLoss()
-                    # calculate gradient loss. squeeze the T dim
+                    # calculate gradient loss
                     grad_loss = self.grad_loss(output, tar)/self.params.accum_grad
                     loss += self.params.grad_loss_alpha*grad_loss
                     if self.global_rank ==0:
@@ -619,8 +619,18 @@ class Trainer:
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
-                if torch.isnan(loss) or  not torch.isfinite(loss):
-                    print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
+                # 1. detect bad loss locally
+                is_bad = torch.isnan(loss) or not torch.isfinite(loss)
+                bad_tensor = torch.tensor([1 if is_bad else 0], device=loss.device)
+
+                # 2. all-reduce across ranks
+                torch.distributed.all_reduce(bad_tensor, op=torch.distributed.ReduceOp.SUM)
+                any_bad = bad_tensor.item() > 0
+
+                # 3. skip batch consistently if bad
+                if any_bad:
+                    print(f"[Rank {torch.distributed.get_rank()}] Skipping batch {batch_idx}")
+                    continue
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
                 # total_norm = 0.0
@@ -757,7 +767,7 @@ class Trainer:
                                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)                   
                     #################################
                     ###full resolution###
-                    spatial_dims = tuple(range(output.ndim))[2:]
+                    spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                     if self.diff_learning:
                         output = output+inp_up.squeeze(0)  # Residual connection
 
