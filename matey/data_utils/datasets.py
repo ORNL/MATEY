@@ -32,6 +32,8 @@ DSET_NAME_TO_OBJECT = {
     'incompNS': IncompNSDataset,
     'diffre2d': DiffRe2DDataset,
     'compNS': CompNSDataset,
+    'compNS128': CompNSDataset128,
+    'compNS512': CompNSDataset512,
     ##Matt
     'thermalcollision2d': CollisionDataset,
     ##Doug
@@ -73,7 +75,7 @@ DSET_NAME_TO_OBJECT = {
     "sstF4R32": sstF4R32Dataset,
     }
 
-def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None):
+def get_data_loader(params, paths, distributed, split='train', global_rank=0, group_size=1, train_offset=0, num_sp_groups=None):
     #rank: SP group ID, used for sample index
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
@@ -92,7 +94,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             refine_ratio=params.refine_ratio if hasattr(params, 'refine_ratio')  else None,
                             gammaref=params.gammaref if hasattr(params, 'gammaref')  else None,
                             SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else None,
-                            group_id=rank, group_rank=group_rank, group_size=group_size)
+                            global_rank=global_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
         base_sampler = DistributedSampler
@@ -100,15 +102,16 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
         base_sampler = RandomSampler
     sampler = MultisetSampler(dataset, base_sampler, params.batch_size,
                                distributed=distributed, max_samples=params.epoch_size,
-                               rank=rank, num_replicas=num_replicas)
+                               global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups)
     # sampler = DistributedSampler(dataset) if distributed else None
     dataloader = DataLoader(dataset,
-                            batch_size=int(params.batch_size),
+                            #batch_size=int(params.batch_size),
                             num_workers=params.num_data_workers,
                             #prefetch_factor=2,
-                            shuffle=False, #(sampler is None),
-                            sampler=sampler, # Since validation is on a subset, use a fixed random subset,
-                            drop_last=True,
+                            #shuffle=False, #(sampler is None),
+                            #sampler=sampler, # Since validation is on a subset, use a fixed random subset,
+                            batch_sampler=sampler,
+                            #drop_last=True,
                             pin_memory=torch.cuda.is_available(), 
                             #persistent_workers=True, #ask dataloaders not destroyed after each epoch
                             )
@@ -119,7 +122,7 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, refine_ratio=None, gammaref=None, SR_ratio=None,
-                  group_id=0, group_rank=0, group_size=1):
+                  global_rank=0, group_size=1):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
@@ -142,12 +145,25 @@ class MixedDataset(Dataset):
             print("Warning: both refine_ratio and gammaref: %.2f, %.2f are provided in config"%(refine_ratio, gammaref))
             print("We will use gammaref value for adaptivity")
             refine_ratio = None
+            
+        self.DP_dsets= list(DSET_NAME_TO_OBJECT.keys()) #['taylorgreen', 'isotropic1024fine']+WELL_DATASETS #datasets that use distributed reading and each rank get a local subplit
 
         for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
+            if dset in self.DP_dsets:
+                """
+                For every group with group_size ranks, they read the subparts from the same sample
+                """
+                group_id=global_rank//group_size
+                data_rank = global_rank%group_size #local rank inside each SP group
+                datagroupsize=group_size
+            else:
+                group_id=global_rank
+                data_rank=0
+                datagroupsize=1
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
                                                  dt=dt, leadtime_max = leadtime_max, train_val_test=train_val_test, split=split,
                                                  tokenizer_heads=tokenizer_heads, refine_ratio=refine_ratio, gammaref=gammaref, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
-                                                 group_id=group_id, group_rank=group_rank, group_size=group_size)
+                                                 group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
             # Check to make sure our dataset actually exists with these settings
             try:
                 len(subdset)
@@ -213,7 +229,8 @@ class MixedDataset(Dataset):
         else:
             dset_idx = np.searchsorted(self.offsets, index, side='right')-1 #which dataset are we are on
             local_idx = index - max(self.offsets[dset_idx], 0) #which sample inside the dataset dset_idx
-            
+
+        #print(f"Pei debugging: {dset_idx}, {local_idx}, {len(self.sub_dsets)}, {len(self.sub_dsets[dset_idx])}",flush=True)    
         variables = self.sub_dsets[dset_idx][local_idx]
         assert len(variables) == 4 or len(variables) == 5
         if len(variables)==4:

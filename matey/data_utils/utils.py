@@ -9,15 +9,22 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import copy
 from functools import reduce
 from operator import mul
-import random
+import math
+
+def get_log2_int(n):
+    npower = n.bit_length() - 1 
+    #remain = math.ceil(n/2**npower)//2
+    #return npower, npower+remain
+    return npower
+    
 
 def closest_factors(n, dim):
-    #temporary, from Andrey's
     assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
 
     if dim == 1:
         return [n]
-
+    
+    """
     factors = []
     i = 2
     nn = n
@@ -35,7 +42,27 @@ def closest_factors(n, dim):
         factors.sort()
     if len(factors) < dim:
         factors = [1]*(dim-len(factors)) + factors
+    """
 
+    factors = [1] * dim
+    factors[0] = n
+
+    while True:
+        factors.sort()
+        largest = factors[-1]
+        sqrt_large = int(math.sqrt(largest))
+        for i in range(sqrt_large, 0, -1):
+            if largest % i == 0:
+                factor1, factor2 = i, largest // i
+                break
+        # If cannot further balance, break
+        if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
+            break
+        factors[-1] = factor2
+        factors[0] *= factor1
+    ##print(f"Pei debugging closest_factors, {factors}, {n}, {dim}", flush=True)
+
+    factors.sort()
 
     assert reduce(mul, factors) == n and len(factors)==dim, f"factors, {factors}, dim {dim}"
 
@@ -116,6 +143,16 @@ def construct_filterkernel(kernel_size):
         kernel = np.exp(-dist2/2.0)
         kernel /= np.sum(kernel)
         gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    return gaussian_kernel
+
+def construct_filterkernel2D(kernel_size):
+    with torch.no_grad():
+        center = kernel_size // 2
+        x, y = np.indices((kernel_size, kernel_size))
+        dist2 = (x - center)**2 + (y - center)**2
+        kernel = np.exp(-dist2/2.0)
+        kernel /= np.sum(kernel)
+        gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0).unsqueeze(0)
     return gaussian_kernel
 
 def construct_multimods_v2(datax, datay, datafilter_kernels, hierarchical_parameters):

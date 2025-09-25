@@ -6,7 +6,7 @@ import math
 from operator import mul
 from functools import reduce
 from einops import rearrange, repeat
-from ..data_utils.utils import closest_factors
+from ..utils.distributed_utils import closest_factors
 
 ### Space utils
 class RMSInstanceNormSpace(nn.Module):

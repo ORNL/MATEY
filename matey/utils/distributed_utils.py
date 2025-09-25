@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):
@@ -32,12 +33,15 @@ def setup_dist(params):
     if os.getenv("SLURM_STEP_NODELIST") is not None:
         os.environ['MASTER_ADDR']  = parse_slurm_nodelist(os.environ["SLURM_STEP_NODELIST"])[0]
 
+    print(f"Pei debugging local_rank={local_rank}, global_rank={global_rank}, world_size={world_size}", flush=True)
+
     if params.use_ddp or params.use_fsdp:
         dist.init_process_group(
             backend="nccl",
             init_method='env://',
             rank=rank,
             world_size=world_size,
+            #timeout=timedelta(seconds=360)
         )
         torch.cuda.set_device(local_rank)
 
@@ -66,6 +70,9 @@ def closest_factors(n, dim):
         factors[1] *= factors[0]
         factors.pop(0)
         factors.sort()
+        
+    if len(factors) < dim:
+        factors = [1]*(dim-len(factors)) + factors
 
     assert reduce(mul, factors) == n and len(factors)==dim
 
@@ -266,3 +273,9 @@ def add_weight_decay(model, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
     return [
             {'params': no_decay, 'weight_decay': 0.,},
             {'params': decay, 'weight_decay': weight_decay}]
+
+class CosineNoIncrease(CosineAnnealingLR):
+    def get_lr(self):
+        if self.last_epoch >= self.T_max:
+            return [self.eta_min] * len(self.base_lrs)
+        return super().get_lr()

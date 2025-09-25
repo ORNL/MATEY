@@ -13,12 +13,13 @@ import gc, psutil
 from torchinfo import summary
 from collections import defaultdict
 from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT
+from .data_utils.utils import get_log2_int
 from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease
 from .utils.visualization_utils import checking_data_pred_tar
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -141,15 +142,12 @@ class Trainer:
             print("Memory summary: %s, CUDA %f GB; RAM %f GB, %f percentage"%(message, torch.cuda.memory_allocated()/ 1024**3, psutil.virtual_memory().used/1024**3, psutil.virtual_memory().percent))
     
     def initialize_data(self):
+        """
         data_rank=None
         num_replicas=None
         if  hasattr(self.params, "sp_groupsize") or hasattr(self.params, "num_sequence_parallel_groups"):
             data_rank=True
-        if self.params.tie_batches:
-            in_rank = 0
-            parallel_group_size=1
-            group_rank=0
-        elif data_rank:
+        if data_rank:
             parallel_group_size = self.group_size
             in_rank = self.global_rank//parallel_group_size #SP group ID
             group_rank = self.global_rank%parallel_group_size #local rank inside each SP group
@@ -158,15 +156,19 @@ class Trainer:
             in_rank = self.global_rank
             parallel_group_size=self.group_size
             group_rank=0
+        """
         #print("Pei debugging", self.group_size, group_rank, in_rank, parallel_group_size, num_replicas, flush=True)
         if self.log_to_screen:
             print(f"Initializing data on rank {self.global_rank}", flush=True)
+        #print(f"Pei debugging trainpy, {self.group_size}, {self.global_rank}, {len(self.sequence_parallel_groups)}, {self.sequence_parallel_groups}", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
-                          dist.is_initialized(), split='train', rank=in_rank, group_rank=group_rank, group_size=parallel_group_size, 
-                          num_replicas=num_replicas, train_offset=self.params.embedding_offset)
+                          dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
+                          
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
-                          dist.is_initialized(), split='val',   rank=in_rank, group_rank=group_rank, group_size=parallel_group_size,
-                          num_replicas=num_replicas)
+                          dist.is_initialized(), split='val', 
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
+                          
         
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
@@ -238,7 +240,8 @@ class Trainer:
             else:
                 k = self.params.warmup_steps
                 warmup = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=.01, end_factor=1.0, total_iters=k)
-                decay = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
+                #decay = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
+                decay = CosineNoIncrease(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
                 self.scheduler = torch.optim.lr_scheduler.SequentialLR(self.optimizer, [warmup, decay], [k])#, last_epoch=(self.params.epoch_size*self.startEpoch)-1)
         elif self.params.scheduler == 'warmuponly':
             k = self.params.warmup_steps
@@ -429,7 +432,11 @@ class Trainer:
             self.single_print('Training batch:', batch_idx, "of Total:", num_batches)
             ##############################################################################################################
             with record_function_opt("data loading", enabled=self.profiling):
-                data = next(data_iter) 
+                try:
+                    data = next(data_iter) 
+                except:
+                    self.single_print(f'warning: not able to sample a dataset at {batch_idx}')
+                    continue
                 try:
                     inp, dset_index, field_labels, bcs, tar, leadtime =  data
                     refineind = None
@@ -453,10 +460,37 @@ class Trainer:
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
+                ps=self.model.module.tokenizer_heads_params[tkhead_name][-1] 
+                ips = get_log2_int(ps[-1])
+                #####
+                log2intsum = get_log2_int(inp.shape[-3]) + get_log2_int(inp.shape[-2]) + get_log2_int(inp.shape[-1])
+                if inp.shape[-3]==1:
+                    log2int = min([get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
+                else:
+                    log2int = min([get_log2_int(inp.shape[-3]), get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
+                if log2intsum>=20: # or list(inp.shape[-3:])==[96, 192, 96] or list(inp.shape[-3:])==[128, 128, 64]:
+                    imod_bottom=max(0, imod-ips)
+                else:
+                    imod_bottom=max(min(imod, imod-log2int+4),0)
+                #check min(get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1]))
+                # imod-imod_bottom+get_log2_int(ps)<=min(get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1]))
+                #####
+                #if dset_type in ['taylorgreen', 'isotropic1024fine']:
+                #    imod_bottom=0 #2^4=16
+                ##elif dset_type in ['supernova64','MHD64','turbgravcool','sstF4R32','compNS','swe','diffre2d','postneutronstarmerger','supernova128','rayleightaylor']:
+                ##    imod_bottom=5 #2^0=1
+                #else:
+                #    imod_bottom=5 #2^
+                if self.global_rank == 0:
+                    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, ips, {ips}, imod_bottom {imod_bottom}, log2int {log2int}, log2intsum {log2intsum}, {self.global_rank}, {blockdict}", flush=True)
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
-                                    sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                    if dset_type in self.train_dataset.DP_dsets:
+                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
+                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
+                                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                    else:
+                         output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
+                                            leadtime=leadtime, refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -468,6 +502,12 @@ class Trainer:
                 raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
                 # Scale loss for accum
                 loss = raw_loss.mean() / self.params.accum_grad
+                bad = torch.isnan(loss).any() or torch.isinf(loss)
+                torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
+                if bad.item() > 0:
+                    print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                    print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    continue
                 # Logging
                 with torch.no_grad():
                     logs['train_l1'] += F.l1_loss(output, tar)
@@ -478,8 +518,6 @@ class Trainer:
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
-                if torch.isnan(loss) or  not torch.isfinite(loss):
-                    print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
                 backward_end = self.timer.get_time()
@@ -489,16 +527,25 @@ class Trainer:
                 with record_function_opt("optimization", enabled=self.profiling):
                     if self.model.require_backward_grad_sync:
                         self.gscaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
-                        self.gscaler.step(self.optimizer)
-                        self.gscaler.update()
-                        self.optimizer.zero_grad(set_to_none=True)
+                        total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
+                        if self.global_rank == 0:
+                            print(f"Pei debugging, total_norm {total_norm} {dset_type}", flush=True)
+                        bad = torch.isnan(total_norm) or torch.isinf(total_norm)
+                        torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
+                        if bad.item() > 0:
+                            print(f"Skipping step due to invalid grad norm: {total_norm}, log_nrmse {log_nrmse} in {dset_type}")
+                            self.optimizer.zero_grad(set_to_none=True)
+                            continue 
+                        else:
+                            self.gscaler.step(self.optimizer)
+                            self.gscaler.update()
+                            self.optimizer.zero_grad(set_to_none=True)
                         if self.scheduler is not None and self.params.scheduler != 'steplr':
                             self.scheduler.step()
                         optimizer_step = self.timer.get_time() - backward_end
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
-                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
+                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} for {dset_type}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
                         batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
@@ -586,9 +633,29 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)                   
+                    ps=self.model.module.tokenizer_heads_params[tkhead_name][-1] 
+                    ips = get_log2_int(ps[-1])
+                    log2intsum= get_log2_int(inp.shape[-3]) + get_log2_int(inp.shape[-2]) + get_log2_int(inp.shape[-1])
+                    if inp.shape[-3]==1:
+                        log2int = min([get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
+                    else:
+                        log2int = min([get_log2_int(inp.shape[-3]), get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
+                
+                    #if log2intsum>20 or list(inp.shape[-3:])==[96, 192, 96] or list(inp.shape[-3:])==[128, 128, 64]:
+                    if log2intsum>=20: 
+                        imod_bottom=max(0, imod-ips+1)
+                    else:
+                        #imod_bottom=max(min(imod, imod-log2int+3),0)
+                        imod_bottom=max(min(imod, imod-log2int+4),0)
+
+                    if dset_type in self.valid_dataset.DP_dsets:
+                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
+                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
+                                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)   
+                    else:
+                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
+                                        leadtime=leadtime, 
+                                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)                
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]

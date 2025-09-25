@@ -10,6 +10,9 @@ import h5py
 import glob
 from .shared_utils import get_top_variance_patchids, plot_checking
 import re
+from .utils import closest_factors
+from functools import reduce
+from operator import mul
 
 np.random.seed(2024) 
 
@@ -31,7 +34,8 @@ class BaseBinary3DSSTDataset(Dataset):
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
+                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -50,6 +54,10 @@ class BaseBinary3DSSTDataset(Dataset):
         self.tkhead_name=tkhead_name
         self.refine_ratio = refine_ratio
         self.gammaref = gammaref
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
 
     def get_name(self):
         return self.type
@@ -396,6 +404,12 @@ class BaseBinary3DSSTDataset(Dataset):
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, leadtime)
         bcs = self._get_specific_bcs()
 
+        #start index and end size of local split for current 
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
+
         for tk in self.tokenizer_heads:
             if tk["head_name"] == self.tkhead_name:
                 patch_size = tk["patch_size"]
@@ -408,6 +422,40 @@ class BaseBinary3DSSTDataset(Dataset):
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        H, W, D = self.cubsizes #x,y,z
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                    torch.arange(nproc_blocks[1]),  
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
+
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
 
 class sstF4R32Dataset(BaseBinary3DSSTDataset):
     @staticmethod
@@ -416,7 +464,7 @@ class sstF4R32Dataset(BaseBinary3DSSTDataset):
         sample_index = 0 # DO NOT DELETE
         field_names = ['u', 'v', 'w', 'r'] # ['u', 'v', 'w', 'r', 'p']
         type = 'sstF4R32'
-        cubsizes= [64, 64, 64] #[256, 256, 128] #[128, 128, 64] # [64, 64, 64]
+        cubsizes= [128, 128, 128] #[64, 64, 64] #[256, 256, 128] #[128, 128, 64] # [64, 64, 64]
         dt = 0.04 # dt of snapshots
         tscale = 0.002  # time-scale factor for converting to integer iterations
         dt = int(dt/tscale)  # re-scale to integer iteration value
@@ -434,7 +482,7 @@ class sstPiF050Gn0050Dataset(BaseBinary3DSSTDataset):
         sample_index = 0 # DO NOT DELETE
         field_names = ['u', 'v', 'w', 'r'] # ['u', 'v', 'w', 'r', 'p']
         type = 'sstPiF050Gn0050'
-        cubsizes= [64, 64, 64] #[256, 32, 256] #[128, 16, 128] # [64, 64, 64]
+        cubsizes= [128, 128, 128] #[64, 64, 64] #[256, 32, 256] #[128, 16, 128] # [64, 64, 64]
         dt = 0.000054 # dt of snapshots
         tscale = 0.0000027  # time-scale factor for converting to integer iterations
         dt = int(dt/tscale)  # re-scale to integer iteration value
