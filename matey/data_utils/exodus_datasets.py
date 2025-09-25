@@ -7,6 +7,9 @@ import glob, re
 from .shared_utils import get_top_variance_patchids, plot_checking, plot_refinedtokens
 import exodusii
 from scipy.interpolate import LinearNDInterpolator
+from .utils import closest_factors
+from functools import reduce
+from operator import mul
 
 class BaseExodusDirectoryDataset(Dataset):
     """
@@ -25,7 +28,8 @@ class BaseExodusDirectoryDataset(Dataset):
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=None, split='train',
-                 train_val_test=None, subname=None, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, subname=None, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
+                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -39,13 +43,17 @@ class BaseExodusDirectoryDataset(Dataset):
         self.include_string = include_string
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
-        self.time_index, self.sample_index, self.field_names, self.type, self.split_level = self._specifics()
+        self.time_index, self.sample_index, self.field_names, self.type, self.split_level, self.cubsizes = self._specifics()
         self._get_directory_stats(path)
         self.title = self.type
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
         self.refine_ratio = refine_ratio
         self.gammaref = gammaref
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
 
         if self.leadtime_max is None:
             self.leadtime_max=1
@@ -200,10 +208,56 @@ class BaseExodusDirectoryDataset(Dataset):
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
 
+        #start index and end size of local split for current 
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        try:
+            H, W, D = self.cubsizes #x,y,z
+        except:
+            H, W= self.cubsizes #x,y
+            D=1
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            if D==1:
+                nproc_blocks = [1] + closest_factors(sequence_parallel_size, 2)
+            else:
+                nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                    torch.arange(nproc_blocks[1]),  
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
+
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
 
 class  MHDDataset(BaseExodusDirectoryDataset):
     @staticmethod
@@ -213,7 +267,8 @@ class  MHDDataset(BaseExodusDirectoryDataset):
         field_names = ['velocity_0', 'velocity_1', 'induced_magnetic_field_0', 'induced_magnetic_field_1']
         type = 'liquidMetalMHD'
         split_level = None #not used, since one trajectory per file
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[128, 128]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def get_min_max(self):

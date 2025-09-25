@@ -9,11 +9,15 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import copy
 from functools import reduce
 from operator import mul
-import random
 import math
 
+def get_log2_int(n):
+    npower = n.bit_length() - 1 
+    #remain = math.ceil(n/2**npower)//2
+    #return npower, npower+remain
+    return npower
+
 def closest_factors(n, dim):
-    #temporary, from Andrey's
     assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
 
     if dim == 1:
@@ -140,6 +144,16 @@ def construct_filterkernel(kernel_size):
         kernel = np.exp(-dist2/2.0)
         kernel /= np.sum(kernel)
         gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    return gaussian_kernel
+
+def construct_filterkernel2D(kernel_size):
+    with torch.no_grad():
+        center = kernel_size // 2
+        x, y = np.indices((kernel_size, kernel_size))
+        dist2 = (x - center)**2 + (y - center)**2
+        kernel = np.exp(-dist2/2.0)
+        kernel /= np.sum(kernel)
+        gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0).unsqueeze(0)
     return gaussian_kernel
 
 def construct_multimods_v2(datax, datay, datafilter_kernels, hierarchical_parameters):

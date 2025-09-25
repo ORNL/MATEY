@@ -10,7 +10,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap as ruamelDict
 from matey import Trainer
 from matey.utils import setup_dist, check_sp, profile_function, log_to_file, log_versions, YParams
-import glob
+import glob, socket
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -54,7 +54,7 @@ if __name__ == '__main__':
         print(params.hierarchical, flush=True)
     # Set up distributed training
     device, world_size, local_rank, global_rank = setup_dist(params)
-    print(f"local_rank={local_rank}, global_rank={global_rank}, world_size={world_size}", flush=True)
+    print(f"local_rank={local_rank}, global_rank={global_rank}, world_size={world_size}, host={socket.gethostname()}", flush=True)
 
     # Modify params
     params['batch_size'] =int(params.batch_size//world_size)

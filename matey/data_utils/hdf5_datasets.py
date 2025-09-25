@@ -8,7 +8,9 @@ import os
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking
+from .utils import closest_factors
+from functools import reduce
+from operator import mul
 
 broken_paths = ['']
 
@@ -38,8 +40,7 @@ class BaseHDF5DirectoryDataset(Dataset):
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train',
                  train_val_test=None, subname=None, extra_specific=False, tokenizer_heads=None, 
-                 refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
-                 group_id=0, group_rank=0, group_size=1):
+                 tkhead_name=None, SR_ratio=None, group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -53,9 +54,10 @@ class BaseHDF5DirectoryDataset(Dataset):
         self.n_steps = n_steps
         self.include_string = include_string
         # self.time_index, self.sample_index = self._set_specifics()
-        self.train_val_test = train_val_test
+        #Hard-coding for now
+        self.train_val_test = [0.8, 0.1, 0.1] #train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
-        self.time_index, self.sample_index, self.field_names, self.type, self.split_level = self._specifics()
+        self.time_index, self.sample_index, self.field_names, self.type, self.split_level, self.cubsizes = self._specifics()
         self._get_directory_stats(path)
         if self.extra_specific:
             self.title = self.more_specific_title(self.type, path, include_string)
@@ -64,8 +66,11 @@ class BaseHDF5DirectoryDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref
+
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
 
     def get_name(self, full_name=False):
         if full_name:
@@ -124,6 +129,7 @@ class BaseHDF5DirectoryDataset(Dataset):
             else:
                 file_paths.append(file)
                 try:
+                    #print(file, flush=True)
                     with h5py.File(file, 'r') as _f:
                         samples, steps = self._get_specific_stats(_f)
                         if steps-self.n_steps-(self.dt-1) < 1:
@@ -147,8 +153,9 @@ class BaseHDF5DirectoryDataset(Dataset):
                             split_samples = samples
                         self.file_samples.append(split_samples)
                         self.offsets.append(self.offsets[-1]+(steps-file_nsteps-(self.dt-1))*split_samples)
-                except:
+                except Exception as e:
                     print('WARNING: Failed to open file {}. Continuing without it.'.format(file))
+                    print(f"Error message: {e}")
                     raise RuntimeError('Failed to open file {}'.format(file))
         # print(self.file_steps, self.file_samples)
         self.files_paths = file_paths
@@ -204,6 +211,7 @@ class BaseHDF5DirectoryDataset(Dataset):
         nsteps = self.file_nsteps[file_idx] # Number of steps per sample in given file
         local_idx = index - max(self.offsets[file_idx], 0) # First offset is -1
         if self.split_level == 'sample':
+            #print(f"Pei debugging hdf5: {index}, {local_idx}, {file_idx}, {self.offsets}, {self.split_offsets}, {self.file_steps}, {self.files_paths}",flush=True)    
             sample_idx = (local_idx + self.split_offsets[file_idx]) // self.file_steps[file_idx]
         else:
             sample_idx = local_idx // self.file_steps[file_idx]
@@ -225,10 +233,62 @@ class BaseHDF5DirectoryDataset(Dataset):
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
+
+
+        #start index and end size of local split for current 
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+
+        #print("Pei debugging data loading", self.group_rank, self.group_id, self.group_size, trajectory.shape, self.blockdict["Ind_start"], self.blockdict["Ind_dim"], flush=True)
+
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
+       
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        try:
+            H, W, D = self.cubsizes #x,y,z
+        except:
+            H, W= self.cubsizes #x,y
+            D=1
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            if D==1:
+                nproc_blocks = [1] + closest_factors(sequence_parallel_size, 2)
+            else:
+                nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                    torch.arange(nproc_blocks[1]),  
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
+
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
 
 
 class SWEDataset(BaseHDF5DirectoryDataset):
@@ -239,7 +299,8 @@ class SWEDataset(BaseHDF5DirectoryDataset):
         field_names = ['h']
         type = 'swe'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[128, 128]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -275,7 +336,8 @@ class DiffRe2DDataset(BaseHDF5DirectoryDataset):
         field_names = ['activator', 'inhibitor']
         type = 'diffre2d'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[128, 128]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -315,7 +377,8 @@ class IncompNSDataset(BaseHDF5DirectoryDataset):
         field_names = ['Vx', 'Vy', 'particles']
         type = 'incompNS'
         split_level = 'file'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[512, 512]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -358,7 +421,8 @@ class PDEArenaINS(BaseHDF5DirectoryDataset):
         field_names = ['Vx', 'Vy', 'u']
         type = 'pa_ins'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[-1, -1] # Pei: place holder, need to check the info, not used
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -404,6 +468,7 @@ class PDEArenaINS(BaseHDF5DirectoryDataset):
 class CompNSDataset(BaseHDF5DirectoryDataset):
     """
     Order Vx, Vy, density, pressure
+    #for turb: 2D_Train_Turb
     """
     @staticmethod
     def _specifics():
@@ -412,7 +477,8 @@ class CompNSDataset(BaseHDF5DirectoryDataset):
         field_names = ['Vx', 'Vy', 'density', 'pressure']
         type = 'compNS'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[512, 512]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -462,6 +528,130 @@ class CompNSDataset(BaseHDF5DirectoryDataset):
     def _get_specific_bcs(self, f):
         return [1, 1] # Periodic
 
+class CompNSDataset128(BaseHDF5DirectoryDataset):
+    """
+    Order Vx, Vy, density, pressure
+    """
+    @staticmethod
+    def _specifics():
+        time_index = 1
+        sample_index = 0
+        field_names = ['Vx', 'Vy', 'density', 'pressure']
+        type = 'compNS128'
+        split_level = 'sample'
+        cubsizes=[128, 128]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
+    field_names = _specifics()[2] #class attributes
+
+    def _get_specific_stats(self, f):
+        samples = f['Vx'].shape[0]
+        steps = f['Vx'].shape[1]# Per dset
+        return samples, steps
+
+    def more_specific_title(self, type, path, include_string):
+        """
+        Override this to add more info to the dataset name
+        """
+        cns_path = self.include_string.split('/')[-1].split('_')
+        ic = cns_path[2]
+        m = cns_path[3]
+        res = cns_path[-2]
+
+        return f'{type}_{ic}_{m}_res{res}'
+
+    def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
+
+        if leadtime is None:
+            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+        else:
+            leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
+
+        vx = file['Vx'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
+        vy = file['Vy'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
+        density = file['density'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+
+        comb_x =  np.stack([vx, vy, density, p], 1)
+
+
+        vx = file['Vx'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
+        density = file['density'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
+        p = file['pressure'][sample_idx,      time_idx+leadtime-1:time_idx+leadtime]
+
+        comb_y =  np.stack([vx, vy, density, p], 1)
+
+
+        comb = np.concatenate((comb_x, comb_y), axis=0)
+
+        return comb, leadtime.to(torch.float32)
+
+    def _get_specific_bcs(self, f):
+        return [1, 1] # Periodic
+
+class CompNSDataset512(BaseHDF5DirectoryDataset):
+    """
+    Order Vx, Vy, density, pressure
+    """
+    @staticmethod
+    def _specifics():
+        time_index = 1
+        sample_index = 0
+        field_names = ['Vx', 'Vy', 'density', 'pressure']
+        type = 'compNS512'
+        split_level = 'sample'
+        cubsizes=[512, 512]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
+    field_names = _specifics()[2] #class attributes
+
+    def _get_specific_stats(self, f):
+        samples = f['Vx'].shape[0]
+        steps = f['Vx'].shape[1]# Per dset
+        return samples, steps
+
+    def more_specific_title(self, type, path, include_string):
+        """
+        Override this to add more info to the dataset name
+        """
+        cns_path = self.include_string.split('/')[-1].split('_')
+        ic = cns_path[2]
+        m = cns_path[3]
+        res = cns_path[-2]
+
+        return f'{type}_{ic}_{m}_res{res}'
+
+    def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
+
+        if leadtime is None:
+            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+        else:
+            leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
+
+        vx = file['Vx'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
+        vy = file['Vy'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
+        density = file['density'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+
+        comb_x =  np.stack([vx, vy, density, p], 1)
+
+
+        vx = file['Vx'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
+        density = file['density'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
+        p = file['pressure'][sample_idx,      time_idx+leadtime-1:time_idx+leadtime]
+
+        comb_y =  np.stack([vx, vy, density, p], 1)
+
+
+        comb = np.concatenate((comb_x, comb_y), axis=0)
+
+        return comb, leadtime.to(torch.float32)
+
+    def _get_specific_bcs(self, f):
+        return [1, 1] # Periodic
+        
 class BurgersDataset(BaseHDF5DirectoryDataset):
     """
     Order Vx, Vy, density, pressure
@@ -473,7 +663,8 @@ class BurgersDataset(BaseHDF5DirectoryDataset):
         field_names = ['Vx']
         type = 'burgers'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[-1, -1] # Pei: place holder, need to check the info, not used
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):
@@ -511,7 +702,8 @@ class DiffSorb1DDataset(BaseHDF5DirectoryDataset):
         field_names = ['u']
         type = 'diffsorb'
         split_level = 'sample'
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[-1, -1] # Pei: place holder, need to check the info, not used
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def _get_specific_stats(self, f):

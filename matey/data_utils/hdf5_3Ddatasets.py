@@ -260,7 +260,10 @@ class BaseHDF53DDataset(Dataset):
         ##############################################################
         #based on sequence_parallel_size, split the data in D, H, W direciton
         if sequence_parallel_size>1:
-            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+            if D==1:
+                nproc_blocks = [1] + closest_factors(sequence_parallel_size, 2)
+            else:
+                nproc_blocks = closest_factors(sequence_parallel_size, 3)
         else:
             nproc_blocks = [1,1,1]
         assert reduce(mul, nproc_blocks)==sequence_parallel_size
@@ -324,9 +327,9 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         field_names = ['Vx', 'Vy', 'Vw', 'pressure']
         type = 'isotropic1024fine'
         #cubsizes=[64, 64, 64]
-        cubsizes=[128,128,128]
+        #cubsizes=[128,128,128]
         #cubsizes=[192,192,192]
-        #cubsizes=[256, 256, 256]
+        cubsizes=[256, 256, 256]
         #cubsizes=[512, 512, 512]
         #cubsizes=[1024,1024,512] #x,y,z
         #cubsizes=[1024,1024,1024]
