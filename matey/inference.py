@@ -423,6 +423,121 @@ class Inferencer:
                     idx += 1
         return arr
 
+    def compute_energy_spectrum(self, tensor_rescaled, dk=1.0):
+        """
+        Compute 3D kinetic energy spectrum from a tensor of [B,C,D,H,W].
+        
+        tensor_rescaled : torch.Tensor
+            Rescaled tensor of shape [B,C,D,H,W] (or [C,D,H,W]) containing at least 
+        channels 0–3: rho,u,v,w.
+        dk : float
+            Bin width in wavenumber space.
+        """
+
+        # Extract components
+        rho = tensor_rescaled[:, 0, :]
+        u   = tensor_rescaled[:, 1, :]
+        v   = tensor_rescaled[:, 2, :]
+        w   = tensor_rescaled[:, 3, :]
+        
+        B, D, H, W = u.shape
+        N = D * H * W   # total number of grid points
+
+        # Compute FFTs
+        u_hat = torch.fft.fftn(u)/N
+        v_hat = torch.fft.fftn(v)/N
+        w_hat = torch.fft.fftn(w)/N
+
+        # Energy in spectral space
+        E_hat = 0.5 * (torch.abs(u_hat)**2 + torch.abs(v_hat)**2 + torch.abs(w_hat)**2)
+
+        # Wavenumbers
+        kx = torch.fft.fftfreq(W) * W
+        ky = torch.fft.fftfreq(H) * H
+        kz = torch.fft.fftfreq(D) * D
+
+        KX, KY, KZ = torch.meshgrid(kz, ky, kx, indexing='ij')
+        K_mag = torch.sqrt(KX**2 + KY**2 + KZ**2)
+
+        # Flatten and bin
+        K_flat = K_mag.flatten().cpu().numpy()
+        E_flat = E_hat.flatten().cpu().numpy()
+
+        k_bins = np.arange(0.5, K_flat.max(), dk)
+        bin_idx = np.digitize(K_flat, k_bins)
+
+        E_spectrum = np.zeros(len(k_bins))
+        for i in range(1, len(k_bins)):
+            E_spectrum[i - 1] = E_flat[bin_idx == i].sum()
+
+        max_rr= 64
+        k_bins = k_bins[:max_rr+1]
+        E_spectrum = E_spectrum[:max_rr+1]
+
+        return k_bins, E_spectrum
+
+    def compute_energy_spectrum_TKE(self, tensor_rescaled, L=2.0*np.pi):
+        """
+        Compute 3D turbulent kinetic energy spectrum from a tensor of shape [1,C,D,H,W].
+        
+        tensor_rescaled : torch.Tensor
+            Tensor of shape [1,C,D,H,W] containing at least channels 1–3: u,v,w.
+        L : float
+            Physical box size (default 2*pi).
+        """
+        # Extract velocity components
+        uvec = tensor_rescaled[:, 1:4, :, :, :].cpu().numpy()  # [1,3,D,H,W]
+        B, C, D, H, W = uvec.shape
+        assert B == 1, "This function assumes batch size = 1"
+        assert C == 3, "Expecting 3 velocity components (u,v,w)"
+        assert D == H == W, "Assumes cubic domain"
+
+        N = D
+        dx = L / N
+        k0 = 2.0 * np.pi / L
+
+        # Extract single snapshot
+        u1 = uvec[0,0]
+        u2 = uvec[0,1]
+        u3 = uvec[0,2]
+
+        # --- Compute velocity RMS ---
+        u_rms = np.sqrt(np.mean(u1**2 + u2**2 + u3**2))
+
+        # FFT and 3D energy
+        U1 = np.fft.fftn(u1)/(N**3)
+        U2 = np.fft.fftn(u2)/(N**3)
+        U3 = np.fft.fftn(u3)/(N**3)
+
+        E_k_3D = 0.5 * (np.abs(U1)**2 + np.abs(U2)**2 + np.abs(U3)**2)
+        E_k_3D = np.fft.fftshift(E_k_3D)
+
+        # Spherical wavenumber binning
+        center = N//2
+        i_vals = np.arange(N)
+        j_vals = np.arange(N)
+        k_vals = np.arange(N)
+        ii, jj, kk = np.meshgrid(i_vals, j_vals, k_vals, indexing='ij')
+        rr = np.sqrt((ii - center)**2 + (jj - center)**2 + (kk - center)**2)
+        wn_array = np.rint(rr).astype(np.int32)
+
+        wn_flat = wn_array.ravel()
+        E_flat  = E_k_3D.ravel()
+        Ek = np.bincount(wn_flat, weights=E_flat)
+
+        # Wavenumber array
+        kvals = np.arange(len(Ek)) * k0
+
+        max_rr= 64
+        kvals= kvals[:max_rr+1]
+        Ek   = Ek[:max_rr+1]
+
+        # # --- Normalize ---
+        # kvals_norm = kvals * L / (2*np.pi)   # dimensionless wavenumber k* = k/k0
+        # Ek_norm = Ek / (u_rms**2)            # normalized energy spectrum
+
+        return kvals, Ek
+
     def validate_one_epoch(self, full=False, cutoff_skip=False):
         self.model.eval()
         self.single_print('STARTING VALIDATION!!!')
@@ -459,6 +574,9 @@ class Inferencer:
             cutoff = len(self.valid_data_loader)
         else:
             cutoff = 2 #40 
+        plot_spectra = False
+        if plot_spectra:
+            spectra_list = []
         for idx in range(cutoff):
             self.check_memory("validate-data")
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
@@ -538,6 +656,19 @@ class Inferencer:
                         full_inp_low = self.stitch_blocks(inp_low_chunks, full_size=16, block_size=8)
 
 
+                        if False:
+                            save_dir = "saved_HIT_samples"
+                            os.makedirs(save_dir, exist_ok=True)
+                            save_path = os.path.join(save_dir, f"batch_{idx:04d}.npz")
+                            np.savez_compressed(
+                                save_path,
+                                target=full_tar,
+                                output=full_out,
+                                interpolated=full_inp,
+                                low_res_input=full_inp_low
+                            )
+                            print(f"Saveded HIT sample {idx} to {save_path}")
+                            
                         print("Plot results - valid.")
 
                         slice_idx = 64  # mid-plane
@@ -599,6 +730,16 @@ class Inferencer:
                         output_rescaled = (full_out * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
                         tar_rescaled = (full_tar * std.view(1, 1, -1, 1, 1, 1) + mean.view(1, 1, -1, 1, 1, 1)).squeeze(0)
                         inp_up_rescaled = (full_inp * std.view(1,1, -1, 1, 1, 1) + mean.view(1,1, -1, 1, 1, 1)).squeeze(0)
+                        inp_low_rescaled = (full_inp_low * std.view(1,1, -1, 1, 1, 1) + mean.view(1,1, -1, 1, 1, 1)).squeeze(0)
+
+                        if plot_spectra:
+                            # Compute and store energy spectra
+                            k_bins_out, E_spectrum_out = self.compute_energy_spectrum(output_rescaled)
+                            k_bins_tar, E_spectrum_tar = self.compute_energy_spectrum(tar_rescaled)
+                            k_bins_inp, E_spectrum_inp = self.compute_energy_spectrum(inp_up_rescaled)
+                            k_bins_inp_low, E_spectrum_inp_low = self.compute_energy_spectrum(inp_low_rescaled)
+                            spectra_list.append((k_bins_out, E_spectrum_out, k_bins_tar, E_spectrum_tar, k_bins_inp, E_spectrum_inp,
+                                                k_bins_inp_low, E_spectrum_inp_low))
 
                         output_rescaled = remove_edges(output_rescaled)
                         tar_rescaled = remove_edges(tar_rescaled)
@@ -682,6 +823,28 @@ class Inferencer:
 
                     if self.global_rank == 0:
                         print(f"Epoch {self.epoch} Batch {idx} Rank 0: Valid Loss {nmse_loss.item()} Interp loss {nmse_interp_loss}")
+                        
+                        if plot_spectra:
+                            # Loop over each snapshot in spectra_list
+                            for snap_idx, s in enumerate(spectra_list):
+                                k_bins_out, E_out, k_bins_tar, E_tar, k_bins_inp, E_inp, k_bins_inp_low, E_inp_low = s
+
+                                # ---------- Plot spectra for this snapshot ----------
+                                plt.figure(figsize=(10, 4))
+                                plt.loglog(k_bins_tar[1:], E_tar[1:], 'k-', label='Ground truth')
+                                plt.loglog(k_bins_inp[1:], E_inp[1:], 'b--', label='Interpolated')
+                                plt.loglog(k_bins_out[1:], E_out[1:], 'r--', label='Super-resolved')
+                                plt.loglog(k_bins_inp_low[1:], E_inp_low[1:], 'g--', label='Low-res')
+
+                                plt.xlabel('Normalized Wavenumber k')
+                                plt.ylabel('Normalized TKE E(k)')
+                                plt.grid(True, which='both', ls='--')
+                                plt.legend()
+                                plt.tight_layout()
+
+                                # Save with unique name per snapshot
+                                plt.savefig(f'tke_spectrum_snapshot_mycode_{snap_idx:04d}.png', dpi=300)
+                                plt.close()
                     #################################        
             self.check_memory("validate-end")
         if self.global_rank == 0:

@@ -489,16 +489,21 @@ class Trainer:
             loss_counts[dset_type] += 1
             data_time += self.timer.get_time() - data_start
             dtime = self.timer.get_time() - data_start
-
+            
+            max_allocated_after_reset = torch.cuda.max_memory_allocated()
+            print(f"Before data sent: Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
+               
             self.model.require_backward_grad_sync = ((1+batch_idx) % self.params.accum_grad == 0)
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
                 tar = tar.squeeze(1).to(self.device) # B,1,C,D,H,W -> B,C,D,H,W
-                inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                # inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
-                inp_up = inp_up.to(self.device)
-
-                inp_low = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w').clone()
+                # inp_up = inp_up.to(self.device)
+                max_allocated_after_reset = torch.cuda.max_memory_allocated()
+                print(f"Before model forward: Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
+               
+                inp_low = rearrange(inp, 'b t c1 d h w -> (t b) c1 d h w').clone()
                 # set input as interpolated data
                 inp = inp_up
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
@@ -507,6 +512,10 @@ class Trainer:
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
                 output = torch.clamp(output, min=-10, max=10)
+
+                max_allocated_after_reset = torch.cuda.max_memory_allocated()
+                print(f"Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
+
                 if self.diff_learning:
                     output = output + inp_up.squeeze(0)  # Residual connection
                 ###full resolution###
@@ -547,7 +556,8 @@ class Trainer:
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
                     logs['train_grad'] += grad_loss.item() if self.params.grad_loss_alpha>0 else 0.0
 
-                    if self.n_calls%self.params.checkpoint_save_interval==0:
+                    # if self.n_calls%self.params.checkpoint_save_interval==0:
+                    if False:
                         chunks_tar = [torch.zeros_like(tar[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_out = [torch.zeros_like(output[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
@@ -564,7 +574,8 @@ class Trainer:
                             inp_chunks = [c.cpu().detach().numpy() for c in chunks_inp]
                             inp_low_chunks = [c.cpu().detach().numpy() for c in chunks_inp_low]
 
-                    if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
+                    # if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
+                    if False:
 
                         full_tar = self.stitch_blocks(tar_chunks, full_size=128, block_size=64)
                         full_out = self.stitch_blocks(out_chunks, full_size=128, block_size=64)
@@ -633,6 +644,7 @@ class Trainer:
                     continue
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
+                    
                 # total_norm = 0.0
                 # grad_info = []
 
@@ -665,6 +677,8 @@ class Trainer:
                         if self.scheduler is not None and self.params.scheduler != 'steplr':
                             self.scheduler.step()
                         optimizer_step = self.timer.get_time() - backward_end
+                
+                torch.cuda.reset_max_memory_allocated()
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss {interp_nrmse}")
@@ -756,10 +770,10 @@ class Trainer:
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
                     tar = tar.squeeze(1).to(self.device) # B,C,D,H,W
-                    inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    # inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
-                    inp_up = inp_up.to(self.device)
-                    inp_low = rearrange(inp, 't b c1 d h w -> (t b) c1 d h w').clone()
+                    # inp_up = inp_up.to(self.device)
+                    inp_low = rearrange(inp, 'b t c1 d h w -> (t b) c1 d h w').clone()
                     inp = inp_up
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
@@ -775,7 +789,8 @@ class Trainer:
                     # Print results
                     channel_names = ["rho", "ux", "uy", "uz"]
 
-                    if self.n_calls%self.params.checkpoint_save_interval==0:
+                    # if self.n_calls%self.params.checkpoint_save_interval==0:
+                    if False:
                         chunks_tar = [torch.zeros_like(tar[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_out = [torch.zeros_like(output[0,:,:,:,:]) for _ in range(dist.get_world_size())]
                         chunks_inp = [torch.zeros_like(inp[0,0,:,:,:,:]) for _ in range(dist.get_world_size())]
@@ -792,7 +807,8 @@ class Trainer:
                             inp_chunks = [c.cpu().detach().numpy() for c in chunks_inp]
                             inp_low_chunks = [c.cpu().detach().numpy() for c in chunks_inp_low]
 
-                    if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
+                    # if self.global_rank == 0 and self.n_calls%self.params.checkpoint_save_interval==0:
+                    if False:
 
                         full_tar = self.stitch_blocks(tar_chunks, full_size=128, block_size=64)
                         full_out = self.stitch_blocks(out_chunks, full_size=128, block_size=64)

@@ -122,55 +122,38 @@ def torch_diff(phi, dx,dy,dz): # x is a 3D tensor (batch, channel, x, y, z)
 
 
 class GradLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, tol=1e-6):
         super(GradLoss, self).__init__()
+        self.tol = tol
 
-    def forward(self, input,target):
+    def _threshold_grad(self, grad):
+        # Zero out very small gradients
+        return torch.where(grad.abs() < self.tol, torch.zeros_like(grad), grad)
+
+    def forward(self, input, target):
         nbatch = input.shape[0]
-        #just use dx=1 for everything
-        dx = torch.ones(nbatch,device=input.device)
-        dy = torch.ones(nbatch,device=input.device)
-        dz = torch.ones(nbatch,device=input.device)
+        # just use dx=1 for everything
+        dx = torch.ones(nbatch, device=input.device)
+        dy = torch.ones(nbatch, device=input.device)
+        dz = torch.ones(nbatch, device=input.device)
 
-        ri = input[:,0:1,:,:,:]
-        ui = input[:,1:2,:,:,:]
-        vi = input[:,2:3,:,:,:]
-        wi = input[:,3:4,:,:,:]
+        # Split channels
+        input_ch = [input[:, i:i+1, :, :, :].float() for i in range(4)]
+        target_ch = [target[:, i:i+1, :, :, :].float() for i in range(4)]
 
-        rt = target[:,0:1,:,:,:]
-        ut = target[:,1:2,:,:,:]
-        vt = target[:,2:3,:,:,:]
-        wt = target[:,3:4,:,:,:]
+        total_loss = 0.0
+        for inp, tgt in zip(input_ch, target_ch):
 
-        dxri = torch_dx(ri,dx)
-        dyri = torch_dy(ri,dy)
-        dzri = torch_dz(ri,dz)
-        dxui = torch_dx(ui,dx)
-        dyui = torch_dy(ui,dy)
-        dzui = torch_dz(ui,dz)
-        dxvi = torch_dx(vi,dx)
-        dyvi = torch_dy(vi,dy)
-        dzvi = torch_dz(vi,dz)
-        dxwi = torch_dx(wi,dx)
-        dywi = torch_dy(wi,dy)
-        dzwi = torch_dz(wi,dz)
+            dx_inp = self._threshold_grad(torch.nan_to_num(torch_dx(inp, dx), nan=0.0, posinf=1e6, neginf=-1e6))
+            dy_inp = self._threshold_grad(torch.nan_to_num(torch_dy(inp, dy), nan=0.0, posinf=1e6, neginf=-1e6))
+            dz_inp = self._threshold_grad(torch.nan_to_num(torch_dz(inp, dz), nan=0.0, posinf=1e6, neginf=-1e6))
 
-        dxrt = torch_dx(rt,dx)
-        dyrt = torch_dy(rt,dy)
-        dzrt = torch_dz(rt,dz)
-        dxut = torch_dx(ut,dx)
-        dyut = torch_dy(ut,dy)
-        dzut = torch_dz(ut,dz)
-        dxvt = torch_dx(vt,dx)
-        dyvt = torch_dy(vt,dy)
-        dzvt = torch_dz(vt,dz)
-        dxwt = torch_dx(wt,dx)
-        dywt = torch_dy(wt,dy)
-        dzwt = torch_dz(wt,dz)
+            dx_tgt = self._threshold_grad(torch.nan_to_num(torch_dx(tgt, dx), nan=0.0, posinf=1e6, neginf=-1e6))
+            dy_tgt = self._threshold_grad(torch.nan_to_num(torch_dy(tgt, dy), nan=0.0, posinf=1e6, neginf=-1e6))
+            dz_tgt = self._threshold_grad(torch.nan_to_num(torch_dz(tgt, dz), nan=0.0, posinf=1e6, neginf=-1e6))
 
-        total_loss = F.mse_loss(dxri,dxrt) + F.mse_loss(dyri,dyrt) + F.mse_loss(dzri,dzrt) + \
-                        F.mse_loss(dxui,dxut) + F.mse_loss(dyui,dyut) + F.mse_loss(dzui,dzut) + \
-                        F.mse_loss(dxvi,dxvt) + F.mse_loss(dyvi,dyvt) + F.mse_loss(dzvi,dzvt) + \
-                        F.mse_loss(dxwi,dxwt) + F.mse_loss(dywi,dywt) + F.mse_loss(dzwi,dzwt)
-        
+            total_loss += F.mse_loss(dx_inp, dx_tgt)
+            total_loss += F.mse_loss(dy_inp, dy_tgt)
+            total_loss += F.mse_loss(dz_inp, dz_tgt)
+
         return total_loss
