@@ -13,12 +13,9 @@ basic_config: &basic_config
   #exp_dir: './Dev_BLASNET_AViT' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
-  # pretrained_ckpt_path: './Dev_BLASNET/basic_config/test_model/training_checkpoints/ckpt.tar' # Path to the pretrained model checkpoint
-  # freeze_middle: !!bool False
-  # freeze_processor: !!bool False
   # Training settings
   drop_path: 0.1
-  batch_size: 64  
+  batch_size: 16 #64  
   max_epochs: 3000
   scheduler_epochs: -1
   epoch_size: 40 
@@ -76,10 +73,10 @@ basic_config: &basic_config
   extended_names: !!bool False # Whether to use extended names - not currently implemented
   embedding_offset: 0  # Use when adding extra finetuning fields
   train_data_paths: [
-              ['/pscratch/sd/c/csalah/data/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/z/zhan1668/MyQuota/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   valid_data_paths: [
-              ['/pscratch/sd/c/csalah/data/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/z/zhan1668/MyQuota/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

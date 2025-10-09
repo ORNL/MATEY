@@ -623,32 +623,32 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     #get mean/std for train/val sets
     def get_mean_std(self):
         #evaluated thorugh mean of train data in rho and (u,v,w lumped together)
-        my_mean = np.array([0.24,28.0, 28.0, 28.0])
-        my_std = np.array([0.068,48.0, 48.0, 48.0])
+        my_mean = np.array([0.24,28.0, 28.0, 28.0],dtype=np.float32)
+        my_std = np.array([0.068,48.0, 48.0, 48.0],dtype=np.float32)
 
         return my_mean, my_std
 
     #get mean/std for test sets
     def get_mean_std_test(self):
         #evaluated thorugh mean of train data in rho and (u,v,w lumped together)
-        my_mean = np.array([0.24,29.0, 29.0, 29.0])
-        my_std = np.array([0.068,48.0, 48.0, 48.0])
+        my_mean = np.array([0.24,29.0, 29.0, 29.0],dtype=np.float32)
+        my_std = np.array([0.068,48.0, 48.0, 48.0],dtype=np.float32)
 
         return my_mean, my_std
 
     # get mean/std for paramvar set
     def get_mean_std_paramvar(self):
         #evaluated thorugh mean of train data in rho and (u,v,w lumped together)
-        my_mean = np.array([0.23,34.0, 34.0, 34.0])
-        my_std = np.array([0.059,55.0, 55.0, 55.0])
+        my_mean = np.array([0.23,34.0, 34.0, 34.0],dtype=np.float32)
+        my_std = np.array([0.059,55.0, 55.0, 55.0],dtype=np.float32)
 
         return my_mean, my_std
 
     # get mean/std for forcedhit set
     def get_mean_std_forcedhit(self):
         #evaluated thorugh mean of train data in rho and (u,v,w lumped together)
-        my_mean = np.array([11,-0.051, -0.051, -0.051])
-        my_std = np.array([4.6,1.4, 1.4, 1.4])
+        my_mean = np.array([11,-0.051, -0.051, -0.051],dtype=np.float32)
+        my_std = np.array([4.6,1.4, 1.4, 1.4],dtype=np.float32)
 
         return my_mean, my_std
 
