@@ -73,10 +73,10 @@ basic_config: &basic_config
   extended_names: !!bool False # Whether to use extended names - not currently implemented
   embedding_offset: 0  # Use when adding extra finetuning fields
   train_data_paths: [
-              ['/pscratch/sd/z/zhan1668/MyQuota/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/c/csalah/data/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   valid_data_paths: [
-              ['/pscratch/sd/z/zhan1668/MyQuota/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/pscratch/sd/c/csalah/data/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 
