@@ -202,9 +202,9 @@ class BaseBLASNET3DDataset(Dataset):
                 inp=trajectory
                 tar=inp[-1]
         else:
-            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
+            inp, tar, inp_up, dzdxdy = self._reconstruct_sample(case_idx)
             #blockdict has dims for full resoluton output; need to convert to LR inputs
-        
+            """
             if self.cubic_interp:
                     inp_up = np.zeros_like(tar, dtype=inp.dtype)
                     # Loop over batch and channels
@@ -215,7 +215,7 @@ class BaseBLASNET3DDataset(Dataset):
             else:
                 inp_up = F.interpolate(torch.tensor(inp), scale_factor=(self.SR_ratio[0], self.SR_ratio[1], self.SR_ratio[2]), mode='trilinear', align_corners=True)
             
-
+            """
             inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
             tar = tar[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
             inp_up = inp_up[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
@@ -611,6 +611,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         if self.SR_ratio[0] in [8, 16, 32]:
             self.upscale = self.SR_ratio[0]  
             self.inputbase = self.datapath+'/dataset/LR_'+str(self.upscale)+'x/'+self.split+'/'
+            self.interpbase = self.datapath+'/dataset/LR_'+str(self.upscale)+'x_interpolated/'+self.split+'/'
         else:
             self.upscale = 1
             self.inputbase = self.outputbase
@@ -716,12 +717,18 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         hash_id = self.datadict['hash'][idx]
         scalars = self.field_names
         X = []
+        X_interp = []
         upscale = self.upscale
         for ivar, scalar in enumerate(scalars):
             xpath = self.inputbase+scalar+hash_id+'.dat' 
             var = np.fromfile(xpath,dtype=np.float32).reshape(128//upscale,128//upscale,128//upscale)
             X.append(self.normalize(var, self.mean[ivar], self.std[ivar]))
+
+            xinterppath = self.interpbase+scalar+hash_id+'.dat'
+            var_interp = np.fromfile(xinterppath,dtype=np.float32).reshape(128,128,128)
+            X_interp.append(self.normalize(var_interp, self.mean[ivar], self.std[ivar]))
         X = np.stack(X,axis=0)
+        X_interp = np.stack(X_interp,axis=0)
         Y = []
         for ivar, scalar in enumerate(scalars):
             ypath = self.outputbase+scalar+hash_id+'.dat'
@@ -744,7 +751,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
             X,Y = self.random_flip_3D(X,Y)
             X,Y = X.numpy(), Y.numpy()
         #return: T,C,D,H,W
-        return X[np.newaxis,...].transpose((0, 1, 4, 2, 3)),Y[np.newaxis,...].transpose((0, 1, 4, 2, 3)), [dz, dx, dy]
+        return X[np.newaxis,...].transpose((0, 1, 4, 2, 3)),Y[np.newaxis,...].transpose((0, 1, 4, 2, 3)),X_interp[np.newaxis,...].transpose((0, 1, 4, 2, 3)), [dz, dx, dy]
 
     def _get_specific_bcs(self):
         #FIXME: not used for now
