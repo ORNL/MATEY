@@ -15,7 +15,7 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 16 #64  
+  batch_size: 16  
   max_epochs: 3000
   scheduler_epochs: -1
   epoch_size: 40 

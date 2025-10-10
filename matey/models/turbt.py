@@ -184,10 +184,7 @@ class TurbT(BaseModel):
         if imod>0:
             x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
-        
-        max_allocated_after_reset = torch.cuda.max_memory_allocated()
-        print(f"imod: {imod}, Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
-               
+                       
         #x_input = x.clone()
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
@@ -221,8 +218,6 @@ class TurbT(BaseModel):
             nfact=4//ps[-1]
             """
             x, nfact =self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
-        max_allocated_after_reset = torch.cuda.max_memory_allocated()
-        print(f"imod: {imod}, before attention blocks: Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
             # print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
             if iblk==0:
@@ -230,8 +225,6 @@ class TurbT(BaseModel):
             else:
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask_padding, local_att=local_att)
         #self.debug_nan(x_padding, message="attention block")
-        max_allocated_after_reset = torch.cuda.max_memory_allocated()
-        print(f"imod: {imod}, after attention. Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
         if local_att:
             # nfact=2**(2*imod)#//blockdict["nproc_blocks"][-1]
             #nfact=4//ps[-1]
@@ -241,8 +234,6 @@ class TurbT(BaseModel):
         #################################################################################
         ######## Decode ########
         x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, state_labels, [D, H, W], tkhead_name, ilevel=imod)
-        max_allocated_after_reset = torch.cuda.max_memory_allocated()
-        print(f"imod: {imod}, depatching. Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
         ########upsampling######
         x_correct = x[-1]
         del x
@@ -260,8 +251,6 @@ class TurbT(BaseModel):
         #since no T dim: b c d h w
         #x_correct=x_correct[:,var_index,...] * data_std[-1] + data_mean[-1]
         
-        max_allocated_after_reset = torch.cuda.max_memory_allocated()
-        print(f"imod: {imod}, modle end. Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
         
         return x_correct #B,C_all,D,H,W for imod<nlevels-1; B,C_sys,D,H,W
      

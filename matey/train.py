@@ -489,19 +489,12 @@ class Trainer:
             loss_counts[dset_type] += 1
             data_time += self.timer.get_time() - data_start
             dtime = self.timer.get_time() - data_start
-            
-            max_allocated_after_reset = torch.cuda.max_memory_allocated()
-            print(f"Before data sent: Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
-               
+                           
             self.model.require_backward_grad_sync = ((1+batch_idx) % self.params.accum_grad == 0)
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
                 tar = tar.squeeze(1).to(self.device) # B,1,C,D,H,W -> B,C,D,H,W
-                # inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
-                # inp_up = inp_up.to(self.device)
-                max_allocated_after_reset = torch.cuda.max_memory_allocated()
-                print(f"Before model forward: Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
                
                 inp_low = rearrange(inp, 'b t c1 d h w -> (t b) c1 d h w').clone()
                 # set input as interpolated data
@@ -511,10 +504,6 @@ class Trainer:
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
-                output = torch.clamp(output, min=-10, max=10)
-
-                max_allocated_after_reset = torch.cuda.max_memory_allocated()
-                print(f"Max GPU memory allocated after reset: {max_allocated_after_reset / (1024**2):.2f} MB", flush=True)
 
                 if self.diff_learning:
                     output = output + inp_up.squeeze(0)  # Residual connection
@@ -644,24 +633,6 @@ class Trainer:
                     continue
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
-                    
-                # total_norm = 0.0
-                # grad_info = []
-
-                # for name, p in self.model.named_parameters():
-                #     if p.grad is not None:
-                #         grad = p.grad.data
-                #         norm = grad.norm(2).item()
-                #         total_norm += norm ** 2
-
-                #         if not torch.isfinite(grad).all():
-                #             print(f"Non-finite gradient detected in: {name}")
-                #             print(f"grad min: {grad.min().item():.3e}, max: {grad.max().item():.3e}, mean: {grad.mean().item():.3e}")
-                #         grad_info.append(f"{name}: {norm:.3e}")
-
-                # total_norm = total_norm ** 0.5
-
-                # print(f"Total Gradient Norm: {total_norm:.4e}")
 
                 backward_end = self.timer.get_time()
                 backward_time = backward_end - forward_end
@@ -678,7 +649,6 @@ class Trainer:
                             self.scheduler.step()
                         optimizer_step = self.timer.get_time() - backward_end
                 
-                torch.cuda.reset_max_memory_allocated()
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} Interp loss {interp_nrmse}")
@@ -770,9 +740,7 @@ class Trainer:
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
                     tar = tar.squeeze(1).to(self.device) # B,C,D,H,W
-                    # inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     inp_up = rearrange(inp_up.to(self.device), 'b t c d h w -> t b c d h w')
-                    # inp_up = inp_up.to(self.device)
                     inp_low = rearrange(inp, 'b t c1 d h w -> (t b) c1 d h w').clone()
                     inp = inp_up
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0

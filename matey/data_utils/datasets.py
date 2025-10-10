@@ -26,6 +26,7 @@ import glob
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
+"""
 DSET_NAME_TO_OBJECT = {
     ##PDEBench
     'swe': SWEDataset,
@@ -72,6 +73,12 @@ DSET_NAME_TO_OBJECT = {
     ##SST
     "sstF4R32": sstF4R32Dataset,
     }
+
+"""
+DSET_NAME_TO_OBJECT = {
+    "SR": SR_Benchmark,
+    }
+
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None):
     #rank: SP group ID, used for sample index

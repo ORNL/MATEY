@@ -4,9 +4,9 @@
 #SBATCH -q regular
 #SBATCH -J matey
 #SBATCH -o %x-%j.out
-#SBATCH -t 00:01:00
-#SBATCH -N 1
-#SBATCH --gres=gpu:2
+#SBATCH -t 00:10:00
+#SBATCH -N 2
+#SBATCH --gres=gpu:4
 #SBATCH -c 32
 
 export OMP_NUM_THREADS=1
