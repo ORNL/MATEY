@@ -77,6 +77,7 @@ def ssim3D(img1, img2, window_size = 9, size_average = True):
 def remove_edges(arr):
     return arr[:,:,1:-1,1:-1,1:-1]
 
+
 def torch_dx(phi,h):
     assert len(phi.shape) == 5
     batch_size = phi.shape[0]
@@ -113,7 +114,7 @@ def torch_dz(phi,h):
 
     return t
 
-    
+"""  
 def torch_diff(phi, dx,dy,dz): # x is a 3D tensor (batch, channel, x, y, z)
     diff_x = torch_dx(phi, dx)
     diff_y = torch_dy(phi, dy)
@@ -121,39 +122,88 @@ def torch_diff(phi, dx,dy,dz): # x is a 3D tensor (batch, channel, x, y, z)
     return diff_x, diff_y, diff_z
 
 
-class GradLoss(nn.Module):
-    def __init__(self, tol=1e-6):
-        super(GradLoss, self).__init__()
-        self.tol = tol
+class GradLoss_old(nn.Module):
+    def __init__(self):
+        super(GradLoss_old, self).__init__()
 
-    def _threshold_grad(self, grad):
-        # Zero out very small gradients
-        return torch.where(grad.abs() < self.tol, torch.zeros_like(grad), grad)
+    def forward(self, input,target):
+        nbatch = input.shape[0]
+        #just use dx=1 for everything
+        dx = torch.ones(nbatch,device=input.device)
+        dy = torch.ones(nbatch,device=input.device)
+        dz = torch.ones(nbatch,device=input.device)
+
+        ri = input[:,0:1,:,:,:]
+        ui = input[:,1:2,:,:,:]
+        vi = input[:,2:3,:,:,:]
+        wi = input[:,3:4,:,:,:]
+
+        rt = target[:,0:1,:,:,:]
+        ut = target[:,1:2,:,:,:]
+        vt = target[:,2:3,:,:,:]
+        wt = target[:,3:4,:,:,:]
+
+        dxri = torch_dx(ri,dx)
+        dyri = torch_dy(ri,dy)
+        dzri = torch_dz(ri,dz)
+        dxui = torch_dx(ui,dx)
+        dyui = torch_dy(ui,dy)
+        dzui = torch_dz(ui,dz)
+        dxvi = torch_dx(vi,dx)
+        dyvi = torch_dy(vi,dy)
+        dzvi = torch_dz(vi,dz)
+        dxwi = torch_dx(wi,dx)
+        dywi = torch_dy(wi,dy)
+        dzwi = torch_dz(wi,dz)
+
+        dxrt = torch_dx(rt,dx)
+        dyrt = torch_dy(rt,dy)
+        dzrt = torch_dz(rt,dz)
+        dxut = torch_dx(ut,dx)
+        dyut = torch_dy(ut,dy)
+        dzut = torch_dz(ut,dz)
+        dxvt = torch_dx(vt,dx)
+        dyvt = torch_dy(vt,dy)
+        dzvt = torch_dz(vt,dz)
+        dxwt = torch_dx(wt,dx)
+        dywt = torch_dy(wt,dy)
+        dzwt = torch_dz(wt,dz)
+
+        total_loss = F.mse_loss(dxri,dxrt) + F.mse_loss(dyri,dyrt) + F.mse_loss(dzri,dzrt) + \
+                        F.mse_loss(dxui,dxut) + F.mse_loss(dyui,dyut) + F.mse_loss(dzui,dzut) + \
+                        F.mse_loss(dxvi,dxvt) + F.mse_loss(dyvi,dyvt) + F.mse_loss(dzvi,dzvt) + \
+                        F.mse_loss(dxwi,dxwt) + F.mse_loss(dywi,dywt) + F.mse_loss(dzwi,dzwt)
+        
+        return total_loss
+    """
+
+
+def torch_diff(phi, dx=1.0, dy=1.0, dz=1.0):
+    """
+    Compute spatial gradients of a 5D tensor phi with shape (B, C, D, H, W).
+    """
+    # Compute gradients in all three directions at once
+    grad_z, grad_y, grad_x = torch.gradient(phi, spacing=(dz, dy, dx), dim=(2, 3, 4), edge_order=1)
+    return grad_x, grad_y, grad_z
+
+
+class GradLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
 
     def forward(self, input, target):
-        nbatch = input.shape[0]
-        # just use dx=1 for everything
-        dx = torch.ones(nbatch, device=input.device)
-        dy = torch.ones(nbatch, device=input.device)
-        dz = torch.ones(nbatch, device=input.device)
+        # Both input and target have shape (B, C, D, H, W)
+        dx = dy = dz = 1.0
+        channel_dim = input.shape[1]
+        # Compute gradients for all channels at once
+        dx_inp, dy_inp, dz_inp = torch_diff(input, dx, dy, dz)
+        dx_tgt, dy_tgt, dz_tgt = torch_diff(target, dx, dy, dz)
 
-        # Split channels
-        input_ch = [input[:, i:i+1, :, :, :].float() for i in range(4)]
-        target_ch = [target[:, i:i+1, :, :, :].float() for i in range(4)]
+        # Compute mean squared errors for all gradients
+        loss = (
+            F.mse_loss(dx_inp, dx_tgt) +
+            F.mse_loss(dy_inp, dy_tgt) +
+            F.mse_loss(dz_inp, dz_tgt)
+        )*channel_dim
 
-        total_loss = 0.0
-        for inp, tgt in zip(input_ch, target_ch):
-
-            dx_inp = self._threshold_grad(torch.nan_to_num(torch_dx(inp, dx), nan=0.0, posinf=1e6, neginf=-1e6))
-            dy_inp = self._threshold_grad(torch.nan_to_num(torch_dy(inp, dy), nan=0.0, posinf=1e6, neginf=-1e6))
-            dz_inp = self._threshold_grad(torch.nan_to_num(torch_dz(inp, dz), nan=0.0, posinf=1e6, neginf=-1e6))
-
-            dx_tgt = self._threshold_grad(torch.nan_to_num(torch_dx(tgt, dx), nan=0.0, posinf=1e6, neginf=-1e6))
-            dy_tgt = self._threshold_grad(torch.nan_to_num(torch_dy(tgt, dy), nan=0.0, posinf=1e6, neginf=-1e6))
-            dz_tgt = self._threshold_grad(torch.nan_to_num(torch_dz(tgt, dz), nan=0.0, posinf=1e6, neginf=-1e6))
-
-            total_loss += F.mse_loss(dx_inp, dx_tgt)
-            total_loss += F.mse_loss(dy_inp, dy_tgt)
-            total_loss += F.mse_loss(dz_inp, dz_tgt)
-
-        return total_loss
+        return loss

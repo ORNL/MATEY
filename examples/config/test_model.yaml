@@ -15,13 +15,13 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 16  
-  max_epochs: 3000
+  batch_size: 64  
+  max_epochs: 1500
   scheduler_epochs: -1
-  epoch_size: 40 
+  epoch_size: 44 
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
   optimizer: 'AdamW' #'adan' # adam, adan, whatever else i end up adding - adan did better on HP sweep
-  scheduler: 'cosine' # Only cosine implemented
+  scheduler: 'steplr' # Only cosine implemented
   warmup_steps: 100 # Warmup when not using DAdapt
   learning_rate: 1e-4 # -1 means use DAdapt
   weight_decay: 1e-3
@@ -33,7 +33,7 @@ basic_config: &basic_config
   curriculum_steps: 10 # Number of steps to use for curriculum learning
   data_augmentation: !!bool False # Whether to use data augmentation - 3D flip and rotation
   cubic_interp: !!bool True # Whether to use cubic interpolation for upsampling, if false uses linear
-  grad_loss_alpha: 0.0 # Weight for gradient loss term
+  grad_loss_alpha: 0.99 # Weight for gradient loss term
   leadtime_max: 0 #prediction lead time range [1, leadtime_max]
   n_steps: 1 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.

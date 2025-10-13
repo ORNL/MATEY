@@ -262,7 +262,7 @@ class Trainer:
             decay  = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=1.0, end_factor=.01, total_iters=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
             self.scheduler = torch.optim.lr_scheduler.SequentialLR(self.optimizer, [warmup, decay], [k])#, last_epoch=(self.params.epoch_size*self.startEpoch)-1)
         elif self.params.scheduler == 'steplr':
-            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=50, gamma=0.1)#, last_epoch=self.startEpoch-1) #gamma: lr decay rate; step_size: period of learning rate decay
+            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=300, gamma=0.5)#, last_epoch=self.startEpoch-1) #gamma: lr decay rate; step_size: period of learning rate decay
         else:
             self.scheduler = None
 
