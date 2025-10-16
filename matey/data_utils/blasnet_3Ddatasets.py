@@ -716,26 +716,47 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     def _reconstruct_sample(self,idx):    
         hash_id = self.datadict['hash'][idx]
         scalars = self.field_names
-        X = []
-        X_interp = []
-        upscale = self.upscale
-        for ivar, scalar in enumerate(scalars):
-            xpath = self.inputbase+scalar+hash_id+'.dat' 
-            var = np.fromfile(xpath,dtype=np.float32).reshape(128//upscale,128//upscale,128//upscale)
-            X.append(self.normalize(var, self.mean[ivar], self.std[ivar]))
+        h5_path = self.inputbase + "allvars_id"+hash_id + ".h5"
+        
+        if os.path.exists(h5_path):
+            with h5py.File(h5_path, 'r') as f:
+                X = f['X'][:]
+                X_interp = f['X_interp'][:]
+                Y = f['Y'][:]
+                stored_scalars = [s.decode('utf-8') for s in f['scalars'][:]] if 'scalars' in f else scalars
+                print(f"load data from hdf5 file {h5_path}!", flush=True)
+        else:
+            
+            upscale = self.upscale
 
-            xinterppath = self.interpbase+scalar+hash_id+'.dat'
-            var_interp = np.fromfile(xinterppath,dtype=np.float32).reshape(128,128,128)
-            X_interp.append(self.normalize(var_interp, self.mean[ivar], self.std[ivar]))
-        X = np.stack(X,axis=0)
-        X_interp = np.stack(X_interp,axis=0)
-        Y = []
-        for ivar, scalar in enumerate(scalars):
-            ypath = self.outputbase+scalar+hash_id+'.dat'
-            var = np.fromfile(ypath,dtype=np.float32).reshape(128,128,128)
-            Y.append(self.normalize(var, self.mean[ivar], self.std[ivar]))
-        Y = np.stack(Y,axis=0)
+            X = np.empty((len(scalars), 128//upscale,128//upscale,128//upscale), dtype='float32')
+            X_interp = np.empty((len(scalars), 128, 128, 128), dtype='float32')
+            Y = np.empty((len(scalars), 128, 128, 128), dtype='float32')
 
+            for ivar, scalar in enumerate(scalars):
+                xpath = self.inputbase+scalar+hash_id+'.dat' 
+                var = np.fromfile(xpath,dtype=np.float32).reshape(128//upscale,128//upscale,128//upscale)
+                X[ivar, ...] = self.normalize(var, self.mean[ivar], self.std[ivar])
+
+                xinterppath = self.interpbase+scalar+hash_id+'.dat'
+                var_interp = np.fromfile(xinterppath,dtype=np.float32).reshape(128,128,128)
+                X_interp[ivar, ...] = self.normalize(var_interp, self.mean[ivar], self.std[ivar])
+  
+            for ivar, scalar in enumerate(scalars):
+                ypath = self.outputbase+scalar+hash_id+'.dat'
+                var = np.fromfile(ypath,dtype=np.float32).reshape(128,128,128)
+                Y[ivar, ...] = self.normalize(var, self.mean[ivar], self.std[ivar])
+         
+            if self.group_rank==0:
+                #only first rank in each group save the data
+                with h5py.File(h5_path, 'w') as f:
+                    f.create_dataset('X', data=X, compression='gzip')
+                    f.create_dataset('X_interp', data=X_interp, compression='gzip')
+                    f.create_dataset('Y', data=Y, compression='gzip')
+                    dt = h5py.string_dtype(encoding='utf-8')
+                    f.create_dataset('scalars', data=np.array(scalars, dtype=dt))
+                print(f"hdf5 file {h5_path} generated!", flush=True)
+            
         dx = torch.tensor(np.float32(self.datadict['dx [m]'][idx]))
         if self.datadict['dy [m]'][idx] != '':
             dy = torch.tensor(np.float32(self.datadict['dy [m]'][idx]))
@@ -745,6 +766,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
             dz = torch.tensor(np.float32(self.datadict['dz [m]'][idx]))
         else:
             dz = dx
+
         #manually transfrom with rotations and flips
         if self.split=="train" and self.data_augmentation:
             X,Y,dx,dy,dz = self.random_rot90_3D(torch.from_numpy(X),torch.from_numpy(Y),dx,dy,dz)
