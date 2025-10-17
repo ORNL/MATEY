@@ -1,7 +1,7 @@
 import torch
 import torch.nn
 import numpy as np
-import os
+import os, tempfile
 from torch.utils.data import Dataset
 import h5py
 import glob
@@ -748,13 +748,29 @@ class SR_Benchmark(BaseBLASNET3DDataset):
                 Y[ivar, ...] = self.normalize(var, self.mean[ivar], self.std[ivar])
          
             if self.group_rank==0:
+                dirpath  = os.path.dirname(h5_path) or "."
+                basename = os.path.basename(h5_path)
+                fd, tmp_path = tempfile.mkstemp(prefix=f".{basename}", suffix=".tmp", dir=dirpath)
+                os.close(fd)
                 #only first rank in each group save the data
-                with h5py.File(h5_path, 'w') as f:
+                with h5py.File(tmp_path, 'w') as f:
                     f.create_dataset('X', data=X, compression='gzip')
                     f.create_dataset('X_interp', data=X_interp, compression='gzip')
                     f.create_dataset('Y', data=Y, compression='gzip')
                     dt = h5py.string_dtype(encoding='utf-8')
                     f.create_dataset('scalars', data=np.array(scalars, dtype=dt))
+
+                with open(tmp_path, "rb", buffering=0) as fh:
+                    os.fsync(fh.fileno())
+
+                os.replace(tmp_path, h5_path)
+                
+                dir_fd = os.open(dirpath, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+
                 print(f"hdf5 file {h5_path} generated!", flush=True)
             
         dx = torch.tensor(np.float32(self.datadict['dx [m]'][idx]))
