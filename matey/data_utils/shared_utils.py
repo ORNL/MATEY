@@ -12,7 +12,7 @@ def normalize_spatiotemporal_persample(x):
     # input tensor shape: [T, B, C, D, H, W]
     ######## Normalize (time + space per sample)########
     with torch.no_grad():
-        data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdims=True)
+        data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdim=True)
         
         dist.all_reduce(data_mean, op=dist.ReduceOp.SUM)
         dist.all_reduce(data_std,  op=dist.ReduceOp.SUM)
