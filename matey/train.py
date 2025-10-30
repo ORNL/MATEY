@@ -1,6 +1,5 @@
 import os
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -37,7 +36,6 @@ class Trainer:
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         self.log_to_screen = self.params.log_to_screen
         # Basic setup
-        self.train_loss = nn.MSELoss()
         self.startEpoch = 0
         self.epoch = 0
         self.mp_type = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.half
