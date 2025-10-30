@@ -13,8 +13,8 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
     ######## Normalize (time + space per sample)########
     with torch.no_grad():
         if sequence_parallel_group is not None:
-            data_mean = torch.mean(x, dim=(0, -3, -2, -1), keepdims=True)
-            data_square = torch.mean(torch.square(x), dim=(0, -3, -2, -1), keepdims=True)
+            data_mean = torch.mean(x, dim=(0, -3, -2, -1), keepdim=True)
+            data_square = torch.mean(torch.square(x), dim=(0, -3, -2, -1), keepdim=True)
             dist.all_reduce(data_mean, op=dist.ReduceOp.SUM, group=sequence_parallel_group)
             dist.all_reduce(data_square,  op=dist.ReduceOp.SUM, group=sequence_parallel_group)
             world_size = dist.get_world_size(sequence_parallel_group)
@@ -23,7 +23,7 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
             if dist.get_rank(sequence_parallel_group)==0:
                 print(f"Pei debugging, data_mean {data_mean.squeeze()}, data_std {data_std.squeeze()}, {world_size}, {x.shape}", flush=True)
         else:
-            data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdims=True)
+            data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdim=True)
 
         #data_std = data_std + 1e-7 # Orig 1e-7
         data_std = torch.clamp_min(data_std, 1e-4)

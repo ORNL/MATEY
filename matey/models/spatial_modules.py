@@ -21,7 +21,7 @@ class RMSInstanceNormSpace(nn.Module):
     def forward(self, x):
         #x: [TB, C, D, H, W]
         spatial_dims = tuple(range(x.ndim))[2:]
-        std, mean = torch.std_mean(x, dim=spatial_dims, keepdims=True)
+        std, mean = torch.std_mean(x, dim=spatial_dims, keepdim=True)
         x = (x) / (std + self.eps)
         if self.affine:
             x = x * self.weight[None, :, None, None, None]
