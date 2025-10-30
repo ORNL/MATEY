@@ -19,13 +19,13 @@ def build_vit(params):
                      num_heads=params.num_heads,
                      processor_blocks=params.processor_blocks,
                      n_states=params.n_states,
-                     SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
-                     sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
-                     sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
+                     SR_ratio=getattr(params, 'SR_ratio', [1,1,1]),
+                     sts_model= getattr(params, 'sts_model', False),
+                     sts_train=getattr(params, 'sts_train', False),
                      leadtime=True if hasattr(params, 'leadtime_max') and params.leadtime_max>1 else False,
                      bias_type=params.bias_type,
-                     replace_patch=params.replace_patch if hasattr(params, 'replace_patch') else True,
-                     hierarchical=params.hierarchical if hasattr(params, 'hierarchical') else None
+                     replace_patch=getattr(params, 'replace_patch', True),
+                     hierarchical=getattr(params, 'hierarchical', None)
                     )
     return model
 
