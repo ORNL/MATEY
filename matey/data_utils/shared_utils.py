@@ -20,8 +20,8 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
             world_size = dist.get_world_size(sequence_parallel_group)
             data_mean = data_mean/world_size
             data_std  = torch.sqrt(torch.clamp(data_square /world_size-torch.square(data_mean), min=0.0))
-            if dist.get_rank(sequence_parallel_group)==0:
-                print(f"Pei debugging, data_mean {data_mean.squeeze()}, data_std {data_std.squeeze()}, {world_size}, {x.shape}", flush=True)
+            #if dist.get_rank(sequence_parallel_group)==0:
+            #    print(f"Pei debugging, data_mean {data_mean.squeeze()}, data_std {data_std.squeeze()}, {world_size}, {x.shape}", flush=True)
         else:
             data_std, data_mean = torch.std_mean(x, dim=(0, -3, -2, -1), keepdim=True)
 

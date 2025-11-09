@@ -11,10 +11,11 @@ from ..utils.distributed_utils import closest_factors
 ### Space utils
 #FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it
 class RMSInstanceNormSpace(nn.Module):
-    def __init__(self, dim, affine=True, eps=1e-8):
+    def __init__(self, dim, affine=True, eps=1e-8, norm=False):
         super().__init__()
         self.eps = eps
         self.affine = affine
+        self.norm = norm
         if affine:
             self.weight = nn.Parameter(torch.ones(dim))
             #self.bias = nn.Parameter(torch.zeros(dim)) # Forgot to remove this so its in the pretrained weights
@@ -23,7 +24,10 @@ class RMSInstanceNormSpace(nn.Module):
         #x: [TB, C, D, H, W]
         spatial_dims = tuple(range(x.ndim))[2:]
         std, mean = torch.std_mean(x, dim=spatial_dims, keepdim=True)
-        x = (x) / (std + self.eps)
+        if self.norm:
+            x = (x - mean) / (std + self.eps)
+        else:
+            x = (x) / (std + self.eps)
         if self.affine:
             x = x * self.weight[None, :, None, None, None]
         return x
