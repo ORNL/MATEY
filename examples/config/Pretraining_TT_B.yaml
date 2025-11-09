@@ -3,21 +3,21 @@ basic_config: &basic_config
   log_to_wandb: !!bool False #True # Use wandb integration
   log_to_screen: !!bool True # Log progress to screen.
   save_checkpoint: !!bool True # Save checkpoints
-  checkpoint_save_interval: 1 #5 # Save every # epochs - also saves "best" according to val loss
+  checkpoint_save_interval: 5 # Save every # epochs - also saves "best" according to val loss
   debug_grad: !!bool True # Compute gradient/step_sizes/ect for debugging
   true_time: !!bool False # Debugging setting - sets num workers to zero and activates syncs
   num_data_workers: 2 #6 # Generally pulling 8 cpu per process, so using 6 for DL - not sure if best ratio
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: './Dev_Pretraining_TT' # Output path
+  exp_dir: './Dev_Pretraining_TT_irun2' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
   batch_size: 512 #256 #128 #8
-  max_epochs: 1000
-  scheduler_epochs: -1
+  max_epochs: 2000 #1000
+  scheduler_epochs: -1 #1000 #-1
   epoch_size: 200 
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
   optimizer: 'AdamW' 

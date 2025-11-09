@@ -10,10 +10,11 @@ from ..utils.distributed_utils import closest_factors
 
 ### Space utils
 class RMSInstanceNormSpace(nn.Module):
-    def __init__(self, dim, affine=True, eps=1e-8):
+    def __init__(self, dim, affine=True, eps=1e-8, norm=False):
         super().__init__()
         self.eps = eps
         self.affine = affine
+        self.norm = norm
         if affine:
             self.weight = nn.Parameter(torch.ones(dim))
             #self.bias = nn.Parameter(torch.zeros(dim)) # Forgot to remove this so its in the pretrained weights
@@ -22,7 +23,10 @@ class RMSInstanceNormSpace(nn.Module):
         #x: [TB, C, D, H, W]
         spatial_dims = tuple(range(x.ndim))[2:]
         std, mean = torch.std_mean(x, dim=spatial_dims, keepdim=True)
-        x = (x) / (std + self.eps)
+        if self.norm:
+            x = (x - mean) / (std + self.eps)
+        else:
+            x = (x) / (std + self.eps)
         if self.affine:
             x = x * self.weight[None, :, None, None, None]
         return x
@@ -141,7 +145,7 @@ class UpsampleinSpace(nn.Module):
         for ilayer in range(self.nconv-1):
             ks_ilayer = self.ks[-(ilayer+1)]
             modulelist.append(UpsampleConv3d(channels, channels, kernel_size=ks_ilayer, bias=False))
-            modulelist.append(RMSInstanceNormSpace(channels, affine=True))
+            modulelist.append(RMSInstanceNormSpace(channels, affine=True, norm=True))
             modulelist.append(nn.GELU())
         modulelist.append(UpsampleConv3d(channels, channels, kernel_size=self.ks[0]))
         self.out_proj = torch.nn.Sequential(*modulelist)

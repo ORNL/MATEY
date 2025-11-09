@@ -10,16 +10,19 @@ font = {'family' : 'normal',
         'size'   : 18}
 
 matplotlib.rc('font', **font)
-def parse_log_file(filepath, dataset_batches, total_norm, total_train_loss, total_valid_loss, epochreal):
+def parse_log_file(filepath, dataset_batches, total_norm, total_train_loss, total_valid_loss, epochreal, lrlist):
     """Parse a single log file and update batch and epoch loss dictionaries."""
     batch_loss_re = re.compile(r"Epoch (\d+) Batch (\d+) Train Loss ([\d\.]+) for (\w+)")
     epoch_loss_re = re.compile(r"Train loss: ([\d\.]+).*?. Valid loss: \s*([\d\.e+-]+|nan+|inf)")
     norm_re = re.compile(r"Pei debugging, total_norm ([\d\.]+) (\w+)")
+    lr_LINE = re.compile(r"Batch:\s*(\d+).*?lr:\s*([0-9eE+\-\.]+)")
+
     with open(filepath, "r") as f:
         for line in f:
             batch_match = batch_loss_re.search(line)
             epoch_match = epoch_loss_re.search(line)
             norm_match = norm_re.search(line)
+            lr_match = lr_LINE.search(line)
 
             if batch_match:
                 epoch, batch_idx, loss, dataset = batch_match.groups()
@@ -38,6 +41,12 @@ def parse_log_file(filepath, dataset_batches, total_norm, total_train_loss, tota
                 train_loss, valid_loss = epoch_match.groups()
                 total_train_loss[epoch].append(float(train_loss))
                 total_valid_loss[epoch].append(float(valid_loss))
+            
+            if lr_match:
+                batch = int(lr_match.group(1))
+                lr = float(lr_match.group(2))
+                epoch_=epoch+float(batch)/200.0
+                lrlist[epoch_].append(lr)
 
 def moving_average(data, window_size=10):
     return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
@@ -99,24 +108,25 @@ def plot_dataset_batches(dataset_batches, total_norm, epochreal):
 def plot_dataset_batches_selected(dataset_batches, epochreal):
     
 
-    plotdatasetlist={#'swe': "Shallow-water",
+    plotdatasetlist={
     'incompNS': "Incomp NS",
     'diffre2d': "Diffussion-Reaction",
     'compNS': "Comp NS",
     "isotropic1024fine": "Isotropic Homo Turb",
+    'swe': "Shallow-water",
     "MHD256":"MHD Comp Turb",
-    'compNS128': "Comp NS 128",
+    #"MHD64": "MHD_64",
+    #'compNS128': "Comp NS 128",
     'compNS512': "Comp NS 512",
     'thermalcollision2d': "Miniweather thermals",
-    #"convrsg":"Red Supergiant Convective Envelope",
+    "convrsg":"Red Supergiant Convective Envelope",
     "eulerperiodic":"Euler-Riemann",
-    #"MHD64":MHD_64,
     "planetswe":"Planet Shallow-water",
     "postneutronstarmerger":"Post-neutron-star-merger",
     "rayleighbenard":"Rayleigh-Benard",
     "rayleightaylor":"Rayleigh-Taylor Turb.",
     "shearflow":"IncompShearFlow",
-    "supernova64":"Supernova-explosion64",
+    #"supernova64":"Supernova-explosion64",
     "supernova128":"Supernova-explosion128",
     "turbgravcool":"Turb. Interstellar Medium",
     "turbradlayer2D":"TurbRadiativeLayer2D",
@@ -173,6 +183,20 @@ def plot_total_losses(total_train_loss, total_valid_loss, prop=1.0):
     plt.tight_layout()
     plt.savefig("./loss_total.png")
 
+def plot_lr(lrlist):
+    epochs = list(lrlist.keys())
+    lrvals = [lrlist[epoch][0] for epoch in epochs]
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, lrvals, 'r-')
+    plt.xlabel("Epoch")
+    plt.ylabel("Learning rate")
+    plt.legend()
+    plt.grid(True)
+    plt.yscale("log")
+    plt.ylim(top=10.0)
+    plt.tight_layout()
+    plt.savefig("./learningrates.png")
+
 
 def main(log_files, prop=1.0):
     dataset_batches = defaultdict(list) 
@@ -180,12 +204,14 @@ def main(log_files, prop=1.0):
     total_valid_loss = defaultdict(list)
     total_norm = defaultdict(list)
     epochreal = defaultdict(list)
+    lrlist = defaultdict(list)
     for file_path in log_files:
-        parse_log_file(file_path, dataset_batches, total_norm, total_train_loss, total_valid_loss, epochreal)
+        parse_log_file(file_path, dataset_batches, total_norm, total_train_loss, total_valid_loss, epochreal, lrlist)
     print(epochreal)
     plot_dataset_batches(dataset_batches, total_norm, epochreal)
     plot_dataset_batches_selected(dataset_batches, epochreal)
     plot_total_losses(total_train_loss, total_valid_loss, prop=prop)
+    plot_lr(lrlist)
 
 
 if __name__ == "__main__":
