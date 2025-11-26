@@ -14,7 +14,7 @@ basic_config: &basic_config
   # Training settings
   drop_path: 0.1
   batch_size: 16 #1
-  max_epochs: 5 #800
+  max_epochs: 150 #800
   scheduler_epochs: -1
   epoch_size: 10 #100 #2000 # Artificial epoch size
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
@@ -64,7 +64,7 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '512'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
-              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/train', 'thermalcollision2d', '', 'tk-2D'],
+              ['/lustre/orion/lrn037/world-shared/miniweather_thermals_tiny/train', 'thermalcollision2d', '', 'tk-2D'],
               ]
   valid_data_paths: [
               #['/home/6pz/data/PDEBench_Data/2D/shallow-water', 'swe', ''],
@@ -73,7 +73,7 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '512'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
-              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/test', 'thermalcollision2d', '', 'tk-2D'],
+              ['/lustre/orion/lrn037/world-shared/miniweather_thermals_tiny/test', 'thermalcollision2d', '', 'tk-2D'],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

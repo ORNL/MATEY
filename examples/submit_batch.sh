@@ -2,22 +2,18 @@
 #SBATCH -A LRN037
 #SBATCH -J matey
 #SBATCH -o %x-%j.out
-#SBATCH -t 00:05:00
+#SBATCH -t 00:15:00
 #SBATCH -p batch
 #SBATCH -N 1
-##SBATCH -q debug
+#SBATCH -q debug
 #SBATCH -C nvme
 
 export OMP_NUM_THREADS=1
 
 export master_node=$SLURMD_NODENAME
 export config="basic_config" 
-export run_name="demo_avit"
-export yaml_config=./config/Demo_MW_avit.yaml
-#export run_name="demo_svit"
-#export yaml_config=./config/Demo_MW_svit.yaml
-#export run_name="demo_vit"
-#export yaml_config=./config/Demo_MW_vit.yaml
+export run_name="demo_vit"
+export yaml_config=./config/Demo_MW_vit.yaml
 
 ##conda env with rocm 6.0.0
 #module load rocm/6.0.0
