@@ -161,13 +161,13 @@ class BaseModel(nn.Module):
                     #print("No NAN in model parameters: ", name, param.data.numel())
             sys.exit(-1)
 
-    def get_unified_preembedding(self, x, state_labels, ilevel=0, conditioning: bool = False):
+    def get_unified_preembedding(self, x, state_labels, op=self.space_bag[ilevel]):
         ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
         # state_labels: variable index to consider varying datasets 
         # return [t, b, c_emb//4, d, h, w]
         # Sparse proj
         x = rearrange(x, 't b c d h w -> t b d h w c')
-        x = self.space_bag[ilevel](x, state_labels) if not conditioning else self.space_bag_cond[ilevel](x, state_labels)
+        x = op(x, state_labels)
         x = rearrange(x, 't b d h w c -> t b c d h w')
         #self.debug_nan(x, message=("space_bag" if not conditioning else "space_bag_cond"))
         return x
@@ -393,7 +393,8 @@ class BaseModel(nn.Module):
         assert conditioning == False or refineind is None
         ########################################################
         #[T, B, C_emb//4, D, H, W]
-        x_pre = self.get_unified_preembedding(x, state_labels, ilevel=ilevel, conditioning=conditioning)
+        op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]
+        x_pre = self.get_unified_preembedding(x, state_labels, op)
         ##############tokenizie at the coarse scale##############
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
         x = self.get_structured_sequence(x_pre, -1, tkhead_name, ilevel=ilevel, conditioning=conditioning)

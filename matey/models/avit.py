@@ -153,7 +153,7 @@ class AViT(BaseModel):
         #self.debug_nan(x, message="input")
 
         #[T, B, C_emb//4, D, H, W]
-        x_pre = self.get_unified_preembedding(x, state_labels, ilevel=imod)  
+        x_pre = self.get_unified_preembedding(x, state_labels, self.space_bag[imod])
 
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
         x = self.get_structured_sequence(x_pre, -1, tkhead_name, ilevel=imod)  
@@ -174,7 +174,7 @@ class AViT(BaseModel):
         if conditioning:
             assert len(self.tokenizer_heads_params[tkhead_name]) <= 1 # not tested with STS
 
-            c_pre = self.get_unified_preembedding(cond_dict["fields"], cond_dict["labels"], ilevel=imod, conditioning=conditioning)
+            c_pre = self.get_unified_preembedding(cond_dict["fields"], cond_dict["labels"], self.space_bag_cond[imod])
             c = self.get_structured_sequence(c_pre, -1, tkhead_name, conditioning)
 
         # Process
