@@ -431,6 +431,12 @@ class Trainer:
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                cond_dict = {}
+                try:
+                    cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                    cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
+                except:
+                    pass
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -452,7 +458,7 @@ class Trainer:
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict)
+                                    tkhead_name=tkhead_name, blockdict=blockdict) #, cond_dict=cond_dict)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -562,7 +568,14 @@ class Trainer:
                 break
 
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-           
+
+            cond_dict = {}
+            try:
+                cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
+            except:
+                continue
+
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -582,8 +595,8 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       tkhead_name=tkhead_name, blockdict=blockdict)                   
+                                       sequence_parallel_group=self.current_group, leadtime=leadtime,
+                                       tkhead_name=tkhead_name, blockdict=blockdict) #, cond_dict=cond_dict)
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
