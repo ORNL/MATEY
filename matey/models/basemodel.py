@@ -169,16 +169,16 @@ class BaseModel(nn.Module):
         x = rearrange(x, 't b c d h w -> t b d h w c')
         x = op(x, state_labels)
         x = rearrange(x, 't b d h w c -> t b c d h w')
-        #self.debug_nan(x, message=("space_bag" if not conditioning else "space_bag_cond"))
+        #self.debug_nan(x)
         return x
 
-    def get_structured_sequence(self, x, embed_index, tkhead_name, ilevel=0, conditioning: bool = False):
+    def get_structured_sequence(self, x, embed_index, tokenizer):
         ## input tensor x: [t, b, c_emb//4, d, h, w]
         # embed_index: tokenization at different resolutions; 
         ## and return patch sequences in shape [t, b, c_emd, ntoken_z, ntoken_x, ntoken_y]
         T = x.shape[0]
         x = rearrange(x, 't b c d h w -> (t b) c d h w')
-        x = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"][embed_index](x) if not conditioning else self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed_cond"][embed_index](x)
+        x = tokenizer[embed_index](x)
         x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
         #self.debug_nan(x, message="embed_ensemble")
         return x
@@ -397,7 +397,8 @@ class BaseModel(nn.Module):
         x_pre = self.get_unified_preembedding(x, state_labels, op)
         ##############tokenizie at the coarse scale##############
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
-        x = self.get_structured_sequence(x_pre, -1, tkhead_name, ilevel=ilevel, conditioning=conditioning)
+        tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
+        x = self.get_structured_sequence(x_pre, -1, tokenizer)
         x = rearrange(x, 't b c d h w -> t b c (d h w)')
         t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
         t_pos_area = rearrange(t_pos_area, 'b t d h w c-> b t (d h w) c')
@@ -407,7 +408,8 @@ class BaseModel(nn.Module):
         raise ValueError("the following code breaks in MG test")
         ##############tokenizie at the fine scale##############
         #x in shape [T, B, C_emb, nt_z_ref, nt_x_ref, nt_y_ref]
-        x_ref = self.get_structured_sequence(x_pre, 0, tkhead_name) 
+        tokenizer = self.tokenizer_ensemble_heads[0][tkhead_name]["embed" if not conditioning else "embed_cond"]
+        x_ref = self.get_structured_sequence(x_pre, 0, tokenizer)
         t_pos_area_ref, _ =self.get_t_pos_area(x_pre, 0, tkhead_name, blockdict=blockdict)
         t_pos_area_ref = rearrange(t_pos_area_ref, 'b t d h w c-> b t (d h w) c')
         x_local, t_pos_area_local, patch_ids, leadtime_local = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tkhead_name, leadtime=leadtime)

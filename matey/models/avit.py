@@ -85,7 +85,7 @@ class AViT(BaseModel):
             #FIXME: no adaptive yet for more than 2 levels
             xlist = []
             for ilevel in range(len(self.tokenizer_heads_params[tkhead_name])-1):
-                xin = self.get_structured_sequence(x_pre, ilevel, tkhead_name, ilevel=imod) # xin in shape [T, B, C_emb, ntoken_z,  ntoken_x, ntoken_y]
+                xin = self.get_structured_sequence(x_pre, ilevel, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"]) # xin in shape [T, B, C_emb, ntoken_z,  ntoken_x, ntoken_y]
                 # [B, T, ntoken_z, ntoken_x, ntoken_y, 5]
                 t_pos_area, _=self.get_t_pos_area(x_pre, ilevel, tkhead_name, blockdict=blockdict, ilevel=imod)
                 if self.posbias is not None:
@@ -109,7 +109,7 @@ class AViT(BaseModel):
         else:
             ##############tokenizie at the fine scale##############
             #in shape [T, B, C_emb, nt_z_ref, nt_x_ref, nt_y_ref]
-            x_ref = self.get_structured_sequence(x_pre, 0, tkhead_name, ilevel=imod) 
+            x_ref = self.get_structured_sequence(x_pre, 0, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"]) 
             t_pos_area_ref, _=self.get_t_pos_area(x_pre, 0, tkhead_name, blockdict=blockdict, ilevel=imod)
             t_pos_area_ref = rearrange(t_pos_area_ref, 'b t d h w c-> b t (d h w) c')
             xlocal, t_pos_area_local, patch_ids, leadtime = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tkhead_name, leadtime=leadtime)
@@ -156,7 +156,7 @@ class AViT(BaseModel):
         x_pre = self.get_unified_preembedding(x, state_labels, self.space_bag[imod])
 
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
-        x = self.get_structured_sequence(x_pre, -1, tkhead_name, ilevel=imod)  
+        x = self.get_structured_sequence(x_pre, -1, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"])
         # [B, T, ntoken_z, ntoken_x, ntoken_y, 5]
         t_pos_area, _=self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=imod)
 
@@ -175,7 +175,7 @@ class AViT(BaseModel):
             assert len(self.tokenizer_heads_params[tkhead_name]) <= 1 # not tested with STS
 
             c_pre = self.get_unified_preembedding(cond_dict["fields"], cond_dict["labels"], self.space_bag_cond[imod])
-            c = self.get_structured_sequence(c_pre, -1, tkhead_name, conditioning)
+            c = self.get_structured_sequence(c_pre, -1, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed_cond"])
 
         # Process
         for iblk, blk in enumerate(self.blocks):
