@@ -390,7 +390,7 @@ class BaseModel(nn.Module):
         #       patch_ids: [npatches] #selected token ids with sample pos inside batch considered
         #       t_pos_area: [B, T, ntoken_len_tot, 5]
         """
-        assert conditioning == False or refineind is None
+        assert refineind is None
         ########################################################
         #[T, B, C_emb//4, D, H, W]
         op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]
