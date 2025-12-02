@@ -161,19 +161,24 @@ class BaseBLASNET3DDataset(Dataset):
             #solution info
             casedir = self.cases_split[case_idx]
             dictcase = self.case_dict[casedir]
-            trajectory, leadtime = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
+            variables = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
         elif self.split_level=="snapshot":
             case_idx = self.casesids_split[index]
             leadtime = torch.tensor([0])
-            if self.type!="SR":
+            if self.type != "SR":
                 dictcase = self.case_dict["solutions"][case_idx]
                 nxyz = self.case_dict["Nxyz"][case_idx]
-                trajectory, leadtime= self._reconstruct_sample(dictcase, nxyz, leadtime)
+                variables = self._reconstruct_sample(dictcase, nxyz, leadtime)
         else:
             raise ValueError("unknown %s"%self.split_level)
         ########################################
         bcs = self._get_specific_bcs()
-        if self.type!="SR":
+        if self.type != "SR":
+            trajectory = variables[0]
+            leadtime = variables[1]
+            if len(variables) == 3:
+                cond_fields = variables[2]
+
             if self.leadtime_max>0:
                 inp=trajectory[:-1]
                 tar=trajectory[-1]
@@ -183,7 +188,10 @@ class BaseBLASNET3DDataset(Dataset):
         else:
             inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
 
-        return inp, torch.as_tensor(bcs), tar, leadtime
+        try:
+            return inp, torch.as_tensor(bcs), tar, leadtime, cond_fields
+        except:
+            return inp, torch.as_tensor(bcs), tar, leadtime
 
     def __len__(self):
         return self.len
