@@ -56,7 +56,7 @@ class BaseModel(nn.Module):
                     embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                     debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states, notransposed=notransposed, smooth=smooth))
                     if self.conditioning:
-                        self.embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                        embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                 tokenizer_ensemble_heads_level[head_name]["embed"] = embed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["debed"] = debed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["embed_cond"] = embed_ensemble_cond
@@ -161,7 +161,7 @@ class BaseModel(nn.Module):
                     #print("No NAN in model parameters: ", name, param.data.numel())
             sys.exit(-1)
 
-    def get_unified_preembedding(self, x, state_labels, op=self.space_bag[ilevel]):
+    def get_unified_preembedding(self, x, state_labels, op):
         ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
         # state_labels: variable index to consider varying datasets 
         # return [t, b, c_emb//4, d, h, w]
