@@ -100,7 +100,7 @@ class SpaceTimeBlock_all2all(nn.Module):
         super().__init__()
         self.spatialtemporal = AttentionBlock_all2all(hidden_dim=embed_dim, num_heads=num_heads, bias_type=bias_type, drop_path=drop_path)
 
-    def forward(self, x, sequence_parallel_group=None, bcs=None, leadtime=None, mask_padding=None, t_pos_area=None, local_att=False):
+    def forward(self, x, sequence_parallel_group=None, bcs=None, leadtime=None, input_control=None, mask_padding=None, t_pos_area=None, local_att=False):
         # x:  b x c x tslen
         # leadtime: [b, c]
         # mask_padding: [b, slen]
@@ -111,6 +111,6 @@ class SpaceTimeBlock_all2all(nn.Module):
             T = tslen//slen
             mask_padding = repeat(mask_padding, 'b slen-> b (t slen)', t=T)
         # attention
-        x = self.spatialtemporal(x, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, mask_padding=mask_padding, t_pos_area=t_pos_area, local_att=local_att) # Residual in block
+        x = self.spatialtemporal(x, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, input_control=input_control, mask_padding=mask_padding, t_pos_area=t_pos_area, local_att=local_att) # Residual in block
         return x
 

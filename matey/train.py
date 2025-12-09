@@ -18,7 +18,7 @@ from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease
 from .utils.visualization_utils import checking_data_pred_tar
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -39,6 +39,7 @@ class Trainer:
         self.train_loss = nn.MSELoss()
         self.startEpoch = 0
         self.epoch = 0
+        self.n_calls = 0
         self.mp_type = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.half
 
         self.profiling = self.params.profiling if hasattr(self.params, "profiling") else False
@@ -46,10 +47,13 @@ class Trainer:
         #define sequence parallel groups and local group info
         if hasattr(self.params, "sp_groupsize"):
             self.sequence_parallel_groups, self.group_size = get_sequence_parallel_group(sequence_parallel_groupsize=self.params.sp_groupsize)
+            self.current_group, self.group_rank = locate_group(self.sequence_parallel_groups, self.global_rank)
         else:
-            self.sequence_parallel_groups, self.group_size = get_sequence_parallel_group(num_sequence_parallel_groups=self.params.num_sequence_parallel_groups if hasattr(self.params, "num_sequence_parallel_groups") else self.world_size)
-
-        self.current_group, self.group_rank = locate_group(self.sequence_parallel_groups, self.global_rank)
+            # self.sequence_parallel_groups, self.group_size = get_sequence_parallel_group(num_sequence_parallel_groups=self.params.num_sequence_parallel_groups if hasattr(self.params, "num_sequence_parallel_groups") else self.world_size)
+            self.sequence_parallel_groups = None
+            self.group_size = 1
+            self.current_group = None
+            self.group_rank = 0
 
         self.iters = 0
         self.initialize_data()
@@ -230,15 +234,15 @@ class Trainer:
         else:
             sched_epochs = self.params.max_epochs
         if self.params.scheduler == 'cosine':
-            if self.params.learning_rate < 0:
-                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer,
-                                                                            #last_epoch = (self.startEpoch*params.epoch_size) - 1,
-                                                                            T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad,
-                                                                            eta_min=self.params.learning_rate / 100)
+            if self.params.optimizer in ['DAdaptAdam']:
+                self.scheduler = CosineNoIncrease(self.optimizer,
+                                    last_epoch = (self.startEpoch*self.params.epoch_size) - 1,
+                                    T_max=sched_epochs*self.params.epoch_size,
+                                    eta_min=self.params.learning_rate / 100)
             else:
                 k = self.params.warmup_steps
                 warmup = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=.01, end_factor=1.0, total_iters=k)
-                decay = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
+                decay = CosineNoIncrease(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs)
                 self.scheduler = torch.optim.lr_scheduler.SequentialLR(self.optimizer, [warmup, decay], [k])#, last_epoch=(self.params.epoch_size*self.startEpoch)-1)
         elif self.params.scheduler == 'warmuponly':
             k = self.params.warmup_steps
@@ -335,7 +339,13 @@ class Trainer:
                 self.iters = 0
             self.model = self.model.to(self.device)
         print(f"epoch:{self.epoch}")
-        print("after", self.optimizer.param_groups[0]['lr'])
+        if self.params.optimizer in ['AdamW','sgd']:
+            for g in self.optimizer.param_groups:
+                g['lr'] = self.params.learning_rate
+
+            print("after", self.optimizer.param_groups[0]['lr'])
+        elif self.params.optimizer in ['DAdaptAdam']:
+            print("after", self.optimizer.param_groups[0]['d'])
 
     def expand_model_pretraining(self):
         # See how much we need to expand the projections
@@ -400,6 +410,93 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def autoregressive_rollout(self, model, inp, field_labels, bcs, imod, leadtime, input_control, refineind, tkhead_name, blockdict, tar, inference=False):
+        device = self.device
+        world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+
+        min_lead = int(leadtime.min().item())
+        # global minimum leadtime based on end of data
+        if world_size > 1:
+            min_lead_tensor = torch.tensor([min_lead], device=device, dtype=torch.int64)
+            torch.distributed.all_reduce(min_lead_tensor, op=torch.distributed.ReduceOp.MIN)
+            min_lead = min_lead_tensor.item()
+        # max rollout length allowed, based on min leadtime and warmup
+        if inference:
+            # Inference always uses the full leadtime
+            max_rollout = max(1, min_lead)
+        else:
+            # Training: warmup logic
+            if self.params.auto_warmup and self.n_calls < 1000 and not self.params.resuming:
+                max_rollout = max(1, int(min_lead * 0.5))
+            else:
+                max_rollout = max(1, min_lead)
+        # set rollout_steps
+        if world_size > 1:
+            if dist.get_rank() == 0:
+                rollout_steps = torch.tensor(
+                    [1 if max_rollout <= 1 else torch.randint(1, max_rollout, (1,)).item()],
+                    device=device,
+                    dtype=torch.int64,
+                )
+            else:
+                rollout_steps = torch.zeros(1, device=device, dtype=torch.int64)
+
+            dist.broadcast(rollout_steps, src=0)
+            rollout_steps = rollout_steps.item()
+
+        else:
+            rollout_steps = 1 if max_rollout <= 1 else torch.randint(1, max_rollout, (1,)).item()
+
+        outputs = []
+        x_t = inp
+
+        if inference or not self.params.pushforward:
+            # Normal autoregressive rollout
+            for t in range(rollout_steps):
+                control_t = input_control[:, t:self.params.n_steps+t+1]
+                output_t = model(
+                    x_t, field_labels, bcs, imod=imod,
+                    sequence_parallel_group=self.current_group,
+                    leadtime=leadtime, input_control=control_t,
+                    refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict
+                )
+                outputs.append(output_t)
+                x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
+
+            tar = tar[:, :rollout_steps, :]
+            output = torch.stack(outputs, dim=1)
+
+        else:
+            # Pushforward rollout
+            with torch.no_grad():
+                for t in range(rollout_steps - 1):
+                    control_t = input_control[:, t:self.params.n_steps+t+1]
+                    output_t = model(
+                        x_t, field_labels, bcs, imod=imod,
+                        sequence_parallel_group=self.current_group,
+                        leadtime=leadtime, input_control=control_t,
+                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict
+                    )
+                    outputs.append(output_t)
+                    x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
+
+            # last step with grad
+            control_t = input_control[:, rollout_steps:self.params.n_steps+rollout_steps+1]
+            output_t = model(
+                x_t, field_labels, bcs, imod=imod,
+                sequence_parallel_group=self.current_group,
+                leadtime=leadtime, input_control=control_t,
+                refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict
+            )
+
+            tar = tar[:, rollout_steps-1:rollout_steps, :]
+            output = output_t.unsqueeze(1)
+
+        if not inference:
+            self.n_calls += 1
+
+        return output, tar, rollout_steps
+    
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -432,6 +529,10 @@ class Trainer:
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                 try:
+                    input_control = data["input_control"].to(self.device)
+                except:
+                    input_control = None
+                try:
                     refineind = data["refineind"].to(self.device)
                 except:
                     refineind = None
@@ -454,9 +555,17 @@ class Trainer:
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
+                    if not self.params.autoregressive:
+                        output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
                                     refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                    else:
+                        output, tar, rollout_steps = self.autoregressive_rollout(
+                            self.model, inp, field_labels, bcs, imod,
+                            leadtime, input_control, refineind, tkhead_name, blockdict, tar
+                        )
+                        if self.global_rank ==0:
+                            print('Rollout steps:',rollout_steps)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -500,7 +609,11 @@ class Trainer:
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
                 if self.log_to_screen:
-                    print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
+                    if self.params.optimizer in ['DAdaptAdam']:
+                        print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, adaptive d: {}, LT_max: {}'.format(
+                            batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], self.optimizer.param_groups[0]['d'], leadtime.max()))
+                    else:
+                        print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
                         batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
                 data_start = self.timer.get_time()
             self.check_memory("train-end %d"%batch_idx)
@@ -566,6 +679,10 @@ class Trainer:
 
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             try:
+                input_control = data["input_control"].to(self.device)
+            except:
+                input_control = None
+            try:
                 refineind = data["refineind"].to(self.device)
             except:
                 refineind = None
@@ -587,9 +704,17 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)                   
+                    if not self.params.autoregressive:
+                        output= self.model(inp, field_labels, bcs, imod=imod, 
+                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
+                                        refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)  
+                    else:
+                        output, tar, rollout_steps = self.autoregressive_rollout(
+                            self.model, inp, field_labels, bcs, imod,
+                            leadtime, input_control, refineind, tkhead_name, blockdict, tar, inference=True
+                        )
+                        if self.global_rank ==0:
+                            print('Rollout steps:',rollout_steps)
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]

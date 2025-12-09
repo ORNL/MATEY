@@ -5,6 +5,7 @@ import numpy as np
 from einops import rearrange, repeat
 from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear
 from .time_modules import leadtimeMLP
+from .input_modules import input_control_MLP
 from .positionbias_modules import positionbias_mod
 import sys
 from operator import mul
@@ -22,7 +23,7 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6,  embed_dim=768, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
+    def __init__(self, tokenizer_heads, n_states=6,  embed_dim=768, leadtime=False, leadtime_max=1, autoregressive=False, input_control=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False): 
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.tokenizer_heads_params = {}
@@ -30,7 +31,10 @@ class BaseModel(nn.Module):
         self.tokenizer_ensemble_heads=nn.ModuleList()
         self.leadtime=leadtime
         self.ltimeMLP=nn.ModuleList()
+        self.inconMLP=nn.ModuleList()
         self.posbias =nn.ModuleList()
+        self.autoregressive=autoregressive
+        self.input_control=input_control
         for _ in range(nlevels):
             tokenizer_ensemble_heads_level=nn.ModuleDict({})
             for tk in tokenizer_heads:
@@ -54,8 +58,10 @@ class BaseModel(nn.Module):
                 tokenizer_ensemble_heads_level[head_name]["embed"] = embed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["debed"] = debed_ensemble
             self.tokenizer_ensemble_heads.append(tokenizer_ensemble_heads_level)
-            if self.leadtime:
+            if self.leadtime and not self.autoregressive:
                 self.ltimeMLP.append(leadtimeMLP(hidden_dim=embed_dim))
+            if self.input_control:
+                self.inconMLP.append(input_control_MLP(hidden_dim=embed_dim,n_steps=n_steps,leadtime_max=leadtime_max))
             self.posbias.append(positionbias_mod(bias_type, embed_dim))
         self.embed_dim=embed_dim 
         

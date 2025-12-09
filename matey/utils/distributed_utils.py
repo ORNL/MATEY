@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):
@@ -266,3 +267,9 @@ def add_weight_decay(model, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
     return [
             {'params': no_decay, 'weight_decay': 0.,},
             {'params': decay, 'weight_decay': weight_decay}]
+class CosineNoIncrease(CosineAnnealingLR):
+    def get_lr(self):
+        if self.last_epoch >= self.T_max:
+            return [self.eta_min] * len(self.base_lrs)
+        return super().get_lr()
+

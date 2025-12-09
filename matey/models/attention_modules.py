@@ -439,7 +439,7 @@ class AttentionBlock_all2all(nn.Module):
 
         return x
 
-    def forward(self, x, sequence_parallel_group=None, leadtime=None, bcs=None, mask_padding=None, t_pos_area=None, local_att=False):
+    def forward(self, x, sequence_parallel_group=None, leadtime=None, input_control=None, bcs=None, mask_padding=None, t_pos_area=None, local_att=False):
         #x: b x c x token_len (len)
         #leadtime: btoken_len x c
         #t_pos_area: token_len x 4
@@ -482,6 +482,9 @@ class AttentionBlock_all2all(nn.Module):
         x = rearrange(x, '(b len) c-> b c len', b=B)
         if leadtime is not None:
             x = x + leadtime[:,:, None]
+        
+        if input_control is not None:
+            x = x + input_control[:,:, None]
 
         x = self.drop_path(x*self.gamma_att[None, :, None]) + input
 
