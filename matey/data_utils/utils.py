@@ -48,6 +48,7 @@ def closest_factors(n, dim):
     factors[0] = n
 
     while True:
+        prev = factors.copy()
         factors.sort()
         largest = factors[-1]
         sqrt_large = int(math.sqrt(largest))
@@ -60,6 +61,8 @@ def closest_factors(n, dim):
             break
         factors[-1] = factor2
         factors[0] *= factor1
+        if factors == prev:
+            break
     ##print(f"Pei debugging closest_factors, {factors}, {n}, {dim}", flush=True)
 
     factors.sort()
