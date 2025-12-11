@@ -9,6 +9,7 @@ from einops import rearrange, repeat
 from ..data_utils.utils import closest_factors
 
 ### Space utils
+#FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it
 class RMSInstanceNormSpace(nn.Module):
     def __init__(self, dim, affine=True, eps=1e-8):
         super().__init__()
@@ -141,7 +142,7 @@ class UpsampleinSpace(nn.Module):
         for ilayer in range(self.nconv-1):
             ks_ilayer = self.ks[-(ilayer+1)]
             modulelist.append(UpsampleConv3d(channels, channels, kernel_size=ks_ilayer, bias=False))
-            modulelist.append(RMSInstanceNormSpace(channels, affine=True))
+            modulelist.append(nn.InstanceNorm3d(channels, affine=True))
             modulelist.append(nn.GELU())
         modulelist.append(UpsampleConv3d(channels, channels, kernel_size=self.ks[0]))
         self.out_proj = torch.nn.Sequential(*modulelist)
@@ -220,7 +221,7 @@ class hMLP_stem(nn.Module):
             #modulelist.append(nn.Conv2d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, stride=ks_ilayer, bias=False))
             #modulelist.append(RMSInstanceNorm2d(embed_ilayer, affine=True))    #changed to RMSInstanceNormSpace
             modulelist.append(nn.Conv3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, stride=ks_ilayer, bias=False))
-            modulelist.append(RMSInstanceNormSpace(embed_ilayer, affine=True))
+            modulelist.append(nn.InstanceNorm3d(embed_ilayer, affine=True))
             modulelist.append(nn.GELU())
         self.in_proj = torch.nn.Sequential(*modulelist)
 
@@ -251,7 +252,7 @@ class hMLP_output(nn.Module):
                 modulelist.append(UpsampleConv3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, bias=False))
             else:
                 modulelist.append(nn.ConvTranspose3d(in_chans_ilayer, embed_ilayer, kernel_size=ks_ilayer, stride=ks_ilayer, bias=False))
-            modulelist.append(RMSInstanceNormSpace(embed_ilayer, affine=True))
+            modulelist.append(nn.InstanceNorm3d(embed_ilayer, affine=True))
             modulelist.append(nn.GELU())
         self.out_proj = torch.nn.Sequential(*modulelist)
         if self.notransposed:
