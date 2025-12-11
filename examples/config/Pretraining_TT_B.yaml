@@ -10,7 +10,7 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: './Dev_Pretraining_TT_irun2' # Output path
+  exp_dir: './Dev_Pretraining_TT_irun3' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
@@ -58,6 +58,7 @@ basic_config: &basic_config
       filtersize: 2
       nlevels: 5 #[2^4, 2^3, 2^2, 2^1, 2^0]
   sp_groupsize: 64 #sequence_parallel_groupsize
+  learn_res: !!bool True
   sts_model: !!bool False
   sts_train: !!bool False  #when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly
   #gammaref: 0.2 #pick all tokens that with variances larger than gammaref*max_variance to refine

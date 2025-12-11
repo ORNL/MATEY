@@ -486,6 +486,8 @@ class Trainer:
                     else:
                          output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
                                             leadtime=leadtime, tkhead_name=tkhead_name, blockdict=blockdict)
+                if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
+                    output = output + inp[-1]
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -653,6 +655,8 @@ class Trainer:
                         output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
                                         leadtime=leadtime, tkhead_name=tkhead_name, blockdict=blockdict)                
                     #################################
+                    if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
+                        output = output + inp[-1]
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
                     residuals = output - tar
