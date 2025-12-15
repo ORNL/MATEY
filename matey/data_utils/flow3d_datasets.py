@@ -1,7 +1,7 @@
 import torch
 import torch.nn
 import numpy as np
-import os
+import os, tempfile
 from .blasnet_3Ddatasets import BaseBLASNET3DDataset
 import h5py
 import json
@@ -33,6 +33,51 @@ class Flow3DDataset(BaseBLASNET3DDataset):
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
     field_names = _specifics()[2] #class attributes
 
+    def compute_and_save_stats(self, f, json_path):
+        device = torch.device(0) if torch.cuda.is_available() else torch.device("cpu")
+
+        stats = {}
+        #  for name in ['u', 'p']:
+        for name in ['u', 'p', 'k', 'nut']:
+            data = torch.from_numpy(f['/data'][name][:]).to(device)
+            if len(data.shape) == 3:
+                std, mean = torch.std_mean(data, axis=(0,1))
+                std = std.tolist()
+                mean = mean.tolist()
+            else:
+                std, mean = torch.std_mean(data)
+                std = std.item()
+                mean = mean.item()
+            stats[name] = {"mean": mean, "std": std}
+
+        print(self.leadtime_max)
+        if self.group_rank == 0:
+            dirpath  = os.path.dirname(json_path)
+            basename = os.path.basename(json_path)
+
+            fd, tmp_path = tempfile.mkstemp(prefix=f".{basename}", suffix=".tmp", dir=dirpath)
+            os.close(fd)
+
+            with open(tmp_path, 'w') as fp:
+                json.dump(stats, fp, indent=4)
+
+            with open(tmp_path, "rb", buffering=0) as fh:
+                os.fsync(fh.fileno())
+
+            os.replace(tmp_path, json_path)
+
+            dir_fd = os.open(dirpath, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+
+            print(f'Computed stats for {json_path}: {stats}', flush=True)
+            print(f"json file {json_path} generated!", flush=True)
+
+        return stats
+
+
     def _get_filesinfo(self, file_paths):
         dictcase = {}
         for datacasedir in file_paths:
@@ -57,11 +102,14 @@ class Flow3DDataset(BaseBLASNET3DDataset):
 
             # Should probably do prior to training. Just for testing right now
             json_path = os.path.join(datacasedir, "stats.json")
-            with open(json_path) as fjson:
-                try:
-                    dictcase[datacasedir]["stats"] = json.load(fjson)
-                except:
-                    raise RuntimeError("Could not read %s" % json_path)
+            if os.path.exists(json_path):
+                with open(json_path) as fjson:
+                    try:
+                        dictcase[datacasedir]["stats"] = json.load(fjson)
+                    except:
+                        raise RuntimeError("Could not read %s" % json_path)
+            else:
+                dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
 
         return dictcase
 

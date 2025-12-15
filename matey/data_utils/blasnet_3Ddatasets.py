@@ -41,6 +41,10 @@ class BaseBLASNET3DDataset(Dataset):
         self.path = path
         self.split = split
         self.extra_specific = extra_specific # Whether to use parameters in name
+
+        self.group_id = group_id
+        self.group_rank = group_rank
+        self.group_size = group_size
         
         self.dt = 1
         self.leadtime_max = leadtime_max 
