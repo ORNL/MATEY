@@ -7,6 +7,7 @@ import h5py
 import json
 from operator import mul
 from functools import reduce
+import sklearn
 
 class Flow3DDataset(BaseBLASNET3DDataset):
 
@@ -50,7 +51,6 @@ class Flow3DDataset(BaseBLASNET3DDataset):
                 mean = mean.item()
             stats[name] = {"mean": mean, "std": std}
 
-        print(self.leadtime_max)
         if self.group_rank == 0:
             dirpath  = os.path.dirname(json_path)
             basename = os.path.basename(json_path)
@@ -78,6 +78,87 @@ class Flow3DDataset(BaseBLASNET3DDataset):
         return stats
 
 
+    def compute_and_save_sdf(self, f, sdf_path, mode = "negative_one"):
+        nx = np.array(f['grid/cell_counts'])
+        n = reduce(mul, nx)
+
+        outside = np.full((n,), 1)
+        outside[f['grid/cell_idx']] = 0
+        outside[f['grid/boundaries/inlets']] = 0
+        outside[f['grid/boundaries/outlets']] = 0
+        outside[f['grid/boundaries/walls']] = 0
+        outside = outside.reshape(nx[0], nx[1], nx[2])
+        outside[0,:,:] = 0
+        outside[-1,:,:] = 0
+        outside[:,0,:] = 0
+        outside[:,-1,:] = 0
+        outside[:,:,0] = 0
+        outside[:,:,-1] = 0
+        outside = outside.reshape(-1)
+
+        bbox = f['geometry/bounding_box']
+
+        if True:
+            tx = [np.linspace(0, bbox[i], nx[i]) for i in range(3)]
+            coords = np.stack(np.meshgrid(tx[0], tx[1], tx[2], indexing="ij"), axis=-1).reshape(-1, 3)
+        else:
+            # If we wanted to do the distance to mid-cell
+            hx = [bbox[i] / nx[i] for i in range(3)]
+            tx = [np.linspace(hx[i]/2, bbox[i] - hx[i]/2, nx[i]) for i in range(3)]
+
+        channel_wall_idx = np.full((n,), 0)
+        #  wall_idx[f['grid/boundaries/walls']] = 1
+        channel_wall_idx = channel_wall_idx.reshape(nx[0], nx[1], nx[2])
+        #  wall_idx[0,:,:] = 1
+        #  wall_idx[-1,:,:] = 1
+        channel_wall_idx[:,0,:] = 1
+        channel_wall_idx[:,-1,:] = 1
+        channel_wall_idx[:,:,0] = 1
+        channel_wall_idx[:,:,-1] = 1
+        channel_wall_idx = channel_wall_idx.reshape(-1)
+        channel_wall_idx = np.where(channel_wall_idx == 1)[0]
+
+        obstacle_wall_idx = np.full((n,), 0)
+        obstacle_wall_idx[f['grid/boundaries/walls']] = 1
+        obstacle_wall_idx[channel_wall_idx] = 0
+        obstacle_wall_idx = np.where(obstacle_wall_idx == 1)[0]
+
+        channel_wall_coords = coords[channel_wall_idx, :]
+        obstacle_wall_coords = coords[obstacle_wall_idx, :]
+
+        kdtree_obstacle = sklearn.neighbors.KDTree(obstacle_wall_coords, leaf_size=2)
+        kdtree_channel = sklearn.neighbors.KDTree(channel_wall_coords, leaf_size=2)
+
+        sdf_obstacle, _ = kdtree_obstacle.query(coords, k=1)
+        sdf_channel, _ = kdtree_channel.query(coords, k=1)
+        if mode == "negative_one":
+            sdf_obstacle[outside == 1] = -1
+        else:
+            sdf_obstacle[outside == 1] = -sdf_obstacle[outside == 1]
+
+        if self.group_rank == 0:
+            dirpath  = os.path.dirname(sdf_path)
+            basename = os.path.basename(sdf_path)
+
+            fd, tmp_path = tempfile.mkstemp(prefix=f".{basename}", suffix=".tmp", dir=dirpath)
+            os.close(fd)
+
+            with open(tmp_path, 'wb') as fp:
+                np.savez(fp, sdf_obstacle=sdf_obstacle, sdf_channel=sdf_channel)
+
+            with open(tmp_path, "rb", buffering=0) as fh:
+                os.fsync(fh.fileno())
+
+            os.replace(tmp_path, sdf_path)
+
+            dir_fd = os.open(dirpath, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+
+            print(f'Computed sdf for {sdf_path}', flush=True)
+
     def _get_filesinfo(self, file_paths):
         dictcase = {}
         for datacasedir in file_paths:
@@ -95,10 +176,14 @@ class Flow3DDataset(BaseBLASNET3DDataset):
 
             dictcase[datacasedir] = {}
             dictcase[datacasedir]["file"] = file
-            dictcase[datacasedir]["sdf"] = os.path.join(datacasedir, "sdf_neg_one.npz")
             dictcase[datacasedir]["ntimes"] = nsteps
             dictcase[datacasedir]["features"] = features
             dictcase[datacasedir]["features_mapping"] = features_mapping
+
+            sdf_path = os.path.join(datacasedir, "sdf_neg_one.npz")
+            if not os.path.exists(sdf_path):
+                self.compute_and_save_sdf(f, sdf_path, "negative_one")
+            dictcase[datacasedir]["sdf"] = sdf_path
 
             # Should probably do prior to training. Just for testing right now
             json_path = os.path.join(datacasedir, "stats.json")

@@ -18,3 +18,4 @@ matplotlib
 netCDF4
 flash-attn
 git+https://github.com/sandialabs/exodusii.git
+scikit-learn
