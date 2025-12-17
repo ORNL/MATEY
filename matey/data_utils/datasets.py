@@ -102,16 +102,16 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                                distributed=distributed, max_samples=params.epoch_size,
                                rank=rank, num_replicas=num_replicas)
     # sampler = DistributedSampler(dataset) if distributed else None
-    dataloader = DataLoader(dataset,
-                            batch_size=int(params.batch_size),
-                            num_workers=params.num_data_workers,
-                            #prefetch_factor=2,
-                            shuffle=False, #(sampler is None),
-                            sampler=sampler, # Since validation is on a subset, use a fixed random subset,
-                            drop_last=True,
-                            pin_memory=torch.cuda.is_available(), 
-                            #persistent_workers=True, #ask dataloaders not destroyed after each epoch
-                            )
+    dataloader = MultiEpochsDataLoader(dataset,
+                                    batch_size=int(params.batch_size),
+                                    num_workers=params.num_data_workers,
+                                    #prefetch_factor=2,
+                                    shuffle=False, #(sampler is None),
+                                    sampler=sampler, # Since validation is on a subset, use a fixed random subset,
+                                    drop_last=True,
+                                    pin_memory=torch.cuda.is_available(), 
+                                    #persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                                    )
     return dataloader, dataset, sampler
 
 
@@ -237,3 +237,33 @@ class MixedDataset(Dataset):
 
     def __len__(self):
         return sum([len(dset) for dset in self.sub_dsets])
+    
+class MultiEpochsDataLoader(torch.utils.data.DataLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._DataLoader__initialized = False
+        self.batch_sampler = _RepeatSampler(self.batch_sampler)
+        self._DataLoader__initialized = True
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield next(self.iterator)
+
+
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
