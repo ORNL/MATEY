@@ -239,6 +239,7 @@ class MixedDataset(Dataset):
         return sum([len(dset) for dset in self.sub_dsets])
     
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):
+# Taken from: https://discuss.pytorch.org/t/enumerate-dataloader-slow/87778/3
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
