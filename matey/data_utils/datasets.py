@@ -73,7 +73,7 @@ DSET_NAME_TO_OBJECT = {
     "sstF4R32": sstF4R32Dataset,
     }
 
-def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None):
+def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=True):
     #rank: SP group ID, used for sample index
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
@@ -102,16 +102,20 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                                distributed=distributed, max_samples=params.epoch_size,
                                rank=rank, num_replicas=num_replicas)
     # sampler = DistributedSampler(dataset) if distributed else None
-    dataloader = MultiEpochsDataLoader(dataset,
-                                    batch_size=int(params.batch_size),
-                                    num_workers=params.num_data_workers,
-                                    #prefetch_factor=2,
-                                    shuffle=False, #(sampler is None),
-                                    sampler=sampler, # Since validation is on a subset, use a fixed random subset,
-                                    drop_last=True,
-                                    pin_memory=torch.cuda.is_available(), 
-                                    #persistent_workers=True, #ask dataloaders not destroyed after each epoch
-                                    )
+    if multiepoch_loader:
+        loader = MultiEpochsDataLoader
+    else:
+        loader = DataLoader
+    dataloader = loader(dataset,
+                        batch_size=int(params.batch_size),
+                        num_workers=params.num_data_workers,
+                        #prefetch_factor=2,
+                        shuffle=False, #(sampler is None),
+                        sampler=sampler, # Since validation is on a subset, use a fixed random subset,
+                        drop_last=True,
+                        pin_memory=torch.cuda.is_available(), 
+                        persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                        )
     return dataloader, dataset, sampler
 
 
