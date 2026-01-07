@@ -22,9 +22,12 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6,  embed_dim=768, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_cond=None, embed_dim=768, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
+        self.conditioning = (n_states_cond is not None and n_states_cond > 0)
+        if self.conditioning:
+            self.space_bag_cond = nn.ModuleList([SubsampledLinear(n_states_cond, embed_dim//4) for _ in range(nlevels)])
         self.tokenizer_heads_params = {}
         self.tokenizer_outheads_params = {}
         self.tokenizer_ensemble_heads=nn.ModuleList()
@@ -48,11 +51,15 @@ class BaseModel(nn.Module):
                 #patches at multiple scales/sizes
                 embed_ensemble = nn.ModuleList()
                 debed_ensemble = nn.ModuleList()
+                embed_ensemble_cond = nn.ModuleList()
                 for ps_scale, ps_scale_out in zip(patch_size, output_patch_size):
                     embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                     debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states, notransposed=notransposed, smooth=smooth))
+                    if self.conditioning:
+                        embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                 tokenizer_ensemble_heads_level[head_name]["embed"] = embed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["debed"] = debed_ensemble
+                tokenizer_ensemble_heads_level[head_name]["embed_cond"] = embed_ensemble_cond
             self.tokenizer_ensemble_heads.append(tokenizer_ensemble_heads_level)
             if self.leadtime:
                 self.ltimeMLP.append(leadtimeMLP(hidden_dim=embed_dim))
@@ -154,24 +161,24 @@ class BaseModel(nn.Module):
                     #print("No NAN in model parameters: ", name, param.data.numel())
             sys.exit(-1)
 
-    def get_unified_preembedding(self, x, state_labels, ilevel=0):
+    def get_unified_preembedding(self, x, state_labels, op):
         ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
         # state_labels: variable index to consider varying datasets 
         # return [t, b, c_emb//4, d, h, w]
         # Sparse proj
         x = rearrange(x, 't b c d h w -> t b d h w c')
-        x = self.space_bag[ilevel](x, state_labels) 
+        x = op(x, state_labels)
         x = rearrange(x, 't b d h w c -> t b c d h w')
-        #self.debug_nan(x, message="space_bag")
+        #self.debug_nan(x)
         return x
 
-    def get_structured_sequence(self, x, embed_index, tkhead_name, ilevel=0):
+    def get_structured_sequence(self, x, embed_index, tokenizer):
         ## input tensor x: [t, b, c_emb//4, d, h, w]
         # embed_index: tokenization at different resolutions; 
         ## and return patch sequences in shape [t, b, c_emd, ntoken_z, ntoken_x, ntoken_y]
         T = x.shape[0]
         x = rearrange(x, 't b c d h w -> (t b) c d h w')
-        x = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"][embed_index](x)            
+        x = tokenizer[embed_index](x)
         x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
         #self.debug_nan(x, message="embed_ensemble")
         return x
@@ -361,7 +368,7 @@ class BaseModel(nn.Module):
             leadtime = leadtime.repeat_interleave(ncoarse, dim=0)[mask]
         return x_local, t_pos_area_local, patch_ids, leadtime
 
-    def get_patchsequence(self, x,  state_labels, tkhead_name, refineind=None, leadtime=None, blockdict=None, ilevel=0):
+    def get_patchsequence(self, x,  state_labels, tkhead_name, refineind=None, leadtime=None, blockdict=None, ilevel=0, conditioning: bool = False):
         """
         ### intput tensors
         #       x: [T, B, C, D, H, W]
@@ -383,12 +390,15 @@ class BaseModel(nn.Module):
         #       patch_ids: [npatches] #selected token ids with sample pos inside batch considered
         #       t_pos_area: [B, T, ntoken_len_tot, 5]
         """
+        assert refineind is None
         ########################################################
         #[T, B, C_emb//4, D, H, W]
-        x_pre = self.get_unified_preembedding(x, state_labels, ilevel=ilevel)
+        op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]
+        x_pre = self.get_unified_preembedding(x, state_labels, op)
         ##############tokenizie at the coarse scale##############
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
-        x = self.get_structured_sequence(x_pre, -1, tkhead_name, ilevel=ilevel) 
+        tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
+        x = self.get_structured_sequence(x_pre, -1, tokenizer)
         x = rearrange(x, 't b c d h w -> t b c (d h w)')
         t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
         t_pos_area = rearrange(t_pos_area, 'b t d h w c-> b t (d h w) c')
@@ -398,7 +408,8 @@ class BaseModel(nn.Module):
         raise ValueError("the following code breaks in MG test")
         ##############tokenizie at the fine scale##############
         #x in shape [T, B, C_emb, nt_z_ref, nt_x_ref, nt_y_ref]
-        x_ref = self.get_structured_sequence(x_pre, 0, tkhead_name) 
+        tokenizer = self.tokenizer_ensemble_heads[0][tkhead_name]["embed" if not conditioning else "embed_cond"]
+        x_ref = self.get_structured_sequence(x_pre, 0, tokenizer)
         t_pos_area_ref, _ =self.get_t_pos_area(x_pre, 0, tkhead_name, blockdict=blockdict)
         t_pos_area_ref = rearrange(t_pos_area_ref, 'b t d h w c-> b t (d h w) c')
         x_local, t_pos_area_local, patch_ids, leadtime_local = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tkhead_name, leadtime=leadtime)

@@ -21,6 +21,7 @@ def build_svit(params):
                      num_heads=params.num_heads,
                      processor_blocks=params.processor_blocks,
                      n_states=params.n_states,
+                     n_states_cond=params.n_states_cond if hasattr(params, 'n_states_cond') else None,
                      SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
@@ -41,9 +42,9 @@ class sViT_all2all(BaseModel):
         n_states (int): Number of input state variables.
         sts_f
     """
-    def __init__(self, tokenizer_heads=None, embed_dim=768, space_type="all2all", time_type="all2all", num_heads=12, processor_blocks=8, n_states=6,
+    def __init__(self, tokenizer_heads=None, embed_dim=768, space_type="all2all", time_type="all2all", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
                  drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
-        super().__init__(tokenizer_heads=tokenizer_heads,  n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
+        super().__init__(tokenizer_heads=tokenizer_heads,  n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 
@@ -108,7 +109,9 @@ class sViT_all2all(BaseModel):
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
+        conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
+
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
         #self.debug_nan(x, message="input")
@@ -127,6 +130,12 @@ class sViT_all2all(BaseModel):
             x_local = rearrange(x_local, 'nrfb t c dhw_sts -> t nrfb c dhw_sts')
         else:
             x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod)
+
+        # Repeat the steps for conditioning if present
+        if conditioning:
+            assert self.sts_model == False
+            assert refineind == None
+            c, _, _, _, _, _, _, _ = self.get_patchsequence(cond_dict["fields"], cond_dict["labels"], tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, conditioning=conditioning)
         ################################################################################
         if self.posbias[imod] is not None:
             posbias = self.posbias[imod](tposarea_padding, mask_padding=mask_padding, use_zpos=True if D>1 else False) # b t L c->b t L c_emb
@@ -134,6 +143,9 @@ class sViT_all2all(BaseModel):
             x_padding = x_padding + posbias
         ######## Process ########
         for iblk, blk in enumerate(self.blocks):
+            if conditioning:
+                x_padding = x_padding + c
+
             if iblk==0:
                 x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, mask_padding=mask_padding)
             else:
