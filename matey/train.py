@@ -458,7 +458,7 @@ class Trainer:
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict) #, cond_dict=cond_dict)
+                                    tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -596,7 +596,7 @@ class Trainer:
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime,
-                                       tkhead_name=tkhead_name, blockdict=blockdict) #, cond_dict=cond_dict)
+                                       tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict)
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
