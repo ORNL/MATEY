@@ -73,7 +73,7 @@ DSET_NAME_TO_OBJECT = {
     "sstF4R32": sstF4R32Dataset,
     }
 
-def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=True):
+def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
     #rank: SP group ID, used for sample index
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
@@ -103,7 +103,12 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                                rank=rank, num_replicas=num_replicas)
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
-        loader = MultiEpochsDataLoader
+        if split != 'train':
+            print("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
+                  "sampler RNG state if the number of consumed samples differs from the number of yielded samples. Falling back to default DataLoader for valid.")
+            loader = DataLoader
+        else:
+            loader = MultiEpochsDataLoader
     else:
         loader = DataLoader
     dataloader = loader(dataset,
@@ -250,13 +255,14 @@ class MultiEpochsDataLoader(torch.utils.data.DataLoader):
         self._DataLoader__initialized = False
         self.batch_sampler = _RepeatSampler(self.batch_sampler)
         self._DataLoader__initialized = True
+        self.len_samples = self.sampler.max_samples
         self.iterator = super().__iter__()
 
     def __len__(self):
         return len(self.batch_sampler.sampler)
 
     def __iter__(self):
-        for i in range(len(self)):
+        for i in range(self.len_samples):
             yield next(self.iterator)
 
 
