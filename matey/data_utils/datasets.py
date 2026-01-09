@@ -73,7 +73,7 @@ DSET_NAME_TO_OBJECT = {
     "sstF4R32": sstF4R32Dataset,
     }
 
-def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None):
+def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
     #rank: SP group ID, used for sample index
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
@@ -102,16 +102,25 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                                distributed=distributed, max_samples=params.epoch_size,
                                rank=rank, num_replicas=num_replicas)
     # sampler = DistributedSampler(dataset) if distributed else None
-    dataloader = DataLoader(dataset,
-                            batch_size=int(params.batch_size),
-                            num_workers=params.num_data_workers,
-                            #prefetch_factor=2,
-                            shuffle=False, #(sampler is None),
-                            sampler=sampler, # Since validation is on a subset, use a fixed random subset,
-                            drop_last=True,
-                            pin_memory=torch.cuda.is_available(), 
-                            #persistent_workers=True, #ask dataloaders not destroyed after each epoch
-                            )
+    if multiepoch_loader:
+        if split != 'train':
+            print("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
+                  "sampler RNG state if the number of consumed samples differs from the number of yielded samples. Falling back to default DataLoader for valid.")
+            loader = DataLoader
+        else:
+            loader = MultiEpochsDataLoader
+    else:
+        loader = DataLoader
+    dataloader = loader(dataset,
+                        batch_size=int(params.batch_size),
+                        num_workers=params.num_data_workers,
+                        #prefetch_factor=2,
+                        shuffle=False, #(sampler is None),
+                        sampler=sampler, # Since validation is on a subset, use a fixed random subset,
+                        drop_last=True,
+                        pin_memory=torch.cuda.is_available(), 
+                        persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                        )
     return dataloader, dataset, sampler
 
 
@@ -237,3 +246,35 @@ class MixedDataset(Dataset):
 
     def __len__(self):
         return sum([len(dset) for dset in self.sub_dsets])
+    
+class MultiEpochsDataLoader(torch.utils.data.DataLoader):
+# Taken from: https://discuss.pytorch.org/t/enumerate-dataloader-slow/87778/3
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._DataLoader__initialized = False
+        self.batch_sampler = _RepeatSampler(self.batch_sampler)
+        self._DataLoader__initialized = True
+        self.len_samples = self.sampler.max_samples
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        for i in range(self.len_samples):
+            yield next(self.iterator)
+
+
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
