@@ -9,7 +9,7 @@ from operator import mul
 from functools import reduce
 import sklearn
 
-class Flow3DDataset(BaseBLASNET3DDataset):
+class Flow3D_Object(BaseBLASNET3DDataset):
 
     #  cond_field_names = ["cell_types"]
     #  cond_field_names = ["sdf_obstacle"]
@@ -79,6 +79,13 @@ class Flow3DDataset(BaseBLASNET3DDataset):
 
 
     def compute_and_save_sdf(self, f, sdf_path, mode = "negative_one"):
+        """Compute signed-distance function to the channel walls and obstacle.
+        For a given point, signed distance is a distance from that point to the
+        closest point in an obstacle or wall. The sign determines whether it is
+        inside or outside of the domain.
+        We support two modes. The default one, "negative_one", changes all
+        outside sdf values to -1.
+        """
         nx = np.array(f['grid/cell_counts'])
         n = reduce(mul, nx)
 
@@ -98,13 +105,8 @@ class Flow3DDataset(BaseBLASNET3DDataset):
 
         bbox = f['geometry/bounding_box']
 
-        if True:
-            tx = [np.linspace(0, bbox[i], nx[i]) for i in range(3)]
-            coords = np.stack(np.meshgrid(tx[0], tx[1], tx[2], indexing="ij"), axis=-1).reshape(-1, 3)
-        else:
-            # If we wanted to do the distance to mid-cell
-            hx = [bbox[i] / nx[i] for i in range(3)]
-            tx = [np.linspace(hx[i]/2, bbox[i] - hx[i]/2, nx[i]) for i in range(3)]
+        tx = [np.linspace(0, bbox[i], nx[i]) for i in range(3)]
+        coords = np.stack(np.meshgrid(tx[0], tx[1], tx[2], indexing="ij"), axis=-1).reshape(-1, 3)
 
         channel_wall_idx = np.full((n,), 0)
         #  wall_idx[f['grid/boundaries/walls']] = 1
@@ -241,7 +243,7 @@ class Flow3DDataset(BaseBLASNET3DDataset):
                         data[:, boundary_idx, ft_idx] = (np.atleast_1d(desc['value']) - mean)/std
 
             # Set conditional data
-            cond_field_names = Flow3DDataset.cond_field_names
+            cond_field_names = Flow3D_Object.cond_field_names
             n_cond = len(cond_field_names)
 
             if cond_field_names[0] == "cell_types":

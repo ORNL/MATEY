@@ -74,7 +74,7 @@ DSET_NAME_TO_OBJECT = {
     ##SST
     "sstF4R32": sstF4R32Dataset,
     ##Flow3D
-    "flow3d": Flow3DDataset,
+    "flow3d": Flow3D_Object,
     }
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
@@ -246,9 +246,8 @@ class MixedDataset(Dataset):
         #else:
         #   x, bcs, y, leadtime
         datasamples={} 
-        assert len(variables) in [4]
         assert len(variables) in [4, 5]
-        if hasattr(self.sub_dsets[dset_idx], "cond_field_names") and self.sub_dsets[dset_idx].cond_field_names is not None:
+        if getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
             datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
             datasamples["cond_fields"] = variables[-1]
             variables = variables[:-1]
