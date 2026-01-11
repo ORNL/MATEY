@@ -194,15 +194,15 @@ class BaseBLASTNET3DDataset(Dataset):
             tar = np.squeeze(tar[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy], axis=0) # C,D,H,W
 
         else:
-            assert len(variables) in (2, 3)
+            assert len(variables) in (2, 3, 4)
             trajectory, leadtime = variables[:2]
-
             trajectory = trajectory[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]
             inp = trajectory[:-1] if self.leadtime_max > 0 else trajectory
             tar = trajectory[-1]
-
-            if len(variables) == 3:
+            if len(variables) >= 3:
                 ret_dict["cond_fields"] = variables[2]
+            if len(variables) >= 4:
+                ret_dict["geometry"] = variables[3]
 
         ret_dict["x"] = inp
         ret_dict["y"] = tar
