@@ -21,7 +21,7 @@ class ForwardOptionsBase:
     blockdict: Optional[Dict[str, Any]] = None
     cond_dict: Optional[Dict[str, Any]] = None
     cond_input: Optional[Tensor] = None
-    tkhead_type: Optional[str] = 'default'     # 'default', 'graph'
+    tkhead_type: Optional[str] = 'default'     # 'default', 'graph', 'gno'
     field_labels_out: Optional[Tensor] = None
     #adaptive tokenization (1 of 2 settings)
     refine_ratio: Optional[float] = None

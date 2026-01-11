@@ -450,6 +450,13 @@ class Trainer:
                     cond_input = data["cond_input"].to(self.device)
                 else:   
                     cond_input = None
+
+                if "geometry" in data:
+                    geometry = data["geometry"]
+                    geometry["geometry"] = geometry["geometry"].to(self.device)
+                else:
+                    geometry = None
+
                 cond_dict = {}
                 try:
                     cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -474,6 +481,11 @@ class Trainer:
                 if "graph" in data:
                     tkhead_type = 'graph'
                     inp = graphdata
+                    imod_bottom = imod
+                elif "geometry" in data:
+                    inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    tkhead_type = 'gno'
+                    inp = (inp, geometry)
                     imod_bottom = imod
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
@@ -541,7 +553,7 @@ class Trainer:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
-                        batch_idx, self.global_rank, inp.shape if tkhead_type == 'default' else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
+                        batch_idx, self.global_rank, inp.shape if tkhead_type == 'default' else (graphdata if tkhead_type == 'graph' else inp[0].shape), dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
                 data_start = self.timer.get_time()
             self.check_memory("train-end %d"%batch_idx)
         if self.params.scheduler == 'steplr':
@@ -616,6 +628,12 @@ class Trainer:
             else:
                 cond_input = None
 
+            if "geometry" in data:
+                geometry = data["geometry"]
+                geometry["geometry"] = geometry["geometry"].to(self.device)
+            else:
+                geometry = None
+
             cond_dict = {}
             try:
                 cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -642,6 +660,9 @@ class Trainer:
                         tkhead_type = 'graph'
                         inp = graphdata
                         imod_bottom = imod
+                    elif 'gno' in data:
+                        tkhead_type = 'gno'
+                        inp = (inp, geometry)
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         tkhead_type = 'default'

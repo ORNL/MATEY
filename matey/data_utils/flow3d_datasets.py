@@ -18,6 +18,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
     #  cond_field_names = ["cell_types"]
     #  cond_field_names = ["sdf_obstacle"]
     cond_field_names = ["sdf_obstacle", "sdf_channel"]
+    provides_geometry = True
 
     @staticmethod
     def _specifics():
@@ -32,7 +33,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
         #  field_names = ["Vx", "Vy", "Vw", "Pressure", "k", "nut"]
         field_names = ["Vx", "Vy", "Vw", "Pressure"]
         type = "flow3d"
-        cubsizes = [192, 48, 48]
+        cubsizes = [194, 50, 50]
         case_str = "*"
         split_level = "case"
         return time_index, sample_index, field_names, type, cubsizes, case_str, split_level
@@ -167,7 +168,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
 
     def _get_filesinfo(self, file_paths):
         dictcase = {}
-        for datacasedir in file_paths:
+        for case_id, datacasedir in enumerate(file_paths):
             file = os.path.join(datacasedir, "data.h5")
             f = h5py.File(file)
             nsteps = 5000
@@ -185,6 +186,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             dictcase[datacasedir]["ntimes"] = nsteps
             dictcase[datacasedir]["features"] = features
             dictcase[datacasedir]["features_mapping"] = features_mapping
+            dictcase[datacasedir]["geometry_id"] = case_id
 
             sdf_path = os.path.join(datacasedir, "sdf_neg_one.npz")
             if not os.path.exists(sdf_path):
@@ -201,6 +203,13 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
                         raise RuntimeError("Could not read %s" % json_path)
             else:
                 dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
+
+        nx = [50, 194, 50]
+        res = nx
+        tx = np.linspace(0, nx[0], res[0], dtype=np.float32)
+        ty = np.linspace(0, nx[1], res[1], dtype=np.float32)
+        tz = np.linspace(0, nx[2], res[2], dtype=np.float32)
+        self.geometry = np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1)
 
         return dictcase
 
@@ -278,18 +287,6 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             data = data.transpose((0, -1, 3, 1, 2))
             cond_data = cond_data.transpose((0, -1, 3, 1, 2))
 
-            # We reduce H dimension from 194 x 50 x 50 to 192 x 50 x 50 to
-            # allow reasonable patch sizes. Otherwise, as 194 = 2 x 97, it
-            # would only allow us patch size of 2 or 97, neither of which are
-            # reasonable.
-
-            # Pressure has fixed-value boundary condition on the outflow. If we
-            # simply reduce the dimension by eliminating the last two layers,
-            # we lose that information. Instead, set the last H layer to be the
-            # outflow.
-            #  cond_data[:,:,:,-3,:] = cond_data[:,:,:,-1,:]  # only for cell types
-            #  data[:,ft_mapping['p'],:,-3,:] = data[:,ft_mapping['p'],:,-1,:]
-
             return data, cond_data
 
         comb_x, cond_data = get_data(time_idx, time_idx + self.nsteps_input)
@@ -297,7 +294,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data)
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "geometry": torch.from_numpy(self.geometry)}
 
     def _get_specific_bcs(self):
         # FIXME: not used for now
