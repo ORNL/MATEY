@@ -450,6 +450,12 @@ class Trainer:
                     cond_input = data["cond_input"].to(self.device)
                 else:   
                     cond_input = None
+
+                try:
+                    geometry = data["geometry"].to(self.device)
+                except:
+                    pass
+
                 cond_dict = {}
                 try:
                     cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -599,6 +605,11 @@ class Trainer:
                 cond_input = data["cond_input"].to(self.device)
             else:
                 cond_input = None
+
+            try:
+                geometry = data["geometry"].to(self.device)
+            except:
+                pass
 
             cond_dict = {}
             try:

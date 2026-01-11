@@ -185,7 +185,7 @@ class BaseBLASNET3DDataset(Dataset):
             ret_dict["y"] = tar
             ret_dict["leadtime"] = leadtime
         else:
-            assert len(variables) in [2, 3]
+            assert len(variables) in [2, 3, 4]
 
             trajectory = variables[0]
             if self.leadtime_max>0:
@@ -198,8 +198,10 @@ class BaseBLASNET3DDataset(Dataset):
             ret_dict["x"] = inp
             ret_dict["y"] = tar
             ret_dict["leadtime"] = variables[1]
-            if len(variables) == 3:
+            if len(variables) >= 3:
                 ret_dict["cond_fields"] = variables[2]
+            if len(variables) >= 4:
+                ret_dict["geometry"] = variables[3]
 
         return ret_dict
 

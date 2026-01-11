@@ -14,6 +14,7 @@ class Flow3D_Object(BaseBLASNET3DDataset):
     #  cond_field_names = ["cell_types"]
     #  cond_field_names = ["sdf_obstacle"]
     cond_field_names = ["sdf_obstacle", "sdf_channel"]
+    provides_geometry = True
 
     @staticmethod
     def _specifics():
@@ -198,6 +199,13 @@ class Flow3D_Object(BaseBLASNET3DDataset):
             else:
                 dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
 
+        nx = [50, 192, 50]
+        res = nx
+        tx = np.linspace(0, nx[0], res[0], dtype=np.float32)
+        ty = np.linspace(0, nx[1], res[1], dtype=np.float32)
+        tz = np.linspace(0, nx[2], res[2], dtype=np.float32)
+        self.geometry = np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1)
+
         return dictcase
 
     def _reconstruct_sample(self, dictcase, time_idx, leadtime):
@@ -286,14 +294,21 @@ class Flow3D_Object(BaseBLASNET3DDataset):
             #  cond_data[:,:,:,-3,:] = cond_data[:,:,:,-1,:]  # only for cell types
             #  data[:,ft_mapping['p'],:,-3,:] = data[:,ft_mapping['p'],:,-1,:]
 
-            return data, cond_data
+            indices_x = slice(6, 54)
+            indices_y = slice(1, 49)
+            indices_z = slice(1, 49)
 
-        comb_x, cond_data = get_data(time_idx, time_idx + self.nsteps_input)
-        comb_y, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
+            data      = data     [:,:,indices_z, indices_x, indices_y]
+            cond_data = cond_data[:,:,indices_z, indices_x, indices_y]
+
+            return data, cond_data, indices_x, indices_y, indices_z
+
+        comb_x, cond_data, indices_x, indices_y, indices_z = get_data(time_idx, time_idx + self.nsteps_input)
+        comb_y, _, _, _, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data)
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), torch.from_numpy(self.geometry[indices_z, indices_x, indices_y])
 
     def _get_specific_bcs(self):
         # FIXME: not used for now
