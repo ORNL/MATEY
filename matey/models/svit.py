@@ -4,7 +4,7 @@ import numpy as np
 from einops import rearrange
 from .spacetime_modules import SpaceTimeBlock_svit
 from .basemodel import BaseModel
-from ..data_utils.shared_utils import normalize_spatiotemporal_persample
+from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
 
 def build_svit(params):
     """ Builds model from parameter file.
@@ -70,10 +70,10 @@ class sViT_all2all(BaseModel):
             self.blocks_sts = nn.ModuleList([SpaceTimeBlock_svit(self.space_type, self.time_type, self.embed_dim, self.num_heads, drop_path=self.dp[i])
                                              for i in range(self.processor_blocks)])
 
-    def add_sts_model(self, xbase, patch_ids, x_local, state_labels, bcs, tkhead_name, leadtime=None, t_pos_area=None, ilevel=0):
+    def add_sts_model(self, xbase, patch_ids, x_local, bcs, tkhead_name, leadtime=None, t_pos_area=None, ilevel=0):
         #T,B,C,D,H,W
         T = xbase.shape[0]
-        space_dims = x.shape[3:]
+        space_dims = xbase.shape[3:]
         ########################################################################
         embed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"]
         debed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["debed"]
@@ -89,7 +89,7 @@ class sViT_all2all(BaseModel):
             ntokendim.append(dim//ps[idim])
         ########################################################################
         # Process
-        if self.posbias is not None:
+        if self.posbias[ilevel] is not None:
             posbias = self.posbias[ilevel](t_pos_area, use_zpos=True if space_dims[0]>1 else False) # b t L c->b t L c_emb
             posbias=rearrange(posbias,'b t L c -> t b c L')
             x_local = x_local + posbias
@@ -103,17 +103,22 @@ class sViT_all2all(BaseModel):
         #self.debug_nan(x_local, message="x_local attention block")
         # Decode -
         x_local = rearrange(x_local, 't nrfb c (d h w) -> (t nrfb) c d h w', d=ntokenrefdim[0], h=ntokenrefdim[1], w=ntokenrefdim[2])
-        x_local = debed_ensemble[0](x_local, state_labels[0])
+        x_local = debed_ensemble[0](x_local) #, state_labels[0])
         x_local = rearrange(x_local, '(t nrfb) c d h w -> nrfb t c d h w', t=T)
 
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
+                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
+        if refine_ratio is None and  self.tokenizer_heads_gammaref[tkhead_name] is None:
+            refineind=None
+        else:
+            refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x,  self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
         #self.debug_nan(x, message="input")
         x, data_mean, data_std = normalize_spatiotemporal_persample(x)
         ################################################################################
@@ -123,7 +128,6 @@ class sViT_all2all(BaseModel):
             leadtime=None
         ########Encode and get patch sequences [T, B, C_emb, ntoken_len_tot]########
         if  self.sts_model:
-            raise ValueError("need to double check after multiple levels with imod")
             #x_padding: coarse tokens; x_local: refined local tokens
             x_padding, patch_ids, _, _, x_local, leadtime_local, tposarea_padding, tposarea_local = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, leadtime=leadtime, blockdict=blockdict)
             mask_padding = None
@@ -154,11 +158,10 @@ class sViT_all2all(BaseModel):
         ################################################################################
         ######## Decode ########
         if self.sts_model:
-            raise ValueError("need to double check after multiple levels with imod")
-            xbase = self.get_spatiotemporalfromsequence(x_padding, None, None, state_labels, [D, H, W], tkhead_name)
-            x = self.add_sts_model(xbase, patch_ids, x_local, state_labels, bcs, tkhead_name, leadtime=leadtime_local, t_pos_area=tposarea_local)
+            xbase = self.get_spatiotemporalfromsequence(x_padding, None, None, [D, H, W], tkhead_name)
+            x = self.add_sts_model(xbase, patch_ids, x_local, bcs, tkhead_name, leadtime=leadtime_local, t_pos_area=tposarea_local)
         else:
-            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, state_labels, [D, H, W], tkhead_name, ilevel=imod)
+            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod)
         ######### Denormalize ########
         x = x[:,:,state_labels[0],...]
         x = x * data_std + data_mean 

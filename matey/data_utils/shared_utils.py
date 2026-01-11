@@ -25,32 +25,167 @@ def normalize_spatiotemporal_persample(x):
     x = (x - data_mean) / (data_std)
     return x, data_mean, data_std
 
-def get_top_variance_patchids(patch_size, data, gammaref, refine_ratio):
-        #FIXME: need to figure out better way to extend to more levels
-        assert len(patch_size)<3, "Implemented for two levels for now"
-        #T,C,D,H,W
-        space_dims= data.shape[2:]
+def mask_to_indices(b):
+    """
+    b: boolean mask,[B, N] 
+    return: a padded index tensor [B, Kmax].
+        Each row i contains the column indices j where b[i, j] is True,
+        in increasing j order, padded with -1 to length Kmax = max_i sum(b[i]).
+        b = tensor([[0,1,0,1],[1,0,0,0]], dtype=torch.bool)
+        idx_pad = tensor([[1,3],[0,-1]])
+    """
+    B = b.shape[0]
+    max_k  = b.sum(1).max().item()
+    idx_pad = torch.full((B, max_k), -1, dtype=torch.long, device=b.device)
+    slots = b.cumsum(dim=1)
+    rows, cols = b.nonzero(as_tuple=True)         
+    idx_pad[rows, slots[rows, cols] - 1] = cols
+    return idx_pad
+
+def unfold_patches(x, patch_size):
+    """
+    T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy
+    """
+    pd, ph, pw = patch_size
+    return x.unfold(3, pd, pd).unfold(4, ph, ph).unfold(5, pw, pw)
+
+def gather_patches(x_pl, token_idx):
+    """
+    x_pl:T, B, C, ntz*ntx*nty, psz, psx, psy
+    token_idx: B, k
+    return: T, nbatch, C, psz, psx, psy
+    """
+    T, B, C, N, psz, psx, psy = x_pl.shape
+    k = token_idx.shape[1]
+    expand_shape = (T, B, C, k, psz, psx, psy)
+    gather_idx = token_idx.clamp(min=0).unsqueeze(0).unsqueeze(2).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand(expand_shape)
+    gathered = x_pl.gather(dim=3, index=gather_idx) #T, B, C, k, psz, psx, psy
+    valid_mask       = token_idx >= 0 #B, k
+    gathered = rearrange(gathered,'T B C k psz psx psy -> T (B k) C psz psx psy')
+    gathered = gathered[:, valid_mask.flatten()] # keep only real tokens
+    return gathered            
+
+def get_top_variance_patchids_ilevel(ps, xdata, gammaref, refine_ratio, full=True):
+    #T,B,C,D,H,W
+    B, space_dims= xdata.shape[1], xdata.shape[3:]
+    ntokendim=[]
+    #psz, psx, psy
+    for idim, dim in enumerate(space_dims):
+        ntokendim.append(dim//ps[idim])
+    num_tokens=reduce(mul, ntokendim)
+    #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,nty,nty
+    variance = xdata.unfold(3,ps[0],ps[0]).unfold(4,ps[1],ps[1]).unfold(5,ps[2],ps[2]).var(dim=(0,-3,-2,-1)).mean(dim=1)
+    assert ntokendim==list(variance.shape[1:])
+    variance = rearrange(variance, 'B ntz ntx nty -> B (ntz ntx nty)')
+    if gammaref is None:
+        nrefines = int(refine_ratio * num_tokens)
+        _, II_t = variance.topk(nrefines, dim=1)
+    else:
+        varmax, _ = variance.max(dim=1, keepdim=True)
+        b = variance > varmax*gammaref
+        II_t=mask_to_indices(b)
+    idx_pad = torch.full((B, num_tokens if full else II_t.shape[1]), -1, dtype=torch.long, device=xdata.device)
+    idx_pad[:,:II_t.shape[1]]=II_t
+    return idx_pad
+
+def get_top_variance_patchids_new(patch_size, xdata, gammaref, refine_ratio, full=True):
+    #used in the matey paper 2025 with 2D data and 2 levels
+    #xdata: T,B,C,D,H,W
+    #patch_size: e.g. [[1,8,8], [1,16,16], ...]
+    if len(patch_size)>=3:
+        print("Warning: not tested with 3 levels yet!!!!")
+        
+    if gammaref is None and refine_ratio is None:
+        return [],[]
+    refineind = []
+    x_current = xdata
+    blockdict_list=[]
+    for ps in reversed(patch_size[1:]): 
+        II_t = get_top_variance_patchids_ilevel(ps, x_current, gammaref, refine_ratio, full=full)
+        #[B_parent, k]
+        refineind.append(II_t)
+        #prepare data for next levels
+        #T,B_parent,C,D,H,W-->T,B_parent,C,ntz,ntx,nty,psz,psx,psy
+        xplits = unfold_patches(x_current, ps)    
+        ntz = xplits.shape[3]
+        ntx = xplits.shape[4]
+        nty = xplits.shape[5]
+               
+        xplits = rearrange(xplits, 'T B C ntz ntx nty psz psx psy -> T B C (ntz ntx nty) psz psx psy')
+        x_current = gather_patches(xplits, II_t)    #T, B_current, C, psz, psx, psy, for next round 
+        #B_current (=sum_i=0^{B_parent} k_i)
+
+        #keep track of refined patches location and size
+        #B0(=B) -> B1 (=sum_i=0^{B-1} k_i) -> B2 (=sum_i=0^{B1-1} k_i)->...
+        valid = II_t >= 0    
+        if len(blockdict_list) == 0:
+            parent_off = torch.zeros(II_t.shape[0], 3, dtype=torch.long, device=II_t.device)  # [B_parent,3]
+        else:
+            # offset is [B_parent,3] from previous iteration’s kept patches
+            parent_off = offset.expand(-1, II_t.size(1), -1)  # [B_parent,k,3]
+
+
+        #unravel flat ids -> (iz,ix,iy)
+        stride_x=nty
+        stride_z=ntx*nty
+
+        iz=II_t//stride_z
+        rem=II_t%stride_z
+        ix=rem//stride_x
+        iy=rem%stride_x
+
+        psz, psx, psy = ps
+
+        #start coords in absolute indices
+        #parent_off[...,0]=z, [...,1]=x, [...,2]=y
+        start_z = iz * psz + parent_off[..., 0:1]
+        start_x = ix * psx + parent_off[..., 1:2]
+        start_y = iy * psy + parent_off[..., 2:3]
+
+        coords = torch.cat((start_z, start_x, start_y), dim=-1) #[B_parent,k,3]
+        coords[~valid] = -1 
+
+        keep_mask = valid.flatten()
+        offset = coords.reshape(-1, 3)[keep_mask] #[B_current,3]
+
+        blockdict_list.append(
+            {
+            'zxy_start':offset, #B_current, 3
+            'Lzxy': ps
+            }
+        )
+        
+    #refineind: index tensors (from coarse to fine),
+    # [tensor([B0, k0]),tensor([B1, k1]), ..., tensor([B{nlevel-1}, k{nlevel-1}])]           
+    return refineind, blockdict_list
+
+def get_top_variance_patchids(patch_size, xdata, gammaref, refine_ratio, full=True):
+        if len(patch_size)>=3:
+           return get_top_variance_patchids_new(patch_size, xdata, gammaref, refine_ratio, full=full)
+        
+        #T,B,C,D,H,W
+        B, space_dims= xdata.shape[1], xdata.shape[3:]
         ps = patch_size[-1]
         ntokendim=[]
         #psz, psx, psy
         for idim, dim in enumerate(space_dims):
             ntokendim.append(dim//ps[idim])
         num_tokens=reduce(mul, ntokendim)
-        xdata = torch.from_numpy(np.asarray(data))
         II_topk = torch.empty(num_tokens, dtype=torch.int).fill_(-1)
-        #T,C,D,H,W-->T,C,ntz,ntx,nty,psz,psx,psy->c,ntx,ntx,nty->ntx,nty,ntz
-        variance = xdata.unfold(2,ps[0],ps[0]).unfold(3,ps[1],ps[1]).unfold(4,ps[2],ps[2]).var(dim=(0,-3,-2,-1)).mean(dim=0)
-        assert ntokendim==list(variance.shape)
-        variance = rearrange(variance, 'ntz ntx nty -> (ntz ntx nty)')
+        #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,nty,nty
+        variance = xdata.unfold(3,ps[0],ps[0]).unfold(4,ps[1],ps[1]).unfold(5,ps[2],ps[2]).var(dim=(0,-3,-2,-1)).mean(dim=1)
+        assert ntokendim==list(variance.shape)[1:]
+        variance = rearrange(variance, 'B ntz ntx nty -> B (ntz ntx nty)')
         if gammaref is None:
             nrefines = int(refine_ratio * num_tokens)
-            _, II_t = variance.topk(nrefines)
+            _, II_t = variance.topk(nrefines, dim=1)
         else:
-            varmax = variance.max()
+            varmax, _ = variance.max(dim=1, keepdim=True)
             b = variance > varmax*gammaref
-            II_t = b.nonzero().type(torch.int)[:,0]
-        II_topk[:len(II_t)]=II_t
-        return II_topk
+            II_t=mask_to_indices(b)
+        idx_pad = torch.full((B, num_tokens if full else II_t.shape[1]), -1, dtype=torch.long, device=xdata.device)
+        idx_pad[:,:II_t.shape[1]]=II_t
+        return idx_pad
 
 def plot_checking(patch_size, field_names, time_idx, data):
     #T,C,D,H,W

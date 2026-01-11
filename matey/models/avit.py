@@ -5,7 +5,7 @@ import numpy as np
 from einops import rearrange, repeat
 from .spacetime_modules import SpaceTimeBlock
 from .basemodel import BaseModel
-from ..data_utils.shared_utils import normalize_spatiotemporal_persample
+from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
 import sys, copy
 from operator import mul
 from functools import reduce
@@ -88,7 +88,7 @@ class AViT(BaseModel):
                 xin = self.get_structured_sequence(x_pre, ilevel, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"]) # xin in shape [T, B, C_emb, ntoken_z,  ntoken_x, ntoken_y]
                 # [B, T, ntoken_z, ntoken_x, ntoken_y, 5]
                 t_pos_area, _=self.get_t_pos_area(x_pre, ilevel, tkhead_name, blockdict=blockdict, ilevel=imod)
-                if self.posbias is not None:
+                if self.posbias[imod] is not None:
                     posbias = self.posbias[imod](t_pos_area, use_zpos=True if space_dims[0]>1 else False) # b t d h w c->b t d h w c_emb
                     posbias=rearrange(posbias,'b t d h w c -> t b c d h w')
                     xin = xin + posbias
@@ -99,10 +99,9 @@ class AViT(BaseModel):
                     else:
                         xin = blk(xin, bcs, leadtime=None) 
 
-                # Decode - It would probably be better to grab the last time here since we're only
                 # predicting the last step, but leaving it like this for compatibility to causal masking
                 xin = rearrange(xin, 't b c d h w -> (t b) c d h w')
-                xin = debed_ensemble[ilevel](xin, state_labels[0])
+                xin = debed_ensemble[ilevel](xin) #, state_labels[0])
                 xin = rearrange(xin, '(t b) c d h w -> t b c d h w', t=T)
                 xlist.append(xin)
             x = x + torch.stack(xlist, dim=0).sum(dim=0)
@@ -112,7 +111,7 @@ class AViT(BaseModel):
             x_ref = self.get_structured_sequence(x_pre, 0, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"]) 
             t_pos_area_ref, _=self.get_t_pos_area(x_pre, 0, tkhead_name, blockdict=blockdict, ilevel=imod)
             t_pos_area_ref = rearrange(t_pos_area_ref, 'b t d h w c-> b t (d h w) c')
-            xlocal, t_pos_area_local, patch_ids, leadtime = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tkhead_name, leadtime=leadtime)
+            xlocal, t_pos_area_local, patch_ids, leadtime = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, embed_ensemble, leadtime=leadtime)
             ############################################################
             psr0, psr1, psr2 = [ps_ci//ps_refi for ps_ci, ps_refi in zip(embed_ensemble[-1].patch_size, embed_ensemble[0].patch_size)] #sts
             xlocal = rearrange(xlocal, 'nrfb t c (d h w) -> t nrfb c d h w', d=psr0, h=psr1, w=psr2)
@@ -134,21 +133,28 @@ class AViT(BaseModel):
             # Decode - It would probably be better to grab the last time here since we're only
             # predicting the last step, but leaving it like this for compatibility to causal masking
             xlocal = rearrange(xlocal, 't nrfb c d h w -> (t nrfb) c d h w')
-            xlocal = debed_ensemble[0](xlocal, state_labels[0])
+            xlocal = debed_ensemble[0](xlocal)#, state_labels[0])
             xlocal = rearrange(xlocal, '(t nrfb) c d h w -> t nrfb c d h w', t=T)
             #self.debug_nan(xlocal, message="xlocal debed_ensemble")
             xlocal = rearrange(xlocal, 't nrfb c d h w -> nrfb t c d h w')
+            xlocal = xlocal[:,:,state_labels[0],...]
             ntokendim=[]
             for idim, dim in enumerate(space_dims):
                 ntokendim.append(dim//embed_ensemble[-1].patch_size[idim])
             x = self.add_localpatches(x, xlocal, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, refineind=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
+                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
+        if self.tokenizer_heads_gammaref[tkhead_name] is None and refine_ratio is None:
+            refineind=None
+        else:
+            refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x, self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
+
         x, data_mean, data_std = normalize_spatiotemporal_persample(x)
         #self.debug_nan(x, message="input")
 
@@ -200,7 +206,6 @@ class AViT(BaseModel):
 
         xbase = x.clone()
         if len(self.tokenizer_heads_params[tkhead_name])>1:
-            raise ValueError("need to double check after multiple levels with imod")
             x = self.add_sts_model(x, x_pre, state_labels, bcs, tkhead_name, leadtime=leadtime, refineind=refineind, blockdict=blockdict)
 
         # Denormalize

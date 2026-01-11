@@ -5,7 +5,7 @@ import numpy as np
 from einops import rearrange
 from .spacetime_modules import SpaceTimeBlock_all2all
 from .basemodel import BaseModel
-from ..data_utils.shared_utils import normalize_spatiotemporal_persample
+from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids 
 from ..data_utils.utils import construct_filterkernel
 from .spatial_modules import UpsampleinSpace, RMSInstanceNormSpace
 
@@ -174,13 +174,19 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c t d h w -> b c (t d h w)')
         return x            
     
-    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None, refineind=None, tkhead_name=None, blockdict=None):
+    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None,
+                tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None):
+        
+        if refine_ratio is None and gammaref is None:
+            refineind=None
+        else:
+            raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
         
         if imod<self.nhlevels-1:
             x, blockdict=self.filterdata(x, blockdict=blockdict)
         if imod>0:
             x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                    refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                    tkhead_name=tkhead_name, blockdict=blockdict)
         #x_input = x.clone()
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
@@ -228,7 +234,7 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c (t ntoken_tot) -> t b c ntoken_tot', t=T)
         #################################################################################
         ######## Decode ########
-        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, state_labels, [D, H, W], tkhead_name, ilevel=imod)
+        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod)
         ########upsampling######
         x_correct = x[-1]
         del x

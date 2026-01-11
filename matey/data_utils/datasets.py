@@ -89,9 +89,6 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = params.dt if hasattr(params,'dt') else 1,
                             leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
-                            refine_ratio=params.refine_ratio if hasattr(params, 'refine_ratio')  else None,
-                            gammaref=params.gammaref if hasattr(params, 'gammaref')  else None,
-                            SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else None,
                             group_id=rank, group_rank=group_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
@@ -118,7 +115,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
 class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
-                  enforce_max_steps=False, train_offset=0, tokenizer_heads=None, refine_ratio=None, gammaref=None, SR_ratio=None,
+                  enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   group_id=0, group_rank=0, group_size=1):
         super().__init__()
         # Global dicts used by Mixed DSET.
@@ -138,15 +135,10 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
-        if refine_ratio is not None and gammaref is not None:
-            print("Warning: both refine_ratio and gammaref: %.2f, %.2f are provided in config"%(refine_ratio, gammaref))
-            print("We will use gammaref value for adaptivity")
-            refine_ratio = None
-
         for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
                                                  dt=dt, leadtime_max = leadtime_max, train_val_test=train_val_test, split=split,
-                                                 tokenizer_heads=tokenizer_heads, refine_ratio=refine_ratio, gammaref=gammaref, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
+                                                 tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
                                                  group_id=group_id, group_rank=group_rank, group_size=group_size)
             # Check to make sure our dataset actually exists with these settings
             try:
@@ -217,9 +209,8 @@ class MixedDataset(Dataset):
         variables = self.sub_dsets[dset_idx][local_idx]
         #assuming variables in order: 
         #   x, bcs, y, leadtime
-        #   x, bcs, y, refineind, leadtime
         datasamples={} 
-        assert len(variables) in [4, 5]
+        assert len(variables) in [4]
 
         x, bcs, y = variables[:3]
         leadtime = variables[-1]
@@ -229,10 +220,7 @@ class MixedDataset(Dataset):
         datasamples["leadtime"] = leadtime
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
-        if len(variables) == 5:
-            refineind = variables[-2]
-            datasamples["refineind"] = refineind
-
+        
         return datasamples
 
     def __len__(self):

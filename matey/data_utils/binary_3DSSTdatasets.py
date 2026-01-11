@@ -27,11 +27,10 @@ class BaseBinary3DSSTDataset(Dataset):
         subname (str): Name to use for dataset
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None):
         super().__init__()
         self.path = path
         self.split = split
@@ -48,8 +47,6 @@ class BaseBinary3DSSTDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref
 
     def get_name(self):
         return self.type
@@ -400,14 +397,6 @@ class BaseBinary3DSSTDataset(Dataset):
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, leadtime)
         bcs = self._get_specific_bcs()
 
-        for tk in self.tokenizer_heads:
-            if tk["head_name"] == self.tkhead_name:
-                patch_size = tk["patch_size"]
-                break
-        #
-        if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
-            refineind = get_top_variance_patchids(patch_size, trajectory[:-1], self.gammaref, self.refine_ratio)
-            return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], refineind, leadtime
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
