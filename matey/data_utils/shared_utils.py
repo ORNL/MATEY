@@ -73,7 +73,7 @@ def get_top_variance_patchids_ilevel(ps, xdata, gammaref, refine_ratio, full=Tru
     for idim, dim in enumerate(space_dims):
         ntokendim.append(dim//ps[idim])
     num_tokens=reduce(mul, ntokendim)
-    #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,nty,nty
+    #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,ntx,nty
     variance = xdata.unfold(3,ps[0],ps[0]).unfold(4,ps[1],ps[1]).unfold(5,ps[2],ps[2]).var(dim=(0,-3,-2,-1)).mean(dim=1)
     assert ntokendim==list(variance.shape[1:])
     variance = rearrange(variance, 'B ntz ntx nty -> B (ntz ntx nty)')
@@ -172,7 +172,7 @@ def get_top_variance_patchids(patch_size, xdata, gammaref, refine_ratio, full=Tr
             ntokendim.append(dim//ps[idim])
         num_tokens=reduce(mul, ntokendim)
         II_topk = torch.empty(num_tokens, dtype=torch.int).fill_(-1)
-        #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,nty,nty
+        #T,B,C,D,H,W-->T,B,C,ntz,ntx,nty,psz,psx,psy->B,C,ntz,ntx,nty->B,ntz,ntx,nty
         variance = xdata.unfold(3,ps[0],ps[0]).unfold(4,ps[1],ps[1]).unfold(5,ps[2],ps[2]).var(dim=(0,-3,-2,-1)).mean(dim=1)
         assert ntokendim==list(variance.shape)[1:]
         variance = rearrange(variance, 'B ntz ntx nty -> B (ntz ntx nty)')

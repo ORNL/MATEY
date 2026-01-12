@@ -474,7 +474,7 @@ class Trainer:
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
-                if torch.isnan(loss) or  not torch.isfinite(loss):
+                if self.params.accum_grad==1 and (torch.isnan(loss) or  not torch.isfinite(loss)):
                     print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
                     continue
                 with record_function_opt("model backward", enabled=self.profiling):
