@@ -237,11 +237,6 @@ class TheWellDataset(Dataset):
                 else:
                     trajectory = np.append(trajectory, np.take(trajectory, [-(ires+1) for ires in range(ps-nres_)], axis=2+ips), axis=2+ips)
 
-        if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
-            refineind = get_top_variance_patchids(patch_size, trajectory[:-1], self.gammaref, self.refine_ratio)
-
-            return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], refineind, leadtime
-
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):

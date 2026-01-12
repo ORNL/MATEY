@@ -181,19 +181,6 @@ class BasenetCDFDirectoryDataset(Dataset):
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
-        for tk in self.tokenizer_heads:
-            if tk["head_name"] == self.tkhead_name:
-                patch_size = tk["patch_size"]
-                break
-
-        for tk in self.tokenizer_heads:
-            if tk["head_name"] == self.tkhead_name:
-                patch_size = tk["patch_size"]
-                break
-        if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
-            refineind = get_top_variance_patchids(patch_size, trajectory[:-1], self.gammaref, self.refine_ratio)
-
-            return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], refineind, leadtime
 
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 

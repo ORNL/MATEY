@@ -183,14 +183,6 @@ class BaseBLASNET3DDataset(Dataset):
         else:
             inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
 
-        for tk in self.tokenizer_heads:
-            if tk["head_name"] == self.tkhead_name:
-                patch_size = tk["patch_size"]
-                break
-        if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
-            refineind = get_top_variance_patchids(patch_size, inp, self.gammaref, self.refine_ratio)
-
-            return inp, torch.as_tensor(bcs), tar, refineind, leadtime
         return inp, torch.as_tensor(bcs), tar, leadtime
 
     def __len__(self):

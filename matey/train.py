@@ -432,10 +432,6 @@ class Trainer:
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                 try:
-                    refineind = data["refineind"].to(self.device)
-                except:
-                    refineind = None
-                try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
                     blockdict = None
@@ -456,7 +452,7 @@ class Trainer:
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)
+                                    tkhead_name=tkhead_name, blockdict=blockdict)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -478,8 +474,9 @@ class Trainer:
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
-                if torch.isnan(loss) or  not torch.isfinite(loss):
+                if self.params.accum_grad==1 and (torch.isnan(loss) or  not torch.isfinite(loss)):
                     print(f"NaN detected in loss at batch {batch_idx}. Skipping batch...")
+                    continue
                 with record_function_opt("model backward", enabled=self.profiling):
                     self.gscaler.scale(loss).backward()
                 backward_end = self.timer.get_time()
@@ -565,10 +562,7 @@ class Trainer:
                 break
 
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-            try:
-                refineind = data["refineind"].to(self.device)
-            except:
-                refineind = None
+           
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -589,7 +583,7 @@ class Trainer:
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       refineind=refineind, tkhead_name=tkhead_name, blockdict=blockdict)                   
+                                       tkhead_name=tkhead_name, blockdict=blockdict)                   
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]

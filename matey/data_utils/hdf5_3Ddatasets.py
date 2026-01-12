@@ -247,14 +247,6 @@ class BaseHDF53DDataset(Dataset):
         bcs = self._get_specific_bcs()
         #########################################
         #print("hdf5_3Ddatasets:", self.path, trajectory.min(), trajectory.max(), ix, iy, iz, icx, icy, icz, leadtime, flush=True)
-        for tk in self.tokenizer_heads:
-            if tk["head_name"] == self.tkhead_name:
-                patch_size = tk["patch_size"]
-                break
-        #print(f"Memory summary: Data {trajectory.shape}, CUDA {torch.cuda.memory_allocated()/ 1024**3} GB; RAM {psutil.virtual_memory().used/1024**3} GB, {psutil.virtual_memory().percent} percentage", flush=True)
-        if len(patch_size)==2 and (self.refine_ratio is not None or self.gammaref is not None):
-            refineind =  get_top_variance_patchids(patch_size, trajectory[:-1], self.gammaref, self.refine_ratio)
-            return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], refineind, leadtime
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):

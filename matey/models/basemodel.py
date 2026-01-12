@@ -30,6 +30,7 @@ class BaseModel(nn.Module):
             self.space_bag_cond = nn.ModuleList([SubsampledLinear(n_states_cond, embed_dim//4) for _ in range(nlevels)])
         self.tokenizer_heads_params = {}
         self.tokenizer_outheads_params = {}
+        self.tokenizer_heads_gammaref={}
         self.tokenizer_ensemble_heads=nn.ModuleList()
         self.leadtime=leadtime
         self.ltimeMLP=nn.ModuleList()
@@ -47,6 +48,7 @@ class BaseModel(nn.Module):
                     output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
                 self.tokenizer_heads_params[head_name]=patch_size
                 self.tokenizer_outheads_params[head_name]=output_patch_size
+                self.tokenizer_heads_gammaref[head_name]=tk.get("gammaref", None)
                 tokenizer_ensemble_heads_level[head_name]=nn.ModuleDict({})
                 #patches at multiple scales/sizes
                 embed_ensemble = nn.ModuleList()
@@ -324,7 +326,7 @@ class BaseModel(nn.Module):
 
         return x_padding, patch_ids_ref, mask_padding, t_pos_area_padding
 
-    def get_chosenrefinedpatches(self, x_refine, refineind, t_pos_area_refine, tkhead_name, leadtime=None):
+    def get_chosenrefinedpatches(self, x_refine, refineind, t_pos_area_refine, embed_ensemble, leadtime=None):
         """
         ###input tensors 
         #      x_refine :[T, B, C_emb, nt_z_ref, nt_x_ref, nt_y_ref] #ntzxy_ref= nt_z_ref*nt_x_ref*nt_y_ref
@@ -337,7 +339,7 @@ class BaseModel(nn.Module):
         #       patch_ids:     [npatches] (ids of coarsen tokens chosen to refine)
         """
         #######################################################
-        embed_ensemble = self.tokenizer_ensemble_heads[tkhead_name]["embed"]
+        #embed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"]
         #######################################################
         B, ncoarse = refineind.shape
         nt_z_ref, nt_x_ref, nt_y_ref = x_refine.shape[3:]
@@ -390,7 +392,6 @@ class BaseModel(nn.Module):
         #       patch_ids: [npatches] #selected token ids with sample pos inside batch considered
         #       t_pos_area: [B, T, ntoken_len_tot, 5]
         """
-        assert refineind is None
         ########################################################
         #[T, B, C_emb//4, D, H, W]
         op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]
@@ -405,14 +406,14 @@ class BaseModel(nn.Module):
         if refineind is None:
             return x, None, None, None, None, None, t_pos_area, None
         ########################################################
-        raise ValueError("the following code breaks in MG test")
+        #FIXME: ("the following code breaks in MG test")
         ##############tokenizie at the fine scale##############
         #x in shape [T, B, C_emb, nt_z_ref, nt_x_ref, nt_y_ref]
         tokenizer = self.tokenizer_ensemble_heads[0][tkhead_name]["embed" if not conditioning else "embed_cond"]
         x_ref = self.get_structured_sequence(x_pre, 0, tokenizer)
         t_pos_area_ref, _ =self.get_t_pos_area(x_pre, 0, tkhead_name, blockdict=blockdict)
         t_pos_area_ref = rearrange(t_pos_area_ref, 'b t d h w c-> b t (d h w) c')
-        x_local, t_pos_area_local, patch_ids, leadtime_local = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tkhead_name, leadtime=leadtime)
+        x_local, t_pos_area_local, patch_ids, leadtime_local = self.get_chosenrefinedpatches(x_ref, refineind, t_pos_area_ref, tokenizer, leadtime=leadtime)
         #[npatches, T, C, ntzxy_sts] and [npatches, T, ntzxy_sts, 5]
         if self.sts_model:
             return x, patch_ids, None, None, x_local, leadtime_local, t_pos_area, t_pos_area_local
@@ -422,7 +423,7 @@ class BaseModel(nn.Module):
         #mask_padding: [B, ntoken_tot]
         return x_padding, patch_ids, patch_ids_ref, mask_padding, None, None, t_pos_area_padding, None
 
-    def get_spatiotemporalfromsequence(self, x_padding, patch_ids, patch_ids_ref, state_labels, space_dims, tkhead_name, ilevel=0):
+    def get_spatiotemporalfromsequence(self, x_padding, patch_ids, patch_ids_ref, space_dims, tkhead_name, ilevel=0):
         #taking token sequences, x_padding, in shape [T, B, C_emb, ntoken_tot] as input
         #patch_ids_ref: [npatches] (ids of effective tokens in x_local)
         #patch_ids: [npatches] #selected token ids with sample pos inside batch considered
@@ -453,7 +454,7 @@ class BaseModel(nn.Module):
             x_coarsen = rearrange(x_coarsen, '(t b) c d h w -> t b c d h w', t=T)
             return x_coarsen
         ########################################################
-        raise ValueError("the following code breaks in MG test")
+        #FIXME: "the following code breaks in MG test"
         if self.replace_patch:
             ######**********refined reconstruction**********######
             #T, B, C, ntz_ref, ntx_ref, nty_ref
@@ -464,14 +465,14 @@ class BaseModel(nn.Module):
             #refined patches with coarsen patches filled
             x_refined = rearrange(x_refined, '(b d h w) t c (ntz_sts ntx_sts nty_sts) -> (t b) c (d ntz_sts) (h ntx_sts) (w nty_sts)', b=B, d=ntokendim[0], h=ntokendim[1], w=ntokendim[2], ntz_sts=ntokenstsdim[0], ntx_sts=ntokenstsdim[1], nty_sts=ntokenstsdim[2])
             #reconstruct from refined patches to solution fields
-            x_reconst_ref = debed_ensemble[0](x_refined, state_labels[0])
+            x_reconst_ref = debed_ensemble[0](x_refined) #, state_labels[0])
             x_reconst_ref = rearrange(x_reconst_ref, '(t b) c d h w -> t b c d h w', t=T)
             ######**********add the coarsen reconstruction**********######
             #coarsen patches with important patches from refined
             x_coarsen=rearrange(x_coarsen, 't b c d h w -> (b d h w) t c')
             x_coarsen[patch_ids] = xlocal[patch_ids_ref].mean(dim=-1).clone()
             x_coarsen = rearrange(x_coarsen, '(b d h w) t c ->  (t b) c d h w', b=B, d=ntokendim[0], h=ntokendim[1], w=ntokendim[2])
-            x_reconst = debed_ensemble[-1](x_coarsen, state_labels[0])
+            x_reconst = debed_ensemble[-1](x_coarsen) #, state_labels[0])
             x_reconst = rearrange(x_reconst, '(t b) c d h w -> t b c d h w', t=T)
             ########################################################
             #sum two reconstructions
@@ -493,7 +494,7 @@ class BaseModel(nn.Module):
             xlocal = rearrange(xlocal, 't b c (nref_tokens ntzxy_sts) -> (b nref_tokens) t c ntzxy_sts', ntzxy_sts = ntzxy_sts)
             xlocal = xlocal[patch_ids_ref]
             xlocal = rearrange(xlocal, 'nrfb t c (d h w) -> (t nrfb) c d h w', d=ntokenstsdim[0], h=ntokenstsdim[1], w=ntokenstsdim[2])
-            xlocal = debed_ensemble[0](xlocal, state_labels[0])
+            xlocal = debed_ensemble[0](xlocal) #, state_labels[0])
             xlocal = rearrange(xlocal, '(t nrfb) c d h w -> nrfb t c d h w', t=T) 
             ########################################################
             #images to small patches

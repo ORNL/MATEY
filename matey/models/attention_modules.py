@@ -12,6 +12,8 @@ from .spatial_modules import RMSInstanceNormSpace
 
 import sys
 from flash_attn import flash_attn_func
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
 
 def build_time_block(attention_type, embed_dim, num_heads, bias_type="none"):
     """
@@ -391,51 +393,74 @@ class AttentionBlock_all2all(nn.Module):
         x = self.norm1_mask(x, mask_padding)
         x = rearrange(x, 'b c len -> (b len) c')
         mask_padding_BL = rearrange(mask_padding, 'b c1 len -> (b c1 len)')
+        
+        mask_BL = mask_padding_BL.to(torch.bool)
+        idx = mask_BL.nonzero(as_tuple=False).squeeze(1)  #(Nvalid,)
+
         # Rearrange and prenorm
         x_qkv = repeat(x, 'blen c -> blen (n3 c)', n3=3)
-        x_qkv[mask_padding_BL, :] = self.input_head(x[mask_padding_BL]) # Q, K, V projections
+        
+        ##x_qkv[mask_padding_BL, :] = self.input_head(x[mask_padding_BL]) #Q, K, V projections
+        qkv_valid = self.input_head(x.index_select(0, idx)) #(Nvalid, 3C)
+        x_qkv = x_qkv.index_copy(0, idx, qkv_valid)
+
+
         x = x_qkv
         # Rearrange for attention
         x = rearrange(x, '(b len) (he c) ->  b he len c', len=len, he=self.num_heads)
         q, k, v = x.tensor_split(3, dim=-1)
         q = rearrange(q, 'b he len c -> (b len) he c')
         k = rearrange(k, 'b he len c -> (b len) he c')
-        q[mask_padding_BL], k[mask_padding_BL] = self.qnorm(q[mask_padding_BL]), self.knorm(k[mask_padding_BL])
+        
+        ##q[mask_padding_BL], k[mask_padding_BL] = self.qnorm(q[mask_padding_BL]), self.knorm(k[mask_padding_BL])
+        q_valid = self.qnorm(q.index_select(0, idx))
+        k_valid = self.knorm(k.index_select(0, idx))
+        q = q.index_copy(0, idx, q_valid)
+        k = k.index_copy(0, idx, k_valid)
+
+
         q = rearrange(q, '(b len) he c -> b he len c', b=B)
         k = rearrange(k, '(b len) he c -> b he len c', b=B)
 
-        mask2d_padding = repeat(mask_padding, 'b c1 len -> b (len1 c1) len', len1=len).unsqueeze(1)
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask2d_padding) 
+        #mask2d_padding = repeat(mask_padding, 'b c1 len -> b (len1 c1) len', len1=len).unsqueeze(1)
+        valid = mask_padding.squeeze(1).to(torch.bool) #(B, L),True=meaningful
+        mask2d_padding = valid[:, None, None, :] #(B,1,1,L)
+        #without this backend, ran into RuntimeError: Function 'ScaledDotProductEfficientAttentionBackward0' returned nan values in its 0th output.
+        with sdpa_kernel(SDPBackend.MATH):
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask2d_padding) 
+        x = x.clone()  
         # Rearrange after attention
         x = rearrange(x, 'b  he len c -> b (he c) len')
-        if torch.isnan(x).any():
-            print("Debugging for NAN, mask2dpadding:", mask2d_padding[0,0,:,:], q, k , v,flush=True)
-            for i in range(64):
-                print(f"after att {i}", x[0,:,i], flush=True)
-            sys.exit(-1)
 
         x = self.norm2_mask(x, mask_padding)
         x = rearrange(x, 'b  c  len -> (b len) c')
         input = rearrange(input, 'b  c  len -> (b len) c')
-        x[mask_padding_BL] = self.output_head(x[mask_padding_BL])
-        x[mask_padding_BL] = self.drop_path(x[mask_padding_BL]*self.gamma_att[None, :]) + input[mask_padding_BL]
+        
+        ##x[mask_padding_BL] = self.output_head(x[mask_padding_BL])
+        x_out_valid = self.output_head(x.index_select(0, idx))
+        x = x.index_copy(0, idx, x_out_valid)
+       
+        ##x[mask_padding_BL] = self.drop_path(x[mask_padding_BL]*self.gamma_att[None, :]) + input[mask_padding_BL]
+        x_res_valid = self.drop_path(x.index_select(0, idx) * self.gamma_att[None, :]) + input.index_select(0, idx)
+        x = x.index_copy(0, idx, x_res_valid)
+
         if leadtime is not None:
             leadtime = leadtime.repeat_interleave(len, dim=0)
-            x[mask_padding_BL] = x[mask_padding_BL] + leadtime[mask_padding_BL,:]
-
+            ##x[mask_padding_BL] = x[mask_padding_BL] + leadtime[mask_padding_BL,:]
+            x = x.index_copy(0, idx, x.index_select(0, idx) + leadtime.index_select(0, idx))
 
         # MLP
         input = x.clone()
-        x[mask_padding_BL] = self.mlp(x[mask_padding_BL])
+        ##x[mask_padding_BL] = self.mlp(x[mask_padding_BL])
+        mlp_valid = self.mlp(x.index_select(0, idx))
+        x = x.index_copy(0, idx, mlp_valid)
         x = rearrange(x, '(b len) c -> b c len', b=B)
         x = self.mlp_norm_mask(x, mask_padding)
         x = rearrange(x, 'b  c  len -> (b len) c')
-        x[mask_padding_BL] = self.drop_path(x[mask_padding_BL]*self.gamma_mlp[None, :]) + input[mask_padding_BL]
+        ##x[mask_padding_BL] = self.drop_path(x[mask_padding_BL]*self.gamma_mlp[None, :]) + input[mask_padding_BL]
+        x_res2_valid = self.drop_path(x.index_select(0, idx) * self.gamma_mlp[None, :]) + input.index_select(0, idx)
+        x = x.index_copy(0, idx, x_res2_valid)
         x = rearrange(x, '(b len) c-> b c len', b=B)
-
-        if torch.isnan(x).any():
-            print(x)
-            sys.exit(-1)
 
         return x
 
