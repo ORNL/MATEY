@@ -8,7 +8,7 @@ from functools import partial
 from timm.layers import DropPath
 from .ringX_attn import ringX_attn_func
 from .shared_modules import MLP, InstanceNorm1d_Masked
-from .spatial_modules import RMSInstanceNormSpace
+#from .spatial_modules import RMSInstanceNormSpace
 
 import sys
 from flash_attn import flash_attn_func
@@ -94,8 +94,8 @@ class AxialAttentionBlock(nn.Module):
     def __init__(self, hidden_dim=768, num_heads=12,  drop_path=0, layer_scale_init_value=1e-6, bias_type='rel'):
         super().__init__()
         self.num_heads = num_heads
-        self.norm1 = RMSInstanceNormSpace(hidden_dim, affine=True)
-        self.norm2 = RMSInstanceNormSpace(hidden_dim, affine=True)
+        self.norm1 = nn.InstanceNorm3d(hidden_dim, affine=True)
+        self.norm2 = nn.InstanceNorm3d(hidden_dim, affine=True)
         self.gamma_att = nn.Parameter(layer_scale_init_value * torch.ones((hidden_dim)),
                             requires_grad=True) if layer_scale_init_value > 0 else None
         self.gamma_mlp = nn.Parameter(layer_scale_init_value * torch.ones((hidden_dim)),
@@ -110,7 +110,7 @@ class AxialAttentionBlock(nn.Module):
 
 
         self.mlp = MLP(hidden_dim)
-        self.mlp_norm = RMSInstanceNormSpace(hidden_dim, affine=True)
+        self.mlp_norm = nn.InstanceNorm3d(hidden_dim, affine=True)
 
     def forward(self, x, bcs, sequence_parallel_group=None, t_pos_area=None, local_att=False):
         # input is  b x c x d x h x w
@@ -204,8 +204,8 @@ class Attention2DBlock(nn.Module):
     def __init__(self, hidden_dim=768, num_heads=12,  drop_path=0, layer_scale_init_value=1e-6, bias_type='rel', biasMLP=False):
         super().__init__()
         self.num_heads = num_heads
-        self.norm1 = RMSInstanceNormSpace(hidden_dim, affine=True)
-        self.norm2 = RMSInstanceNormSpace(hidden_dim, affine=True)
+        self.norm1 = nn.InstanceNorm3d(hidden_dim, affine=True)
+        self.norm2 = nn.InstanceNorm3d(hidden_dim, affine=True)
         self.gamma_att = nn.Parameter(layer_scale_init_value * torch.ones((hidden_dim)),
                             requires_grad=True) if layer_scale_init_value > 0 else None
         self.gamma_mlp = nn.Parameter(layer_scale_init_value * torch.ones((hidden_dim)),
@@ -220,7 +220,7 @@ class Attention2DBlock(nn.Module):
 
 
         self.mlp = MLP(hidden_dim)
-        self.mlp_norm = RMSInstanceNormSpace(hidden_dim, affine=True)
+        self.mlp_norm = nn.InstanceNorm3d(hidden_dim, affine=True)
 
     #from https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/simple_vit.py
     def posemb_sincos_2d(self, h, w, dim, temperature: int = 10000, dtype = torch.float32):

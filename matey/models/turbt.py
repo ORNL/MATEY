@@ -7,9 +7,7 @@ from .spacetime_modules import SpaceTimeBlock_all2all
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids 
 from ..data_utils.utils import construct_filterkernel
-from .spatial_modules import UpsampleinSpace, RMSInstanceNormSpace
-
-
+from .spatial_modules import UpsampleinSpace
 import sys, copy
 from operator import mul
 from functools import reduce
@@ -87,7 +85,7 @@ class TurbT(BaseModel):
                  self.module_upscale_space[str(imod)]=torch.nn.Sequential(
                     nn.Upsample(scale_factor=(upscalefactor, upscalefactor, upscalefactor), mode='trilinear',align_corners=True),
                     nn.Conv3d(n_states, n_states, kernel_size=(upscalefactor, upscalefactor, upscalefactor), stride=1, padding="same", bias=True, padding_mode="reflect"),
-                    RMSInstanceNormSpace(n_states, affine=True))
+                    nn.InstanceNorm3d(n_states, affine=True))
             else:
                 #self.module_upscale[str(imod)]=PatchExpandinSpace(embed_dim, expand_ratio=upscalefactor)
                 #self.module_upscale[str(imod)]=PatchUpsampleinSpace(embed_dim, expand_ratio=upscalefactor)
