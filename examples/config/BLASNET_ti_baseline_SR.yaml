@@ -47,6 +47,14 @@ basic_config: &basic_config
   tokenizer_heads:
     - head_name: "tk-3D"
       patch_size: [[8, 8, 8]]
+  preprocessor_heads:
+    - head_name: "gno-in-flow3D"
+      radius: 1.8
+      resolution: [32, 32, 32]
+  postprocessor_heads:
+    - head_name: "gno-out-flow3D"
+      resolution: [32, 32, 32]
+      radius: 1.8
   SR_ratio: [8, 8, 8]
   sts_model: !!bool False
   sts_train: !!bool False  #when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly
