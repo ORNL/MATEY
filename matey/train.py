@@ -26,6 +26,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+from .utils.training_utils import autoregressive_rollout
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -417,6 +418,7 @@ class Trainer:
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
         sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
+        input_control_act = self.params.input_control_act if hasattr(self.params, 'input_control_act') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -431,6 +433,10 @@ class Trainer:
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                if input_control_act:
+                    input_control = data["input_control"].to(self.device)
+                else:   
+                    input_control = None
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -449,10 +455,19 @@ class Trainer:
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
+                autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
+                    if not autoregressive:
+                        output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
                                     tkhead_name=tkhead_name, blockdict=blockdict)
+                    else:
+                        output, tar, rollout_steps = autoregressive_rollout(
+                            self.model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict,
+                            tar, self.params.n_steps, sequence_parallel_group=self.current_group,
+                        )
+                        # if self.global_rank ==0:
+                        #     print('Rollout steps:',rollout_steps)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -562,7 +577,11 @@ class Trainer:
                 break
 
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-           
+            input_control_act = self.params.input_control_act if hasattr(self.params, 'input_control_act') else False
+            if input_control_act:
+                input_control = data["input_control"].to(self.device)
+            else:
+                input_control = None
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -581,9 +600,16 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       tkhead_name=tkhead_name, blockdict=blockdict)                   
+                    autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
+                    if not autoregressive:
+                        output= self.model(inp, field_labels, bcs, imod=imod, 
+                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
+                                        tkhead_name=tkhead_name, blockdict=blockdict)  
+                    else:
+                        output, tar, rollout_steps = autoregressive_rollout(
+                            self.model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict,
+                            tar, self.params.n_steps, inference=True, sequence_parallel_group=self.current_group,
+                        )
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
