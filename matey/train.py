@@ -12,13 +12,12 @@ import gc, psutil
 from torchinfo import summary
 from collections import defaultdict
 from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT
-from .data_utils.utils import get_log2_int
 from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
 from .utils.visualization_utils import checking_data_pred_tar
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -140,25 +139,12 @@ class Trainer:
             print("Memory summary: %s, CUDA %f GB; RAM %f GB, %f percentage"%(message, torch.cuda.memory_allocated()/ 1024**3, psutil.virtual_memory().used/1024**3, psutil.virtual_memory().percent))
     
     def initialize_data(self):
-        """
-        data_rank=None
-        num_replicas=None
-        if  hasattr(self.params, "sp_groupsize") or hasattr(self.params, "num_sequence_parallel_groups"):
-            data_rank=True
-        if data_rank:
-            parallel_group_size = self.group_size
-            in_rank = self.global_rank//parallel_group_size #SP group ID
-            group_rank = self.global_rank%parallel_group_size #local rank inside each SP group
-            num_replicas = len(self.sequence_parallel_groups)
-        else:
-            in_rank = self.global_rank
-            parallel_group_size=self.group_size
-            group_rank=0
-        """
-        #print("Pei debugging", self.group_size, group_rank, in_rank, parallel_group_size, num_replicas, flush=True)
+        #self.global_rank: global rank
+        #self.group_size: number of ranks in each SP group
+        #len(self.sequence_parallel_groups): number of SP groups
         if self.log_to_screen:
-            print(f"Initializing data on rank {self.global_rank}", flush=True)
-        #print(f"Pei debugging trainpy, {self.group_size}, {self.global_rank}, {len(self.sequence_parallel_groups)}, {self.sequence_parallel_groups}", flush=True)
+            print(f"Initializing data on rank {self.global_rank}; total {len(self.sequence_parallel_groups)} SP groups with {self.group_size} ranks each", flush=True)
+        #print(f"Pei debugging train.py, {self.group_size}, {self.global_rank}, {len(self.sequence_parallel_groups)}, {self.sequence_parallel_groups}", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
                           dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
                           group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
@@ -167,7 +153,6 @@ class Trainer:
                           dist.is_initialized(), split='val', 
                           group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
                           
-        
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
             self.train_sampler.set_epoch(0)
@@ -417,7 +402,6 @@ class Trainer:
         loss_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
-        sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -455,29 +439,9 @@ class Trainer:
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                ps=self.model.module.tokenizer_heads_params[tkhead_name][-1] 
-                ips = get_log2_int(ps[-1])
-                #####
-                log2intsum = get_log2_int(inp.shape[-3]) + get_log2_int(inp.shape[-2]) + get_log2_int(inp.shape[-1])
-                if inp.shape[-3]==1:
-                    log2int = min([get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
-                else:
-                    log2int = min([get_log2_int(inp.shape[-3]), get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
-                if log2intsum>=20: # or list(inp.shape[-3:])==[96, 192, 96] or list(inp.shape[-3:])==[128, 128, 64]:
-                    imod_bottom=max(0, imod-ips)
-                else:
-                    imod_bottom=max(min(imod, imod-log2int+4),0)
-                #check min(get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1]))
-                # imod-imod_bottom+get_log2_int(ps)<=min(get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1]))
-                #####
-                #if dset_type in ['taylorgreen', 'isotropic1024fine']:
-                #    imod_bottom=0 #2^4=16
-                ##elif dset_type in ['supernova64','MHD64','turbgravcool','sstF4R32','compNS','swe','diffre2d','postneutronstarmerger','supernova128','rayleightaylor']:
-                ##    imod_bottom=5 #2^0=1
-                #else:
-                #    imod_bottom=5 #2^
-                if self.global_rank == 0:
-                    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, ips, {ips}, imod_bottom {imod_bottom}, log2int {log2int}, log2intsum {log2intsum}, {self.global_rank}, {blockdict}", flush=True)
+                imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod)
+                #if self.global_rank == 0:
+                #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
                 with record_function_opt("model forward", enabled=self.profiling):
                     if dset_type in self.train_dataset.DP_dsets:
                         output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
@@ -631,22 +595,7 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-
-                    ps=self.model.module.tokenizer_heads_params[tkhead_name][-1] 
-                    ips = get_log2_int(ps[-1])
-                    log2intsum= get_log2_int(inp.shape[-3]) + get_log2_int(inp.shape[-2]) + get_log2_int(inp.shape[-1])
-                    if inp.shape[-3]==1:
-                        log2int = min([get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
-                    else:
-                        log2int = min([get_log2_int(inp.shape[-3]), get_log2_int(inp.shape[-2]), get_log2_int(inp.shape[-1])]) 
-                
-                    #if log2intsum>20 or list(inp.shape[-3:])==[96, 192, 96] or list(inp.shape[-3:])==[128, 128, 64]:
-                    if log2intsum>=20: 
-                        imod_bottom=max(0, imod-ips+1)
-                    else:
-                        #imod_bottom=max(min(imod, imod-log2int+3),0)
-                        imod_bottom=max(min(imod, imod-log2int+4),0)
-
+                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod)
                     if dset_type in self.valid_dataset.DP_dsets:
                         output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
                                         sequence_parallel_group=self.current_group, leadtime=leadtime, 

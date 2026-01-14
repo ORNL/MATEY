@@ -7,6 +7,7 @@ import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from .data_utils.utils import get_log2_int
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):
@@ -279,3 +280,27 @@ class CosineNoIncrease(CosineAnnealingLR):
         if self.last_epoch >= self.T_max:
             return [self.eta_min] * len(self.base_lrs)
         return super().get_lr()
+
+def determine_turt_levels(ps, DHW, nlevels_more, cutoff=20):
+    """
+    #ps: patch size
+    #DHW: D,H,W
+    #nlevels_more: specified number of levels in TT, beyond base (so when nlevles_more=0, 1 layer/equivalent ViT)
+
+    #Currently simple, heuristic way to decide how many TT levels for each dataset based on data resolution and patch sie
+    #Roughtly speaking, finer resolution (larger log2intsum) leads to more levels; 
+    #but then the maximum levels are also constrained by the smaller grid size in 2/3 directions and patch size (assuming equal in each direction)
+    #There might be not enough cells to filter/patch.  
+    """
+    ips = get_log2_int(ps[-1])
+    #####
+    log2intsum = sum([get_log2_int(dim_) for dim_ in DHW])
+    if DHW[0]==1:
+        log2int = min([get_log2_int(DHW[1]), get_log2_int(DHW[2])]) 
+    else:
+        log2int = min([get_log2_int(dim_) for dim_ in DHW]) 
+    if log2intsum>=cutoff: 
+        imod_bottom=max(0, nlevels_more-ips)
+    else:
+        imod_bottom=max(min(nlevels_more, nlevels_more-log2int+4),0)
+    return imod_bottom
