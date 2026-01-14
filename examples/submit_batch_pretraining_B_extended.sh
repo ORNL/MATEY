@@ -2,7 +2,7 @@
 #SBATCH -A LRN037
 #SBATCH -J matey-pretB
 #SBATCH -o %x-%j.out
-#SBATCH -t 12:00:00
+#SBATCH -t 20:00:00
 ##SBATCH -t 01:40:00
 ##SBATCH -p batch
 #SBATCH -p extended
@@ -30,6 +30,9 @@ export MASTER_ADDR=$(hostname -i)
 export MASTER_PORT=3442
 #export NCCL_DEBUG=INFO 
 #export NCCL_ASYNC_ERROR_HANDLING=1
+
+echo $PATH
+echo $LD_LIBRARY_PATH
 
 srun -N$SLURM_JOB_NUM_NODES -n$((SLURM_JOB_NUM_NODES*8)) -c7 --gpu-bind=closest python basic_usage.py \
 --run_name $run_name --config $config --yaml_config $yaml_config --use_ddp

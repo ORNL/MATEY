@@ -57,7 +57,7 @@ def plot_dataset_batches(dataset_batches, total_norm, epochreal):
     rows = math.ceil(num_datasets / cols)
 
     fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 4 * rows), squeeze=False)
-    fig.suptitle("Batch-wise Training Loss per Dataset", fontsize=16)
+    fig.suptitle("MATEY on Frontier: one model for multiple physical systems", fontsize=32)
     print(epochreal)
     for idx, (dataset, losses) in enumerate(dataset_batches.items()):
         epchs = epochreal[dataset]
@@ -70,7 +70,7 @@ def plot_dataset_batches(dataset_batches, total_norm, epochreal):
         ma_losses = moving_average(losses, window_size=50)
         ax.plot(range(len(ma_losses)), ma_losses, '-', label='Moving Avg')
         ax.set_title(dataset)
-        ax.set_xlabel("Accumulated Batch")
+        ax.set_xlabel("Steps")#"Accumulated Batch")
         ax.set_ylabel("Loss")
         ax.grid(True)
         ax.set_yscale("log")
