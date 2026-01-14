@@ -91,7 +91,7 @@ class MultisetSampler(Sampler):
 
     def __iter__(self):#batch sampler
         samplers = [iter(sampler) for sampler in self.sub_samplers]
-        if self.max_samples:
+        if self.ordered_sampling:
             choices_t = self.iset_choices_ordered_truc[:self.max_samples]
         else:
             generator = torch.Generator().manual_seed(5000*self.epoch+100*self.seed+self.rank)
