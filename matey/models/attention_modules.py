@@ -51,7 +51,7 @@ class AttentionBlock(nn.Module):
         self.bias_type=bias_type
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x, leadtime=None, input_control=None, sequence_parallel_group=None, t_pos_area=None, local_att=False):
+    def forward(self, x, leadtime=None, sequence_parallel_group=None, t_pos_area=None, local_att=False):
         # input is t x b x c x d xh x w
         # t_pos_area: [b, t, d, h, w, 5]
         T, _, _, D, H, W = x.shape
@@ -86,8 +86,6 @@ class AttentionBlock(nn.Module):
         x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
         if leadtime is not None:
             x = x + leadtime[None,:,:,None, None,None]
-        if input_control is not None:
-            x = x + input_control[None, :, :, None, None, None]
 
         output = self.drop_path(x*self.gamma[None, None, :, None, None, None]) + input
         return output
@@ -300,7 +298,7 @@ class AttentionBlock_all2all_time(nn.Module):
         self.knorm = nn.LayerNorm(hidden_dim//num_heads)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x, sequence_parallel_group=None, leadtime=None, input_control=None, local_att=False):
+    def forward(self, x, sequence_parallel_group=None, leadtime=None, local_att=False):
         #x: b x c x token_len (len)
         #leadtime: btoken_len x c
         #t_pos_area: token_len x 4
@@ -340,8 +338,6 @@ class AttentionBlock_all2all_time(nn.Module):
         x = rearrange(x, '(b len) c-> b c len', b=B)
         if leadtime is not None:
             x = x + leadtime[:,:, None]
-        if input_control is not None:
-            x = x + input_control[:, :, None]
 
         x = self.drop_path(x*self.gamma_att[None, :, None]) + input
 
@@ -387,7 +383,7 @@ class AttentionBlock_all2all(nn.Module):
         x = rearrange(x_inp,'b c t ntoken -> b c (t ntoken)')
         return x
 
-    def forward_padding(self, x, mask_padding, bcs=None, leadtime=None, input_control=None, t_pos_area_padding=None):
+    def forward_padding(self, x, mask_padding, bcs=None, leadtime=None, t_pos_area_padding=None):
         # x: b x c x token_len (len)
         # mask_padding: b x token_len
         # leadtime: b x c
@@ -453,9 +449,6 @@ class AttentionBlock_all2all(nn.Module):
             ##x[mask_padding_BL] = x[mask_padding_BL] + leadtime[mask_padding_BL,:]
             x = x.index_copy(0, idx, x.index_select(0, idx) + leadtime.index_select(0, idx))
 
-        if input_control is not None:
-            input_control = input_control.repeat_interleave(len, dim=0)
-            x = x.index_copy(0, idx, x.index_select(0, idx) + input_control.index_select(0, idx))
 
         # MLP
         input = x.clone()
@@ -472,14 +465,14 @@ class AttentionBlock_all2all(nn.Module):
 
         return x
 
-    def forward(self, x, sequence_parallel_group=None, leadtime=None, input_control=None, bcs=None, mask_padding=None, t_pos_area=None, local_att=False):
+    def forward(self, x, sequence_parallel_group=None, leadtime=None, bcs=None, mask_padding=None, t_pos_area=None, local_att=False):
         #x: b x c x token_len (len)
         #leadtime: btoken_len x c
         #t_pos_area: token_len x 4
         B, C, len = x.shape
         input = x.clone()
         if mask_padding is not None:
-            return self.forward_padding(x, mask_padding, bcs=bcs, leadtime=leadtime, input_control=input_control, t_pos_area_padding=t_pos_area)
+            return self.forward_padding(x, mask_padding, bcs=bcs, leadtime=leadtime, t_pos_area_padding=t_pos_area)
 
         # Rearrange and prenorm
         x = self.norm1(x)
@@ -516,8 +509,6 @@ class AttentionBlock_all2all(nn.Module):
         if leadtime is not None:
             x = x + leadtime[:,:, None]
         
-        if input_control is not None:
-            x = x + input_control[:,:, None]
 
         x = self.drop_path(x*self.gamma_att[None, :, None]) + input
 

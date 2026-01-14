@@ -18,14 +18,14 @@ class BasenetCDFDirectoryDataset(Dataset):
         n_steps (int): Number of steps to include in each sample
         dt (int): Time step between samples
         lead_time: lead time for prediction output
-        input_control_act (bool): Whether to include control actuator as input
+        supportdata (bool): Whether to include additional support data as input (e.g., control actuator)
         split (str): train/val/test split
         train_val_test (tuple): Percent of data to use for train/val/test
         subname (str): Name to use for dataset
         refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, input_control_act=False, split='train',
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=False, split='train',
                  train_val_test=None, subname=None, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -37,7 +37,7 @@ class BasenetCDFDirectoryDataset(Dataset):
             self.subname = subname
         self.dt = dt
         self.leadtime_max = leadtime_max
-        self.input_control_act = input_control_act
+        self.input_control_act = supportdata
         self.n_steps = n_steps #history length
         self.include_string = include_string
         self.train_val_test = train_val_test
@@ -177,10 +177,7 @@ class BasenetCDFDirectoryDataset(Dataset):
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
 
         try:
-            if self.input_control_act==True:
-                trajectory, leadtime, input_control = self._reconstruct_sample(self.datasets[file_idx], leadtime, self.input_control_act, time_idx, nsteps)
-            else:
-                trajectory, leadtime = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps)
+            trajectory, leadtime, input_control = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps)
             bcs = self._get_specific_bcs(self.datasets[file_idx])
         except:
             raise RuntimeError(f'Failed to reconstruct sample for file {self.files_paths[file_idx]} time {time_idx}')
@@ -283,7 +280,7 @@ class  CollisionDataset(BasenetCDFDirectoryDataset):
         comb = np.concatenate((comb_x, comb_y), axis=0)
         comb_norm =self._get_norm_data(comb)
 
-        return comb_norm.transpose(0, 3, 1, 2).astype(np.float32), leadtime.to(torch.float32)
+        return comb_norm.transpose(0, 3, 1, 2).astype(np.float32), leadtime.to(torch.float32), None
 
 class  SOLPSDataset(BasenetCDFDirectoryDataset):
     @staticmethod
@@ -323,7 +320,7 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         #not used
         return [0, 0]
 
-    def _reconstruct_sample(self, dat, leadtime, input_control_act, time_idx, n_steps):
+    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps):
         """
         netcdf solps-kstar_example-1 {
         dimensions:
@@ -343,7 +340,7 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         #get history of length n_steps
         rho     = dat.variables["density" ][time_idx-n_steps:time_idx,:,:] #nt, ny, nx
         temp    = dat.variables["temperature" ][time_idx-n_steps:time_idx,:,:] 
-        if input_control_act == True:
+        if self.input_control_act == True:
             in_actu = dat.variables["input actuator" ][time_idx-n_steps:time_idx+leadtime] 
 
             # normalize input actuator
@@ -363,7 +360,7 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
         comb_norm =self._get_norm_data(comb)
-        if input_control_act == True:
+        if self.input_control_act == True:
             return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), in_actu.astype(np.float32)
         else:
-            return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32)
+            return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), None

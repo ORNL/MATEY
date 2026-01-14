@@ -13,8 +13,7 @@ def build_vit(params):
     sts_train:
                 when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly as well
     leadtime_max: when larger than 1, we use a `ltimeMLP` NN module to incoporate the impact of leadtime
-    autoregressive: when True, the model is trained in an autoregressive manner
-    input_control: when True, the model uses an additional input control (scalar) to condition the predictions
+    cond_input: when True, the model uses an additional inputs (scalar) to condition the predictions
     """
     model = ViT_all2all(tokenizer_heads=params.tokenizer_heads,
                      embed_dim=params.embed_dim,
@@ -25,9 +24,8 @@ def build_vit(params):
                      SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                     leadtime=True if hasattr(params, 'leadtime_max') and params.leadtime_max>1 else False,
-                     autoregressive = params.autoregressive if hasattr(params, 'autoregressive') else False,
-                     input_control=params.input_control_act if hasattr(params,'input_control_act') else False,
+                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1 and not getattr(params, "autoregressive", False),
+                     cond_input=params.input_control_act if hasattr(params,'input_control_act') else False,
                      n_steps=params.n_steps,
                      bias_type=params.bias_type,
                      replace_patch=params.replace_patch if hasattr(params, 'replace_patch') else True,
@@ -48,9 +46,9 @@ class ViT_all2all(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, autoregressive=False, input_control=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, 
-                         autoregressive=autoregressive, input_control=input_control, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical)
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
         self.blocks = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
@@ -113,7 +111,7 @@ class ViT_all2all(BaseModel):
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, input_control=None, refine_ratio=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, cond_input=None, refine_ratio=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         #T,B,C,D,H,W
@@ -126,14 +124,16 @@ class ViT_all2all(BaseModel):
         x, data_mean, data_std = normalize_spatiotemporal_persample(x)
         #self.debug_nan(x, message="input after normalization")
         ################################################################################
-        if self.leadtime and leadtime is not None and not self.autoregressive:
+        if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
         else:
             leadtime=None
-        if self.input_control and input_control is not None:
-            input_control = self.inconMLP[imod](input_control)
+        if self.cond_input and cond_input is not None:
+            cond_input = self.inconMLP[imod](cond_input)
         else:
-            input_control=None
+            cond_input=None
+        # combine leadtime and cond_input if both exist, otherwise use whichever is not None
+        leadtime = leadtime + cond_input if (leadtime is not None and cond_input is not None) else leadtime if leadtime is not None else cond_input
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         if  self.sts_model:
             #x_padding: coarse tokens; x_local: refined local tokens
@@ -161,9 +161,9 @@ class ViT_all2all(BaseModel):
                 x_padding = x_padding + c
 
             if iblk==0:
-                x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, input_control=input_control, mask_padding=mask_padding)
+                x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask_padding)
             else:
-                x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, input_control=None, mask_padding=mask_padding)
+                x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask_padding)
         #self.debug_nan(x_padding, message="attention block")
         ################################################################################
         x_padding = rearrange(x_padding, 'b c (t ntoken_tot) -> t b c ntoken_tot', t=T)

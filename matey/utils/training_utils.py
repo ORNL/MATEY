@@ -5,14 +5,13 @@ import torch.distributed as dist
 def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict, tar, 
                            n_steps, inference=False, pushforward=True, sequence_parallel_group=None):
     device = inp.device
-    world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
 
     min_lead = int(leadtime.min().item())
     # global minimum leadtime based on end of data
-    if world_size > 1:
-        min_lead_tensor = torch.tensor([min_lead], device=device, dtype=torch.int64)
-        torch.distributed.all_reduce(min_lead_tensor, op=torch.distributed.ReduceOp.MIN)
-        min_lead = min_lead_tensor.item()
+    if dist.is_initialized():
+        min_lead_tensor =  leadtime.min()
+        dist.all_reduce(min_lead_tensor, op=dist.ReduceOp.MIN)
+        min_lead = min_lead_tensor
     # max rollout length allowed, based on min leadtime and warmup
     if inference:
         # Inference always uses the full leadtime
@@ -24,10 +23,10 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
         #    max_rollout = max(1, int(min_lead * 0.5))
         max_rollout = max(1, min_lead)
     # set rollout_steps
-    if world_size > 1:
+    if dist.is_initialized():
         if dist.get_rank() == 0:
             rollout_steps = torch.tensor(
-                [1 if max_rollout <= 1 else torch.randint(1, max_rollout, (1,)).item()],
+                [1 if max_rollout == 1 else torch.randint(1, int(max_rollout.item()), (1,)).item()],
                 device=device,
                 dtype=torch.int64,
             )
@@ -38,10 +37,12 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
         rollout_steps = rollout_steps.item()
 
     else:
-        rollout_steps = 1 if max_rollout <= 1 else torch.randint(1, max_rollout, (1,)).item()
+        rollout_steps = 1 if max_rollout == 1 else torch.randint(1, int(max_rollout.item()), (1,)).item()
 
     outputs = []
     x_t = inp
+    if rollout_steps == 1:
+        pushforward = False  # no need for pushforward if only one step
     if inference or not pushforward:
         # Normal autoregressive rollout
         for t in range(rollout_steps):
@@ -52,14 +53,15 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
             output_t = model(
                 x_t, field_labels, bcs, imod=imod,
                 sequence_parallel_group=sequence_parallel_group,
-                leadtime=leadtime, input_control=control_t,
+                leadtime=leadtime, cond_input=control_t,
                 tkhead_name=tkhead_name, blockdict=blockdict
             )
             outputs.append(output_t)
             x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
-
-        tar = tar[:, :rollout_steps, :]
-        output = torch.stack(outputs, dim=1)
+        tar = tar[:, rollout_steps-1:rollout_steps, :].squeeze(1) # B,C,D,H,W
+        output = output_t # B,C,D,H,W
+        # We could return all timesteps if desired if not using pushforward
+        # output = torch.stack(outputs, dim=1) # B,T,C,D,H,W
 
     else:
         # Pushforward rollout
@@ -72,7 +74,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
                 output_t = model(
                     x_t, field_labels, bcs, imod=imod,
                     sequence_parallel_group=sequence_parallel_group,
-                    leadtime=leadtime, input_control=control_t,
+                    leadtime=leadtime, cond_input=control_t,
                     tkhead_name=tkhead_name, blockdict=blockdict
                 )
                 outputs.append(output_t)
@@ -86,11 +88,11 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
         output_t = model(
             x_t, field_labels, bcs, imod=imod,
             sequence_parallel_group=sequence_parallel_group,
-            leadtime=leadtime, input_control=control_t,
+            leadtime=leadtime, cond_input=control_t,
             tkhead_name=tkhead_name, blockdict=blockdict
         )
 
-        tar = tar[:, rollout_steps-1:rollout_steps, :]
-        output = output_t.unsqueeze(1)
+        tar = tar[:, rollout_steps-1:rollout_steps, :].squeeze(1) # B,C,D,H,W
+        output = output_t # B,C,D,H,W
 
     return output, tar, rollout_steps

@@ -401,6 +401,29 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=False,
+                       input_control=None, tkhead_name=None, blockdict=None, tar=None):
+        # Handles a forward pass through the model, either normal or autoregressive rollout.
+        autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
+        if not autoregressive:
+            output = self.model(
+                inp, field_labels, bcs, imod=imod,
+                sequence_parallel_group=self.current_group,
+                leadtime=leadtime,
+                tkhead_name=tkhead_name,
+                blockdict=blockdict
+            )
+            return output, None, None
+        else:
+            # autoregressive rollout
+            output, tar, rollout_steps = autoregressive_rollout(
+                self.model, inp, field_labels, bcs, imod, leadtime,
+                input_control, tkhead_name, blockdict,
+                tar, self.params.n_steps,
+                sequence_parallel_group=self.current_group
+            )
+            return output, tar, rollout_steps
+
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -455,17 +478,15 @@ class Trainer:
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
                 with record_function_opt("model forward", enabled=self.profiling):
-                    if not autoregressive:
-                        output= self.model(inp, field_labels, bcs, imod=imod,
-                                    sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict)
-                    else:
-                        output, tar, rollout_steps = autoregressive_rollout(
-                            self.model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict,
-                            tar, self.params.n_steps, sequence_parallel_group=self.current_group,
+                        output, new_tar, rollout_steps = self.model_forward(
+                            inp, field_labels, bcs, imod=imod, leadtime=leadtime,
+                            input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
+                            tar=tar
                         )
+                        # For autoregressive, use the returned target
+                        if new_tar is not None:
+                            tar = new_tar
                         # if self.global_rank ==0:
                         #     print('Rollout steps:',rollout_steps)
                 ###full resolution###
@@ -600,16 +621,14 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
-                    if not autoregressive:
-                        output= self.model(inp, field_labels, bcs, imod=imod, 
-                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                        tkhead_name=tkhead_name, blockdict=blockdict)  
-                    else:
-                        output, tar, rollout_steps = autoregressive_rollout(
-                            self.model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict,
-                            tar, self.params.n_steps, inference=True, sequence_parallel_group=self.current_group,
-                        )
+                    output, new_tar, rollout_steps = self.model_forward(
+                            inp, field_labels, bcs, imod=imod, leadtime=leadtime,
+                            input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
+                            tar=tar
+                    )
+                    # For autoregressive, use the returned target
+                    if new_tar is not None:
+                        tar = new_tar
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]
