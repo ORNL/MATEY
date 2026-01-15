@@ -41,6 +41,10 @@ class BaseBLASNET3DDataset(Dataset):
         self.path = path
         self.split = split
         self.extra_specific = extra_specific # Whether to use parameters in name
+
+        self.group_id = group_id
+        self.group_rank = group_rank
+        self.group_size = group_size
         
         self.dt = 1
         self.leadtime_max = leadtime_max 
@@ -161,29 +165,39 @@ class BaseBLASNET3DDataset(Dataset):
             #solution info
             casedir = self.cases_split[case_idx]
             dictcase = self.case_dict[casedir]
-            trajectory, leadtime = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
+            variables = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
         elif self.split_level=="snapshot":
             case_idx = self.casesids_split[index]
             leadtime = torch.tensor([0])
-            if self.type!="SR":
+            if self.type != "SR":
                 dictcase = self.case_dict["solutions"][case_idx]
                 nxyz = self.case_dict["Nxyz"][case_idx]
-                trajectory, leadtime= self._reconstruct_sample(dictcase, nxyz, leadtime)
+                variables = self._reconstruct_sample(dictcase, nxyz, leadtime)
         else:
             raise ValueError("unknown %s"%self.split_level)
         ########################################
         bcs = self._get_specific_bcs()
-        if self.type!="SR":
+        if self.type == "SR":
+            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
+            return inp, torch.as_tensor(bcs), tar, leadtime
+        else:
+            assert len(variables) in [2, 3]
+
+            trajectory = variables[0]
+            leadtime = variables[1]
+
             if self.leadtime_max>0:
                 inp=trajectory[:-1]
                 tar=trajectory[-1]
             else: #self-supervised
                 inp=trajectory
                 tar=inp[-1]
-        else:
-            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
 
-        return inp, torch.as_tensor(bcs), tar, leadtime
+            if len(variables) == 2:
+                return inp, torch.as_tensor(bcs), tar, leadtime
+            else:
+                cond_fields = variables[2]
+                return inp, torch.as_tensor(bcs), tar, leadtime, cond_fields
 
     def __len__(self):
         return self.len

@@ -12,6 +12,7 @@ try:
     from blasnet_3Ddatasets import *
     from thewell_datasets import *
     from binary_3DSSTdatasets import *
+    from flow3d_datasets import *
 except ImportError:
     from .mixed_dset_sampler import MultisetSampler
     from .hdf5_datasets import *
@@ -21,6 +22,7 @@ except ImportError:
     from .blasnet_3Ddatasets import *
     from .thewell_datasets import *
     from .binary_3DSSTdatasets import *
+    from .flow3d_datasets import *
 import os
 import glob
 
@@ -71,6 +73,8 @@ DSET_NAME_TO_OBJECT = {
     "viscoelastic":viscoelastic_instability,
     ##SST
     "sstF4R32": sstF4R32Dataset,
+    ##Flow3D
+    "flow3d": Flow3D_Object,
     }
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
@@ -159,6 +163,7 @@ class MixedDataset(Dataset):
         self.offsets[0] = -1
 
         self.subset_dict = self._build_subset_dict()
+        self.subset_cond_dict = self._build_subset_cond_dict()
 
     def get_state_names(self):
         name_list = []
@@ -203,6 +208,24 @@ class MixedDataset(Dataset):
                     cur_max += len(dset.field_names)
         return subset_dict
 
+    def _build_subset_cond_dict(self):
+        # Maps conditional fields to subsets of conditional variables
+        if self.tie_fields: # Hardcoded, but seems less effective anyway
+            raise ValueError("tie_fields is not implemented for _build_subset_cond_dict; use use_all_fields")
+        elif self.use_all_fields:
+            cur_max = 0
+            subset_dict = {}
+            for name, dset in DSET_NAME_TO_OBJECT.items():
+                try:
+                    cond_field_names = dset.cond_field_names
+                    subset_dict[name] = list(range(cur_max, cur_max + len(cond_field_names)))
+                    cur_max += len(cond_field_names)
+                except: #no conditional fields for dset
+                    continue
+        else:
+            raise ValueError("currently only support use_all_fields for _build_subset_cond_dict")
+        return subset_dict
+
     def __getitem__(self, index):
 
         if hasattr(index, '__len__') and len(index)==2:
@@ -217,9 +240,17 @@ class MixedDataset(Dataset):
             
         variables = self.sub_dsets[dset_idx][local_idx]
         #assuming variables in order: 
+        #if cond_field_names defined:
+        #   x, bcs, y, leadtime, cond_fields
+        #   x, bcs, y, refineind, leadtime, cond_fields
+        #else:
         #   x, bcs, y, leadtime
         datasamples={} 
-        assert len(variables) in [4]
+        assert len(variables) in [4, 5]
+        if getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
+            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+            datasamples["cond_fields"] = variables[-1]
+            variables = variables[:-1]
 
         x, bcs, y = variables[:3]
         leadtime = variables[-1]
