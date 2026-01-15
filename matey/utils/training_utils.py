@@ -5,7 +5,6 @@ import torch.distributed as dist
 def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict, tar, 
                            n_steps, inference=False, pushforward=True, sequence_parallel_group=None):
     device = inp.device
-
     min_lead = int(leadtime.min().item())
     # global minimum leadtime based on end of data
     if dist.is_initialized():
@@ -38,7 +37,6 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
 
     else:
         rollout_steps = 1 if max_rollout == 1 else torch.randint(1, int(max_rollout.item()), (1,)).item()
-
     outputs = []
     x_t = inp
     if rollout_steps == 1:
@@ -50,6 +48,8 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
                 control_t = input_control[:, t:n_steps+t+1]
             else:
                 control_t = None
+            # Set leadtime to 1 for autoregressive training
+            leadtime = torch.ones(leadtime.shape, device=leadtime.device, dtype=leadtime.dtype).view(-1, 1) #B,1
             output_t = model(
                 x_t, field_labels, bcs, imod=imod,
                 sequence_parallel_group=sequence_parallel_group,
@@ -71,6 +71,8 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
                     control_t = input_control[:, t:n_steps+t+1]
                 else:
                     control_t = None
+                # Set leadtime to 1 for autoregressive training
+                leadtime = torch.ones(leadtime.shape, device=leadtime.device, dtype=leadtime.dtype).view(-1, 1) #B,1
                 output_t = model(
                     x_t, field_labels, bcs, imod=imod,
                     sequence_parallel_group=sequence_parallel_group,

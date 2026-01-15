@@ -401,10 +401,10 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
-    def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=False,
-                       input_control=None, tkhead_name=None, blockdict=None, tar=None):
+    def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=None,
+                       input_control=None, tkhead_name=None, blockdict=None, tar=None, inference=False):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
-        autoregressive = self.params.autoregressive if hasattr(self.params, "autoregressive") else False
+        autoregressive = getattr(self.params, "autoregressive", False)
         if not autoregressive:
             output = self.model(
                 inp, field_labels, bcs, imod=imod,
@@ -419,7 +419,7 @@ class Trainer:
             output, tar, rollout_steps = autoregressive_rollout(
                 self.model, inp, field_labels, bcs, imod, leadtime,
                 input_control, tkhead_name, blockdict,
-                tar, self.params.n_steps,
+                tar, self.params.n_steps, inference=inference,
                 sequence_parallel_group=self.current_group
             )
             return output, tar, rollout_steps
@@ -482,7 +482,7 @@ class Trainer:
                         output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
                             input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
-                            tar=tar
+                            tar=tar, inference=False
                         )
                         # For autoregressive, use the returned target
                         if new_tar is not None:
@@ -624,7 +624,7 @@ class Trainer:
                     output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
                             input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
-                            tar=tar
+                            tar=tar, inference=True
                     )
                     # For autoregressive, use the returned target
                     if new_tar is not None:

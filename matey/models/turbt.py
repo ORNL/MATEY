@@ -29,7 +29,7 @@ def build_turbt(params):
                      n_states=params.n_states,
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1 and not getattr(params, "autoregressive", False),
+                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
                      cond_input=params.input_control_act if hasattr(params,'input_control_act') else False,
                      n_steps=params.n_steps,
                      bias_type=params.bias_type,
@@ -201,11 +201,7 @@ class TurbT(BaseModel):
         else:
             leadtime=None
         if self.cond_input and cond_input is not None:
-            cond_input = self.inconMLP[imod](cond_input)
-        else:
-            cond_input=None
-        # combine leadtime and cond_input if both exist, otherwise use whichever is not None
-        leadtime = leadtime + cond_input if (leadtime is not None and cond_input is not None) else leadtime if leadtime is not None else cond_input
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')

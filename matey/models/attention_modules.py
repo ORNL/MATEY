@@ -449,7 +449,6 @@ class AttentionBlock_all2all(nn.Module):
             ##x[mask_padding_BL] = x[mask_padding_BL] + leadtime[mask_padding_BL,:]
             x = x.index_copy(0, idx, x.index_select(0, idx) + leadtime.index_select(0, idx))
 
-
         # MLP
         input = x.clone()
         ##x[mask_padding_BL] = self.mlp(x[mask_padding_BL])
@@ -508,7 +507,6 @@ class AttentionBlock_all2all(nn.Module):
         x = rearrange(x, '(b len) c-> b c len', b=B)
         if leadtime is not None:
             x = x + leadtime[:,:, None]
-        
 
         x = self.drop_path(x*self.gamma_att[None, :, None]) + input
 

@@ -30,7 +30,7 @@ def build_avit(params):
                 SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                 sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                 sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1 and not getattr(params, "autoregressive", False),
+                leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
                 cond_input=params.input_control_act if hasattr(params,'input_control_act') else False,
                 n_steps=params.n_steps,
                 bias_type=params.bias_type,
@@ -176,11 +176,7 @@ class AViT(BaseModel):
         else:
             leadtime=None
         if self.cond_input and cond_input is not None:
-            cond_input = self.inconMLP[imod](cond_input)
-        else:
-            cond_input=None
-                # combine leadtime and cond_input if both exist, otherwise use whichever is not None
-        leadtime = leadtime + cond_input if (leadtime is not None and cond_input is not None) else leadtime if leadtime is not None else cond_input
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         if self.posbias[imod] is not None:
             posbias = self.posbias[imod](t_pos_area, use_zpos=True if D>1 else False) # b t d h w c -> b t d h w c_emb
             posbias=rearrange(posbias,'b t d h w c -> t b c d h w')

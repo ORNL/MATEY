@@ -37,7 +37,8 @@ class BasenetCDFDirectoryDataset(Dataset):
             self.subname = subname
         self.dt = dt
         self.leadtime_max = leadtime_max
-        self.input_control_act = supportdata
+        self.input_control_act = (isinstance(supportdata, list)
+            and any("input_control_act" in d and d["input_control_act"] for d in supportdata))
         self.n_steps = n_steps #history length
         self.include_string = include_string
         self.train_val_test = train_val_test

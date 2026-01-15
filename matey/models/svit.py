@@ -26,7 +26,7 @@ def build_svit(params):
                      SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1 and not getattr(params, "autoregressive", False),
+                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
                      cond_input=params.input_control_act if hasattr(params,'input_control_act') else False,
                      n_steps=params.n_steps,
                      bias_type=params.bias_type,
@@ -132,11 +132,7 @@ class sViT_all2all(BaseModel):
         else:
             leadtime=None
         if self.cond_input and cond_input is not None:
-            cond_input = self.inconMLP[imod](cond_input)
-        else:
-            cond_input=None
-        # combine leadtime and cond_input if both exist, otherwise use whichever is not None
-        leadtime = leadtime + cond_input if (leadtime is not None and cond_input is not None) else leadtime if leadtime is not None else cond_input
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [T, B, C_emb, ntoken_len_tot]########
         if  self.sts_model:
             #x_padding: coarse tokens; x_local: refined local tokens
@@ -162,9 +158,9 @@ class sViT_all2all(BaseModel):
                 x_padding = x_padding + c
 
             if iblk==0:
-                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, cond_input=cond_input, mask_padding=mask_padding)
+                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, mask_padding=mask_padding)
             else:
-                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=None, cond_input=None, mask_padding=mask_padding)
+                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=None, mask_padding=mask_padding)
         #self.debug_nan(x_padding, message="attention block")
         ################################################################################
         ######## Decode ########

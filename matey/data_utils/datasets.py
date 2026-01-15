@@ -91,7 +91,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = params.dt if hasattr(params,'dt') else 1,
                             leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
-                            supportdata= getattr(params, 'input_control_act', None),
+                            supportdata= getattr(params, "supportdata", None),
                             group_id=rank, group_rank=group_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
