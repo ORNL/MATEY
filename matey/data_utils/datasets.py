@@ -125,7 +125,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
 
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, supportdata=False, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   group_id=0, group_rank=0, group_size=1):
