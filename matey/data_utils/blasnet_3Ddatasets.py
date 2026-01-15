@@ -177,11 +177,14 @@ class BaseBLASNET3DDataset(Dataset):
             raise ValueError("unknown %s"%self.split_level)
         ########################################
         bcs = self._get_specific_bcs()
-        if self.type != "SR":
+        if self.type == "SR":
+            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
+            return inp, torch.as_tensor(bcs), tar, leadtime
+        else:
+            assert len(variables) in [2, 3]
+
             trajectory = variables[0]
             leadtime = variables[1]
-            if len(variables) == 3:
-                cond_fields = variables[2]
 
             if self.leadtime_max>0:
                 inp=trajectory[:-1]
@@ -189,13 +192,12 @@ class BaseBLASNET3DDataset(Dataset):
             else: #self-supervised
                 inp=trajectory
                 tar=inp[-1]
-        else:
-            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
 
-        try:
-            return inp, torch.as_tensor(bcs), tar, leadtime, cond_fields
-        except:
-            return inp, torch.as_tensor(bcs), tar, leadtime
+            if len(variables) == 2:
+                return inp, torch.as_tensor(bcs), tar, leadtime
+            else:
+                cond_fields = variables[2]
+                return inp, torch.as_tensor(bcs), tar, leadtime, cond_fields
 
     def __len__(self):
         return self.len
