@@ -27,7 +27,7 @@ def build_svit(params):
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
                      leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
-                     cond_input=params.input_control_act if hasattr(params,'input_control_act') else False,
+                     cond_input=params.supportdata if hasattr(params,'supportdata') else False,
                      n_steps=params.n_steps,
                      bias_type=params.bias_type,
                      replace_patch=params.replace_patch if hasattr(params, 'replace_patch') else True,
