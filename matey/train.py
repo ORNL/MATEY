@@ -402,7 +402,7 @@ class Trainer:
         self.model = self.model.to(self.device)
 
     def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=None,
-                       input_control=None, tkhead_name=None, blockdict=None, tar=None, inference=False):
+                       cond_input=None, tkhead_name=None, blockdict=None, tar=None, inference=False):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
         autoregressive = getattr(self.params, "autoregressive", False)
         if not autoregressive:
@@ -418,7 +418,7 @@ class Trainer:
             # autoregressive rollout
             output, tar, rollout_steps = autoregressive_rollout(
                 self.model, inp, field_labels, bcs, imod, leadtime,
-                input_control, tkhead_name, blockdict,
+                cond_input, tkhead_name, blockdict,
                 tar, self.params.n_steps, inference=inference,
                 sequence_parallel_group=self.current_group
             )
@@ -441,7 +441,7 @@ class Trainer:
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
         sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
-        input_control_act = self.params.input_control_act if hasattr(self.params, 'input_control_act') else False
+        supportdata = True if hasattr(self.params, 'supportdata') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -456,10 +456,10 @@ class Trainer:
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-                if input_control_act:
-                    input_control = data["input_control"].to(self.device)
+                if supportdata:
+                    cond_input = data["cond_input"].to(self.device)
                 else:   
-                    input_control = None
+                    cond_input = None
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -481,7 +481,7 @@ class Trainer:
                 with record_function_opt("model forward", enabled=self.profiling):
                         output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
-                            input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict,
                             tar=tar, inference=False
                         )
                         # For autoregressive, use the returned target
@@ -598,11 +598,11 @@ class Trainer:
                 break
 
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-            input_control_act = self.params.input_control_act if hasattr(self.params, 'input_control_act') else False
-            if input_control_act:
-                input_control = data["input_control"].to(self.device)
+            supportdata = True if hasattr(self.params, 'supportdata') else False
+            if supportdata:
+                cond_input = data["cond_input"].to(self.device)
             else:
-                input_control = None
+                cond_input = None
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -623,7 +623,7 @@ class Trainer:
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
-                            input_control=input_control, tkhead_name=tkhead_name, blockdict=blockdict,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict,
                             tar=tar, inference=True
                     )
                     # For autoregressive, use the returned target

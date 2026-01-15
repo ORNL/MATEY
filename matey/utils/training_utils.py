@@ -2,7 +2,7 @@ import torch
 import torch.distributed as dist
 
 
-def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_control, tkhead_name, blockdict, tar, 
+def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_input, tkhead_name, blockdict, tar, 
                            n_steps, inference=False, pushforward=True, sequence_parallel_group=None):
     device = inp.device
     min_lead = int(leadtime.min().item())
@@ -37,26 +37,24 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
 
     else:
         rollout_steps = 1 if max_rollout == 1 else torch.randint(1, int(max_rollout.item()), (1,)).item()
-    outputs = []
     x_t = inp
     if rollout_steps == 1:
         pushforward = False  # no need for pushforward if only one step
     if inference or not pushforward:
         # Normal autoregressive rollout
         for t in range(rollout_steps):
-            if input_control is not None:
-                control_t = input_control[:, t:n_steps+t+1]
+            if cond_input is not None:
+                cond_input_t = cond_input[:, t:n_steps+t+1]
             else:
-                control_t = None
+                cond_input_t = None
             # Set leadtime to 1 for autoregressive training
             leadtime = torch.ones(leadtime.shape, device=leadtime.device, dtype=leadtime.dtype).view(-1, 1) #B,1
             output_t = model(
                 x_t, field_labels, bcs, imod=imod,
                 sequence_parallel_group=sequence_parallel_group,
-                leadtime=leadtime, cond_input=control_t,
+                leadtime=leadtime, cond_input=cond_input_t,
                 tkhead_name=tkhead_name, blockdict=blockdict
             )
-            outputs.append(output_t)
             x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
         tar = tar[:, rollout_steps-1:rollout_steps, :].squeeze(1) # B,C,D,H,W
         output = output_t # B,C,D,H,W
@@ -67,30 +65,29 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, input_
         # Pushforward rollout
         with torch.no_grad():
             for t in range(rollout_steps - 1):
-                if input_control is not None:
-                    control_t = input_control[:, t:n_steps+t+1]
+                if cond_input is not None:
+                    cond_input_t = cond_input[:, t:n_steps+t+1]
                 else:
-                    control_t = None
+                    cond_input_t = None
                 # Set leadtime to 1 for autoregressive training
                 leadtime = torch.ones(leadtime.shape, device=leadtime.device, dtype=leadtime.dtype).view(-1, 1) #B,1
                 output_t = model(
                     x_t, field_labels, bcs, imod=imod,
                     sequence_parallel_group=sequence_parallel_group,
-                    leadtime=leadtime, cond_input=control_t,
+                    leadtime=leadtime, cond_input=cond_input_t,
                     tkhead_name=tkhead_name, blockdict=blockdict
                 )
-                outputs.append(output_t)
                 x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
 
         # last step with grad
-        if input_control is not None:
-            control_t = input_control[:, rollout_steps:n_steps+rollout_steps+1]
+        if cond_input is not None:
+            cond_input_t = cond_input[:, rollout_steps:n_steps+rollout_steps+1]
         else:
-            control_t = None
+            cond_input_t = None
         output_t = model(
             x_t, field_labels, bcs, imod=imod,
             sequence_parallel_group=sequence_parallel_group,
-            leadtime=leadtime, cond_input=control_t,
+            leadtime=leadtime, cond_input=cond_input_t,
             tkhead_name=tkhead_name, blockdict=blockdict
         )
 

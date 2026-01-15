@@ -195,9 +195,9 @@ class AViT(BaseModel):
                 x = x + c
 
             if iblk==0:
-                x = blk(x, bcs, leadtime=leadtime,  sequence_parallel_group=sequence_parallel_group)
+                x = blk(x, bcs, leadtime=leadtime, sequence_parallel_group=sequence_parallel_group)
             else:
-                x = blk(x, bcs, leadtime=None,  sequence_parallel_group=sequence_parallel_group)
+                x = blk(x, bcs, leadtime=None, sequence_parallel_group=sequence_parallel_group)
 
         #self.debug_nan(x, message="attention block")
 

@@ -200,7 +200,6 @@ class BasenetCDFDirectoryDataset(Dataset):
                 pad_tensor_control = np.zeros(pad_len).astype(np.float32)
                 input_control=np.concatenate([input_control, pad_tensor_control],axis=0)
 
-        if self.input_control_act==True:
             return trajectory[0:self.n_steps], torch.as_tensor(bcs), traj_out.astype(np.float32), leadtime, input_control.astype(np.float32)
         else:
             return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1].astype(np.float32), leadtime

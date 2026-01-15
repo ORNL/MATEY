@@ -238,7 +238,7 @@ class MixedDataset(Dataset):
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
         if len(variables) == 5:
-            datasamples["input_control"] = variables[-1]
+            datasamples["cond_input"] = variables[-1]
 
         return datasamples
 
