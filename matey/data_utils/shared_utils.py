@@ -7,6 +7,7 @@ from einops import rearrange
 from operator import mul
 from functools import reduce
 import torch.distributed as dist
+from torch_geometric.nn import global_mean_pool
 
 def normalize_spatiotemporal_persample(x):
     # input tensor shape: [T, B, C, D, H, W]
@@ -24,6 +25,28 @@ def normalize_spatiotemporal_persample(x):
         data_std = torch.clamp_min(data_std, 1e-4)
     x = (x - data_mean) / (data_std)
     return x, data_mean, data_std
+
+def normalize_spatiotemporal_persample_graph(x, batch, eps=1e-4):
+    """
+    inputs:
+        x #[N_total, T, C]
+        batch  #[N_total]
+    return:
+        x_norm: #[N_total, T, C]
+    """
+    N, T, C = x.shape
+    with torch.no_grad():
+        x_mean_time = x.mean(dim=1) #N_total, C
+        x2_mean_time = (x*x).mean(dim=1) #N_total, C
+        mean_g = global_mean_pool(x_mean_time, batch) #[G, C]
+        mean_x2_g = global_mean_pool(x2_mean_time, batch)
+        var_g = mean_x2_g - mean_g**2 #[G, C]
+        std_g = torch.clamp_min(torch.sqrt(var_g), eps)
+
+    mean_node = mean_g[batch].view(N, 1, C)
+    std_node  = std_g[batch].view(N, 1, C)
+    x_norm = (x - mean_node)/std_node
+    return x_norm, mean_g, std_g
 
 def mask_to_indices(b):
     """

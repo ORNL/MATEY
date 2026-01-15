@@ -26,6 +26,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+from torch_geometric.nn import global_mean_pool
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -430,7 +431,14 @@ class Trainer:
             ##############################################################################################################
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter)
-                inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                if "graph" in data:
+                    graphdata = data["graph"].to(self.device)
+                    tar = graphdata.y #[nnodes, C_tar] 
+                    leadtime = graphdata.leadtime #[nnodes, 1]
+                    dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
+                else: 
+                    inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                    field_labels_out = field_labels
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -447,30 +455,50 @@ class Trainer:
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
-                inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                if "graph" in data:
+                    isgraph = True
+                    inp = graphdata
+                else:
+                    inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    isgraph = False
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, imod=imod,
                                     sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict)
-                ###full resolution###
-                spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
-                residuals = output - tar
-                if self.params.pei_debug:
-                    checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
-                                           self.device, self.params.debug_outdir, istep=steps, imod=-1)
-                # Differentiate between log and accumulation losses
-                #B,C,D,H,W->B,C
-                raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
-                # Scale loss for accum
-                loss = raw_loss.mean() / self.params.accum_grad
-                # Logging
-                with torch.no_grad():
-                    logs['train_l1'] += F.l1_loss(output, tar)
-                    log_nrmse = raw_loss.sqrt().mean()
-                    logs['train_nrmse'] += log_nrmse 
-                    loss_logs[dset_type] += loss.item()
-                    logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                                    tkhead_name=tkhead_name, blockdict=blockdict, isgraph = isgraph, field_labels_out=field_labels_out)
+                if output.ndim == 2:
+                    ###full resolution###
+                    residuals = output - tar #[nnodes, C_tar] 
+                    # Differentiate between log and accumulation losses
+                    raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+                    # Scale loss for accum
+                    loss = raw_loss.mean() / self.params.accum_grad
+                    # Logging
+                    with torch.no_grad():
+                        logs['train_l1'] += F.l1_loss(output, tar)
+                        log_nrmse = raw_loss.sqrt().mean()
+                        logs['train_nrmse'] += log_nrmse 
+                        loss_logs[dset_type] += loss.item()
+                        logs['train_rmse'] += residuals.pow(2).mean().sqrt().mean()
+                else:
+                    ###full resolution###
+                    spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
+                    residuals = output - tar
+                    if self.params.pei_debug:
+                        checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
+                                            self.device, self.params.debug_outdir, istep=steps, imod=-1)
+                    # Differentiate between log and accumulation losses
+                    #B,C,D,H,W->B,C
+                    raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
+                    # Scale loss for accum
+                    loss = raw_loss.mean() / self.params.accum_grad
+                    # Logging
+                    with torch.no_grad():
+                        logs['train_l1'] += F.l1_loss(output, tar)
+                        log_nrmse = raw_loss.sqrt().mean()
+                        logs['train_nrmse'] += log_nrmse 
+                        loss_logs[dset_type] += loss.item()
+                        logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
@@ -498,7 +526,7 @@ class Trainer:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
-                        batch_idx, self.global_rank, inp.shape, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
+                        batch_idx, self.global_rank, inp.shape if isinstance(inp, torch.Tensor) else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
                 data_start = self.timer.get_time()
             self.check_memory("train-end %d"%batch_idx)
         if self.params.scheduler == 'steplr':
@@ -561,8 +589,14 @@ class Trainer:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
 
-            inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-           
+            if "graph" in data:
+                graphdata = data["graph"].to(self.device)
+                tar = graphdata.y #[nnodes, C_tar] 
+                leadtime = graphdata.leadtime #[nnodes, 1]
+                dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
+            else: 
+                inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                field_labels_out = field_labels
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
@@ -579,28 +613,48 @@ class Trainer:
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
                     tar = tar.to(self.device)
-                    inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    if "graph" in data:
+                        isgraph = True
+                        inp = graphdata
+                    else:
+                        inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                        isgraph = False
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     output= self.model(inp, field_labels, bcs, imod=imod, 
                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       tkhead_name=tkhead_name, blockdict=blockdict)                   
+                                       tkhead_name=tkhead_name, blockdict=blockdict, isgraph = isgraph, field_labels_out=field_labels_out)                   
                     #################################
-                    ###full resolution###
-                    spatial_dims = tuple(range(output.ndim))[2:]
-                    residuals = output - tar
-                    # Differentiate between log and accumulation losses
-                    raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
-                    raw_loss = raw_loss.sqrt().mean()
-                    raw_l1_loss = F.l1_loss(output, tar)
-                    raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
-                    logs['valid_nrmse'] += raw_loss
-                    logs['valid_l1']    += raw_l1_loss
-                    logs['valid_rmse']  += raw_rmse_loss
+                    if output.ndim == 2:
+                        residuals = output - tar #[nnodes, C_tar] 
+                        # Differentiate between log and accumulation losses
+                        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+                        raw_loss = raw_loss.sqrt().mean()
+                        raw_l1_loss = F.l1_loss(output, tar)
+                        raw_rmse_loss = residuals.pow(2).mean(dim=0).sqrt().mean()
+                        logs['valid_nrmse'] += raw_loss
+                        logs['valid_l1']    += raw_l1_loss
+                        logs['valid_rmse']  += raw_rmse_loss
 
-                    loss_dset_logs[dset_type]      += raw_loss
-                    loss_l1_dset_logs[dset_type]   += raw_l1_loss
-                    loss_rmse_dset_logs[dset_type] += raw_rmse_loss
-                    #################################        
+                        loss_dset_logs[dset_type]      += raw_loss
+                        loss_l1_dset_logs[dset_type]   += raw_l1_loss
+                        loss_rmse_dset_logs[dset_type] += raw_rmse_loss
+                    else:
+                        ###full resolution###
+                        spatial_dims = tuple(range(output.ndim))[2:]
+                        residuals = output - tar
+                        # Differentiate between log and accumulation losses
+                        raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
+                        raw_loss = raw_loss.sqrt().mean()
+                        raw_l1_loss = F.l1_loss(output, tar)
+                        raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                        logs['valid_nrmse'] += raw_loss
+                        logs['valid_l1']    += raw_l1_loss
+                        logs['valid_rmse']  += raw_rmse_loss
+
+                        loss_dset_logs[dset_type]      += raw_loss
+                        loss_l1_dset_logs[dset_type]   += raw_l1_loss
+                        loss_rmse_dset_logs[dset_type] += raw_rmse_loss
+                        #################################        
             self.check_memory("validate-end")
         self.single_print('DONE VALIDATING - NOW SYNCING')
         logs = {k: v/steps for k, v in logs.items()}

@@ -3,12 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
-from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear
+from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output
 from .time_modules import leadtimeMLP
 from .positionbias_modules import positionbias_mod
 import sys
 from operator import mul
 from functools import reduce
+from ..utils import graph_to_densenodes
 
 class BaseModel(nn.Module):
     """
@@ -22,12 +23,14 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6, n_states_cond=None, embed_dim=768, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.conditioning = (n_states_cond is not None and n_states_cond > 0)
         if self.conditioning:
             self.space_bag_cond = nn.ModuleList([SubsampledLinear(n_states_cond, embed_dim//4) for _ in range(nlevels)])
+        if n_states_out is None:
+            n_states_out = n_states
         self.tokenizer_heads_params = {}
         self.tokenizer_outheads_params = {}
         self.tokenizer_heads_gammaref={}
@@ -55,10 +58,16 @@ class BaseModel(nn.Module):
                 debed_ensemble = nn.ModuleList()
                 embed_ensemble_cond = nn.ModuleList()
                 for ps_scale, ps_scale_out in zip(patch_size, output_patch_size):
-                    embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
-                    debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states, notransposed=notransposed, smooth=smooth))
-                    if self.conditioning:
-                        embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                    if "graph" in head_name:
+                        embed_ensemble.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                        debed_ensemble.append(GraphhMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, smooth=smooth))
+                        if self.conditioning:
+                            embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                    else:
+                        embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                        debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, notransposed=notransposed, smooth=smooth))
+                        if self.conditioning:
+                            embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                 tokenizer_ensemble_heads_level[head_name]["embed"] = embed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["debed"] = debed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["embed_cond"] = embed_ensemble_cond
@@ -163,26 +172,38 @@ class BaseModel(nn.Module):
                     #print("No NAN in model parameters: ", name, param.data.numel())
             sys.exit(-1)
 
-    def get_unified_preembedding(self, x, state_labels, op):
-        ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
-        # state_labels: variable index to consider varying datasets 
-        # return [t, b, c_emb//4, d, h, w]
-        # Sparse proj
-        x = rearrange(x, 't b c d h w -> t b d h w c')
-        x = op(x, state_labels)
-        x = rearrange(x, 't b d h w c -> t b c d h w')
-        #self.debug_nan(x)
-        return x
+    def get_unified_preembedding(self, x, state_labels, op, isgraph=False):
+        if not isgraph:
+            ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
+            # state_labels: variable index to consider varying datasets 
+            # return [t, b, c_emb//4, d, h, w]
+            # Sparse proj
+            x = rearrange(x, 't b c d h w -> t b d h w c')
+            x = op(x, state_labels)
+            x = rearrange(x, 't b d h w c -> t b c d h w')
+            #self.debug_nan(x)
+            return x
+        else:
+            #input: (node_features, batch, edge_index); output: (emb node_features, batch, edge_index)
+            node_features, batch, edge_index = x 
+            #node_features [nnodes, t, c]
+            state_labels = state_labels[batch] #state_labels[nnodes, c]
+            node_features = op(node_features, state_labels) #[nnodes, t, c_emb//4]
+            return (node_features, batch, edge_index)
 
-    def get_structured_sequence(self, x, embed_index, tokenizer):
-        ## input tensor x: [t, b, c_emb//4, d, h, w]
-        # embed_index: tokenization at different resolutions; 
-        ## and return patch sequences in shape [t, b, c_emd, ntoken_z, ntoken_x, ntoken_y]
-        T = x.shape[0]
-        x = rearrange(x, 't b c d h w -> (t b) c d h w')
-        x = tokenizer[embed_index](x)
-        x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
-        #self.debug_nan(x, message="embed_ensemble")
+    def get_structured_sequence(self, x, embed_index, tokenizer, isgraph=False):
+        if not isgraph:
+            ## input tensor x: [t, b, c_emb//4, d, h, w]
+            # embed_index: tokenization at different resolutions; 
+            ## and return patch sequences in shape [t, b, c_emd, ntoken_z, ntoken_x, ntoken_y]
+            T = x.shape[0]
+            x = rearrange(x, 't b c d h w -> (t b) c d h w')
+            x = tokenizer[embed_index](x)
+            x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
+            #self.debug_nan(x, message="embed_ensemble")
+        else:
+            #input: (node_features, batch, edge_index); output: (node_features, batch, edge_index)
+            x = tokenizer[embed_index](x) 
         return x
 
     def get_refined_localpatches(self, x_0, refineind, tkhead_name, leadtime=None):
@@ -370,7 +391,7 @@ class BaseModel(nn.Module):
             leadtime = leadtime.repeat_interleave(ncoarse, dim=0)[mask]
         return x_local, t_pos_area_local, patch_ids, leadtime
 
-    def get_patchsequence(self, x,  state_labels, tkhead_name, refineind=None, leadtime=None, blockdict=None, ilevel=0, conditioning: bool = False):
+    def get_patchsequence(self, x,  state_labels, tkhead_name, refineind=None, leadtime=None, blockdict=None, ilevel=0, conditioning: bool = False, isgraph = False):
         """
         ### intput tensors
         #       x: [T, B, C, D, H, W]
@@ -394,17 +415,27 @@ class BaseModel(nn.Module):
         """
         ########################################################
         #[T, B, C_emb//4, D, H, W]
-        op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]
-        x_pre = self.get_unified_preembedding(x, state_labels, op)
+        op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]   
+        x_pre = self.get_unified_preembedding(x, state_labels, op, isgraph=isgraph)
         ##############tokenizie at the coarse scale##############
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
         tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
-        x = self.get_structured_sequence(x_pre, -1, tokenizer)
-        x = rearrange(x, 't b c d h w -> t b c (d h w)')
-        t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
-        t_pos_area = rearrange(t_pos_area, 'b t d h w c-> b t (d h w) c')
-        if refineind is None:
-            return x, None, None, None, None, None, t_pos_area, None
+        x = self.get_structured_sequence(x_pre, -1, tokenizer, isgraph=isgraph)
+        if isgraph:
+            #x: (node_features, batch, edge_index)
+            node_emb, batch, edge_index = x
+            x, mask = graph_to_densenodes(node_emb, batch) #[B, Max_nodes, T, C_inp]
+            x = rearrange(x, 'b nnodes_max t c -> t b c nnodes_max')
+            mask_padding = mask #leverage mask_padding from adaptive tokenization implementation: True: meaningful patches; False: padding patches
+            #t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
+            t_pos_area = None
+            return x, None, None, mask_padding, None, None, t_pos_area, None
+        else:
+            x = rearrange(x, 't b c d h w -> t b c (d h w)')
+            t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
+            t_pos_area = rearrange(t_pos_area, 'b t d h w c-> b t (d h w) c')
+            if refineind is None:
+                return x, None, None, None, None, None, t_pos_area, None
         ########################################################
         #FIXME: ("the following code breaks in MG test")
         ##############tokenizie at the fine scale##############
@@ -423,17 +454,20 @@ class BaseModel(nn.Module):
         #mask_padding: [B, ntoken_tot]
         return x_padding, patch_ids, patch_ids_ref, mask_padding, None, None, t_pos_area_padding, None
 
-    def get_spatiotemporalfromsequence(self, x_padding, patch_ids, patch_ids_ref, space_dims, tkhead_name, ilevel=0):
+    def get_spatiotemporalfromsequence(self, x_padding, patch_ids, patch_ids_ref, space_dims, tkhead_name, ilevel=0, isgraph=False):
         #taking token sequences, x_padding, in shape [T, B, C_emb, ntoken_tot] as input
         #patch_ids_ref: [npatches] (ids of effective tokens in x_local)
         #patch_ids: [npatches] #selected token ids with sample pos inside batch considered
         # Tspace_dims=[T, D, H, W]
         #return [T, B, C, D, H, W]
-        T, B = x_padding.shape[:2]
         ########################################################################
         embed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed"]
         debed_ensemble = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["debed"]
         ########################################################################
+        if isgraph:
+            return debed_ensemble[-1](x_padding) #return batched graph
+
+        T, B = x_padding.shape[:2]
         ntokendim   =[]
         ntokenstsdim=[]
         ps_c  = embed_ensemble[-1].patch_size

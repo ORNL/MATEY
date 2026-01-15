@@ -12,6 +12,7 @@ try:
     from blasnet_3Ddatasets import *
     from thewell_datasets import *
     from binary_3DSSTdatasets import *
+    from graph_datasets import *
 except ImportError:
     from .mixed_dset_sampler import MultisetSampler
     from .hdf5_datasets import *
@@ -21,8 +22,9 @@ except ImportError:
     from .blasnet_3Ddatasets import *
     from .thewell_datasets import *
     from .binary_3DSSTdatasets import *
+    from .graph_datasets import *
 import os
-import glob
+from torch_geometric.data import Data as GraphData, Batch
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -71,6 +73,8 @@ DSET_NAME_TO_OBJECT = {
     "viscoelastic":viscoelastic_instability,
     ##SST
     "sstF4R32": sstF4R32Dataset,
+    #deepmindgraphnet
+    "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
     }
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
@@ -117,6 +121,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                         drop_last=True,
                         pin_memory=torch.cuda.is_available(), 
                         persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                        collate_fn=my_collate,
                         )
     return dataloader, dataset, sampler
 
@@ -218,17 +223,32 @@ class MixedDataset(Dataset):
         variables = self.sub_dsets[dset_idx][local_idx]
         #assuming variables in order: 
         #   x, bcs, y, leadtime
-        datasamples={} 
-        assert len(variables) in [4]
+        #or
+        #graph, bcs 
+        # Data(x=d_y.x, pos=pos, edge_index=edge_index, edge_attr=edge_attr) 
+        # data.x_seq = x_seq #[nsteps_input, N, F] 
+        # data.y = y_state #[N, 3] -> (vx, vy, p)
+        # data.leadtime = leadtime
 
+        datasamples={} 
+        assert len(variables) in [2, 4]
+
+        datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
+        datasamples["dset_idx"] = dset_idx
+
+        if isinstance(variables[0], GraphData):
+            datasamples["graph"] = variables[0]
+            datasamples["bcs"] = variables[1]
+            datasamples["field_labels_out"] = datasamples["field_labels"][-3:]
+
+            return datasamples
+        
         x, bcs, y = variables[:3]
         leadtime = variables[-1]
         datasamples["input"] = x
         datasamples["label"] = y
         datasamples["bcs"] = bcs
         datasamples["leadtime"] = leadtime
-        datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
-        datasamples["dset_idx"] = dset_idx
         
         return datasamples
 
@@ -266,3 +286,13 @@ class _RepeatSampler(object):
     def __iter__(self):
         while True:
             yield from iter(self.sampler)
+
+def my_collate(batch):
+    batch_new = {}
+    for key in batch[0].keys():
+        objs = [b[key] for b in batch]
+        if key =="graph":
+            batch_new[key] = Batch.from_data_list(objs)
+        else:
+            batch_new[key] = torch.stack([torch.as_tensor(obj) for obj in objs], dim=0)    
+    return batch_new

@@ -4,7 +4,8 @@ import numpy as np
 from einops import rearrange
 from .spacetime_modules import SpaceTimeBlock_svit
 from .basemodel import BaseModel
-from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
+from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
+from ..utils import densenodes_to_graphnodes
 
 def build_svit(params):
     """ Builds model from parameter file.
@@ -109,18 +110,30 @@ class sViT_all2all(BaseModel):
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
-                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, data, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
+                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None, isgraph = False, field_labels_out = None):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
-        #T,B,C,D,H,W
-        T, _, _, D, H, W = x.shape
-        if refine_ratio is None and  self.tokenizer_heads_gammaref[tkhead_name] is None:
+        if field_labels_out is None:
+            field_labels_out = state_labels
+
+        if isgraph:
+            x = data.x#nnodes, T, C
+            edge_index = data.edge_index #
+            batch = data.batch ##[N_total]
+            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
             refineind=None
+            x = (x, batch, edge_index)
         else:
-            refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x,  self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
-        #self.debug_nan(x, message="input")
-        x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+            x = data
+            #T,B,C,D,H,W
+            T, _, _, D, H, W = x.shape
+            if refine_ratio is None and  self.tokenizer_heads_gammaref[tkhead_name] is None:
+                refineind=None
+            else:
+                refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x,  self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
+            #self.debug_nan(x, message="input")
+            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
@@ -128,32 +141,36 @@ class sViT_all2all(BaseModel):
             leadtime=None
         ########Encode and get patch sequences [T, B, C_emb, ntoken_len_tot]########
         if  self.sts_model:
+            assert not isgraph, "Not set sts_model yet"
             #x_padding: coarse tokens; x_local: refined local tokens
             x_padding, patch_ids, _, _, x_local, leadtime_local, tposarea_padding, tposarea_local = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, leadtime=leadtime, blockdict=blockdict)
             mask_padding = None
             x_local = rearrange(x_local, 'nrfb t c dhw_sts -> t nrfb c dhw_sts')
         else:
-            x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod)
+            x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
 
         # Repeat the steps for conditioning if present
         if conditioning:
             assert self.sts_model == False
             assert refineind == None
+            assert not isgraph, "Not set conditioning yet"
             c, _, _, _, _, _, _, _ = self.get_patchsequence(cond_dict["fields"], cond_dict["labels"], tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, conditioning=conditioning)
         ################################################################################
-        if self.posbias[imod] is not None:
+        if self.posbias[imod] is not None and tposarea_padding is not None:
             posbias = self.posbias[imod](tposarea_padding, mask_padding=mask_padding, use_zpos=True if D>1 else False) # b t L c->b t L c_emb
             posbias=rearrange(posbias,'b t L c -> t b c L')
             x_padding = x_padding + posbias
         ######## Process ########
+        #only send mask if mask_padding indicates padding tokens
+        mask4attblk = None if (mask_padding is not None and mask_padding.all()) else mask_padding
         for iblk, blk in enumerate(self.blocks):
             if conditioning:
                 x_padding = x_padding + c
 
             if iblk==0:
-                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, mask_padding=mask_padding)
+                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, mask_padding=mask4attblk)
             else:
-                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=None, mask_padding=mask_padding)
+                x_padding = blk(x_padding, bcs, sequence_parallel_group=sequence_parallel_group, leadtime=None, mask_padding=mask4attblk)
         #self.debug_nan(x_padding, message="attention block")
         ################################################################################
         ######## Decode ########
@@ -161,9 +178,27 @@ class sViT_all2all(BaseModel):
             xbase = self.get_spatiotemporalfromsequence(x_padding, None, None, [D, H, W], tkhead_name)
             x = self.add_sts_model(xbase, patch_ids, x_local, bcs, tkhead_name, leadtime=leadtime_local, t_pos_area=tposarea_local)
         else:
-            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod)
+            if isgraph:
+                x_padding = rearrange(x_padding, 't b c ntoken_tot -> b ntoken_tot t c')
+                #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
+                # #output: [N_total, T, C] (only real nodes)
+                x= densenodes_to_graphnodes(x_padding, mask_padding) #[nnodes, T, C]
+                x_padding = (x, batch, edge_index)
+                D, H, W = -1, -1, -1 #place holder
+            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
+            if isgraph:
+                node_ft, batch, edge_index = x
+                #node_ft: [nnodes, T, C]
+                x = node_ft[:,:,field_labels_out[0]]
+                N = x.shape[0]
+                mask = torch.isin(state_labels[0], field_labels_out[0])    
+                mean_node = data_mean[batch].view(N, 1, -1)[:, :, mask]#broadcast to node 
+                std_node  = data_std[batch].view(N, 1, -1)[:, :, mask]
+
+                x = x * std_node + mean_node
+                return x[:, -1, :] #[nnodes, C]
         ######### Denormalize ########
-        x = x[:,:,state_labels[0],...]
+        x = x[:,:,field_labels_out[0],...]
         x = x * data_std + data_mean 
         ################################################################################
         if returnbase4train:

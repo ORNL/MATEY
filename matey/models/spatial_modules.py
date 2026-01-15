@@ -7,6 +7,7 @@ from operator import mul
 from functools import reduce
 from einops import rearrange, repeat
 from ..data_utils.utils import closest_factors
+from torch_geometric.nn import GCNConv, BatchNorm, GraphNorm
 
 ### Space utils
 #FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it
@@ -287,3 +288,97 @@ class hMLP_output(nn.Module):
                 x = self.smooth(x)
             #x = x[:,state_labels,...]
         return x
+
+class GraphhMLP_stem(nn.Module):
+    """graph to patch embedding"""
+    def __init__(self, patch_size=(1,1,1), in_chans=3, embed_dim=768, nconv=3):
+        super().__init__()
+        assert patch_size==[1, 1 ,1], f"graph input heads only support patch size of 1 for now, but get {patch_size}"
+        self.patch_size = patch_size
+        self.in_chans = in_chans
+        self.embed_dim = embed_dim
+        self.nconv = nconv
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.act = nn.GELU()
+
+        for ilayer in range(nconv):
+            in_chans_ilayer = in_chans if ilayer==0 else embed_dim//4
+            embed_ilayer = embed_dim if ilayer==self.nconv-1 else embed_dim//4
+            self.convs.append(GCNConv(in_chans_ilayer, embed_ilayer))
+            self.norms.append(GraphNorm(embed_ilayer))
+
+    def forward(self, data):
+        """
+        data:  (node_features, batch, edge_index)
+        """
+        x, batch, edge_index = data
+        N, T, C= x.shape
+        x_list=[]
+        for it in range(T):
+            h = x[:,it,:]
+            for conv, norm in zip(self.convs, self.norms):
+                h_in = h
+                h = conv(h, edge_index)
+                h = norm(h, batch)
+                h = self.act(h)
+                if h.shape == h_in.shape:
+                    h = h + h_in
+            x_list.append(h)
+        x_out = torch.stack(x_list, dim=1)
+        return (x_out, batch, edge_index)
+    
+class GraphhMLP_output(nn.Module):
+    def __init__(self, patch_size=(1,1,1), out_chans=3, embed_dim=768, nconv=3, smooth=False):
+        super().__init__()
+        assert patch_size==[1, 1 ,1], f"graph output heads only support patch size of 1 for now, but get {patch_size}"
+        self.patch_size = patch_size
+        self.out_chans = out_chans
+        self.embed_dim = embed_dim
+        self.nconv = nconv
+        self.smooth_flag = smooth
+        
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.act = nn.GELU()
+        for ilayer in range(nconv - 1):
+            in_chans_ilayer = embed_dim if ilayer==0 else embed_dim//4
+            embed_ilayer = embed_dim//4
+            self.convs.append(GCNConv(in_chans_ilayer, embed_ilayer))
+            self.norms.append(GraphNorm(embed_ilayer))
+
+        in_head = embed_dim if nconv == 1 else embed_dim//4
+        self.out_head = nn.Sequential(
+                        nn.Linear(in_head, in_head),
+                        nn.GELU(),
+                        nn.Linear(in_head, out_chans)
+                    )
+        if self.smooth_flag:
+            self.smooth = GCNConv(out_chans, out_chans)
+        else:
+            self.smooth = None
+
+    def forward(self, data):
+        """
+        data:  (node_features, batch, edge_index)
+        """
+        x, batch, edge_index = data
+        N, T, C= x.shape
+        x_list=[]
+        for it in range(T):
+            h = x[:,it,:]
+            for conv, norm in zip(self.convs, self.norms):
+            #for conv in self.convs:
+                h_in = h
+                h = conv(h, edge_index)
+                h = norm(h, batch)
+                h = self.act(h)
+                if h.shape == h_in.shape:
+                    h = h + h_in
+            h = self.out_head(h)
+            if self.smooth is not None:
+                h = self.smooth(h, edge_index)
+            x_list.append(h)
+        x_out = torch.stack(x_list, dim=1)
+        return (x_out, batch, edge_index)

@@ -5,13 +5,14 @@ import numpy as np
 from einops import rearrange
 from .spacetime_modules import SpaceTimeBlock_all2all
 from .basemodel import BaseModel
-from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids 
+from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph 
 from ..data_utils.utils import construct_filterkernel
 from .spatial_modules import UpsampleinSpace
 import sys, copy
 from operator import mul
 from functools import reduce
 import torch.distributed as dist
+from ..utils import densenodes_to_graphnodes
 
 def build_turbt(params):
     """ Builds model from parameter file.
@@ -172,42 +173,62 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c t d h w -> b c (t d h w)')
         return x            
     
-    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None,
-                tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None):
+    def forward(self, data, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None,
+                tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None, isgraph = False, field_labels_out = None):
         
         if refine_ratio is None and gammaref is None:
             refineind=None
         else:
             raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
         
-        if imod<self.nhlevels-1:
-            x, blockdict=self.filterdata(x, blockdict=blockdict)
-        if imod>0:
-            x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                    tkhead_name=tkhead_name, blockdict=blockdict)
-        #x_input = x.clone()
-        #T,B,C,D,H,W
-        T, _, _, D, H, W = x.shape
-        #self.debug_nan(x, message="input")
-        x, data_mean, data_std = normalize_spatiotemporal_persample(x)
-        #self.debug_nan(x, message="input after normalization")
+        if field_labels_out is None:
+            field_labels_out = state_labels
+
+        if isgraph:
+            """
+            For graph objects: support one level for now
+            FIXME: extend to multiple levels
+            """
+            x = data.x#nnodes, T, C
+            edge_index = data.edge_index #
+            batch = data.batch ##[N_total]
+            T = x.shape[1] 
+            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
+            refineind=None
+            x = (x, batch, edge_index)
+        else:
+            x = data
+
+            if imod<self.nhlevels-1:
+                x, blockdict=self.filterdata(x, blockdict=blockdict)
+            if imod>0:
+                x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
+                        tkhead_name=tkhead_name, blockdict=blockdict)
+            #x_input = x.clone()
+            #T,B,C,D,H,W
+            T, _, _, D, H, W = x.shape
+            #self.debug_nan(x, message="input")
+            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+            #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
         else:
             leadtime=None
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
-        x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod)
+        x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')
         ################################################################################
-        use_zpos=True if D>1 else False
-        if self.posbias[imod] is not None:
+        if self.posbias[imod] is not None and tposarea_padding is not None:
+            use_zpos=True if D>1 else False
             posbias = self.posbias[imod](tposarea_padding, mask_padding=mask_padding, use_zpos=use_zpos) #b t L c->b t L c_emb
             posbias=rearrange(posbias,'b t L c -> b c (t L)')
             x = x + posbias
             del posbias
         ######## Process ########
-        local_att = imod>0
+        #only send mask if mask_padding indicates padding tokens
+        mask4attblk = None if (mask_padding is not None and mask_padding.all()) else mask_padding
+        local_att = not isgraph and imod>0 
         if local_att:
             #each mode similar cost
             nfact=2**(2*imod)//blockdict["nproc_blocks"][-1]
@@ -220,9 +241,9 @@ class TurbT(BaseModel):
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
             #print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
             if iblk==0:
-                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask_padding, local_att=local_att)
+                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:
-                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask_padding, local_att=local_att)
+                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask4attblk, local_att=local_att)
         #self.debug_nan(x_padding, message="attention block")
         if local_att:
             nfact=2**(2*imod)//blockdict["nproc_blocks"][-1]
@@ -231,8 +252,27 @@ class TurbT(BaseModel):
         ################################################################################
         x = rearrange(x, 'b c (t ntoken_tot) -> t b c ntoken_tot', t=T)
         #################################################################################
+        if isgraph:
+            x = rearrange(x, 't b c ntoken_tot -> b ntoken_tot t c')
+            #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
+            #output: [N_total, T, C] (only real nodes)
+            x= densenodes_to_graphnodes(x, mask_padding) #[nnodes, T, C]
+            x = (x, batch, edge_index)
+            D, H, W = -1, -1, -1 #place holder
         ######## Decode ########
-        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod)
+        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
+        if isgraph:
+            node_ft, batch, edge_index = x
+            #node_ft: [nnodes, T, C]
+            x = node_ft[:,:,field_labels_out[0]]
+            N = x.shape[0]
+            mask = torch.isin(state_labels[0], field_labels_out[0])
+            #broadcast to node   
+            mean_node = data_mean[batch].view(N, 1, -1)[:, :, mask]
+            std_node  = data_std[batch].view(N, 1, -1)[:, :, mask]
+
+            x = x * std_node + mean_node
+            return x[:, -1, :] #[nnodes, C]
         ########upsampling######
         x_correct = x[-1]
         del x

@@ -145,9 +145,9 @@ class AViT(BaseModel):
         return x
 
     def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
-                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
+                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None, isgraph = False):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
-
+        assert not isgraph, "graph is not supported in AViT"
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
         if self.tokenizer_heads_gammaref[tkhead_name] is None and refine_ratio is None:
