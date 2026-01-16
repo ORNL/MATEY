@@ -11,12 +11,6 @@ from functools import reduce
 from operator import mul
 import math
 
-def get_log2_int(n):
-    npower = n.bit_length() - 1 
-    #remain = math.ceil(n/2**npower)//2
-    #return npower, npower+remain
-    return npower
-
 def closest_factors(n, dim):
     assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
 

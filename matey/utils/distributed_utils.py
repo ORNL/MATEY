@@ -7,7 +7,12 @@ import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from .data_utils.utils import get_log2_int
+
+def get_log2_int(n):
+    npower = n.bit_length() - 1 
+    #remain = math.ceil(n/2**npower)//2
+    #return npower, npower+remain
+    return npower
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):

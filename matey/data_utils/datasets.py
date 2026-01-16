@@ -116,7 +116,6 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
     dataloader = loader(dataset, 
                         num_workers=params.num_data_workers,
                         #prefetch_factor=2,
-                        shuffle=True,
                         batch_sampler=sampler,
                         #drop_last=True,
                         pin_memory=torch.cuda.is_available(), 
