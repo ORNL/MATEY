@@ -423,10 +423,15 @@ class Trainer:
                     continue
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
 
+                cond_dict = {}
                 try:
-                    blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
+                    cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                    cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
                 except:
-                    blockdict = None
+                    pass
+
+                blockdict = getattr(self.train_dataset.sub_dsets[dset_index[0]], "blockdict", None)
+
                 #if self.group_rank==0:
                 #    print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.train_dataset.sub_dsets[dset_index[0]].type
@@ -444,7 +449,7 @@ class Trainer:
                 imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
-                seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
+                seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
                 opts = ForwardOptionsBase(
                 imod=imod, 
                 tkhead_name=tkhead_name,
@@ -453,7 +458,7 @@ class Trainer:
                 leadtime=leadtime,
                 blockdict=copy.deepcopy(blockdict),
                 #refine_ratio=refine_ratio,
-                #cond_dict=copy.deepcopy(cond_dict,
+                cond_dict=copy.deepcopy(cond_dict),
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, opts)
@@ -572,24 +577,26 @@ class Trainer:
         else:
             cutoff = 5 #40
 
-        for idx in range(len(self.valid_data_loader)):
+        num_batches = min(len(self.valid_data_loader), self.params.epoch_size)
+
+        for idx in range(num_batches):
             self.check_memory("validate-data")
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
             ##############################################################################################################
-            try:
-                data = next(valid_iter)
-            except:
-                self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
-                break
-
+            data = next(valid_iter)
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-           
+
+            cond_dict = {}
             try:
-                blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
+                cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
             except:
-                blockdict = None
+                pass
+
+            blockdict = getattr(self.valid_dataset.sub_dsets[dset_index[0]], "blockdict", None)
+            
             #if self.group_rank==0:
-            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, inp.min(), inp.max(), tar.min(), tar.max(), blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -612,7 +619,7 @@ class Trainer:
                     leadtime=leadtime,
                     blockdict=copy.deepcopy(blockdict),
                     #refine_ratio=refine_ratio,
-                    #cond_dict=copy.deepcopy(cond_dict),
+                    cond_dict=copy.deepcopy(cond_dict),
                     )
                     output= self.model(inp, field_labels, bcs, opts)                
                     #################################
