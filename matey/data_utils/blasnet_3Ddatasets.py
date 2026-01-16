@@ -30,7 +30,7 @@ class BaseBLASNET3DDataset(Dataset):
         SR_ratio: superresolution ratio, used when input and output are at different resolutions, 
         currently only support this case: https://www.kaggle.com/datasets/waitongchung/blastnet-momentum-3d-sr-dataset/data
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
                  gammaref=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):

@@ -29,7 +29,7 @@ class BaseBinary3DSSTDataset(Dataset):
                         (useful for data segmented by parameters) or file (mostly INS right now)
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None):
         super().__init__()
         self.path = path

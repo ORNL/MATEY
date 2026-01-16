@@ -169,10 +169,10 @@ class BasenetCDFDirectoryDataset(Dataset):
         time_idx += nsteps
         # FIXME:this should depend on autoregressive nature, not on the input_control_act flag
         # For autoregressive cases the rollout length is decided at runtime
-        if leadtime is None and self.input_control_act:
+        if leadtime is None and not self.input_control_act:
             #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
             leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,))
-        elif self.input_control_act==True:
+        elif self.input_control_act:
             leadtime = torch.tensor(min(self.leadtime_max, self.file_lens[file_idx]-time_idx+1))
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
