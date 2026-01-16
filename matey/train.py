@@ -462,8 +462,6 @@ class Trainer:
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output= self.model(inp, field_labels, bcs, opts)
-                if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
-                    output = output + inp[-1]
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar

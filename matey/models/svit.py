@@ -111,8 +111,6 @@ class sViT_all2all(BaseModel):
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    #def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
-    #            tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
     def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
         ##################################################################
         #unpack arguments
