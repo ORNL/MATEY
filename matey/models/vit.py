@@ -123,7 +123,7 @@ class ViT_all2all(BaseModel):
         blockdict = opts.blockdict
         cond_dict = opts.cond_dict
         refine_ratio = opts.refine_ratio
-        cond_input = opts.cond_dict
+        cond_input = opts.cond_input
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 

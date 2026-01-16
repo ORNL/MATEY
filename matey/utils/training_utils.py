@@ -52,7 +52,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
             output_t = model(x_t, field_labels, bcs, opts)
             x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
 
-    cond_input_t = cond_input[:, rollout_steps:n_steps+rollout_steps+1] if cond_input is not None else None
+    cond_input_t = cond_input[:, rollout_steps-1:n_steps+rollout_steps] if cond_input is not None else None
     opts.cond_input = cond_input_t
     output = model(x_t, field_labels, bcs, opts)# B,C,D,H,W
 
