@@ -7,7 +7,7 @@ import h5py
 import glob
 from .shared_utils import get_top_variance_patchids, plot_checking
 import gc, psutil
-from .utils import closest_factors
+from ..utils.distributed_utils import closest_factors
 from functools import reduce
 from operator import mul
 from einops import rearrange
