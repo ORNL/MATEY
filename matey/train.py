@@ -19,12 +19,14 @@ from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
 from .utils.visualization_utils import checking_data_pred_tar
+from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+import copy
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -439,17 +441,22 @@ class Trainer:
                 tar = tar.to(self.device)
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod)
+                imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
+                seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
+                opts = ForwardOptionsBase(
+                imod=imod, 
+                tkhead_name=tkhead_name,
+                imod_bottom=imod_bottom,
+                sequence_parallel_group=seq_group,
+                leadtime=leadtime,
+                blockdict=copy.deepcopy(blockdict),
+                #refine_ratio=refine_ratio,
+                #cond_dict=copy.deepcopy(cond_dict,
+                )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    if dset_type in self.train_dataset.DP_dsets:
-                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
-                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                        tkhead_name=tkhead_name, blockdict=blockdict)
-                    else:
-                         output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
-                                            leadtime=leadtime, tkhead_name=tkhead_name, blockdict=blockdict)
+                    output= self.model(inp, field_labels, bcs, opts)
                 if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
                     output = output + inp[-1]
                 ###full resolution###
@@ -595,14 +602,19 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod)
-                    if dset_type in self.valid_dataset.DP_dsets:
-                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
-                                        sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                        tkhead_name=tkhead_name, blockdict=blockdict)   
-                    else:
-                        output= self.model(inp, field_labels, bcs, imod=imod, imod_bottom=imod_bottom,
-                                        leadtime=leadtime, tkhead_name=tkhead_name, blockdict=blockdict)                
+                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
+                    seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
+                    opts = ForwardOptionsBase(
+                    imod=imod, 
+                    tkhead_name=tkhead_name,
+                    imod_bottom=imod_bottom,
+                    sequence_parallel_group=seq_group,
+                    leadtime=leadtime,
+                    blockdict=copy.deepcopy(blockdict),
+                    #refine_ratio=refine_ratio,
+                    #cond_dict=copy.deepcopy(cond_dict),
+                    )
+                    output= self.model(inp, field_labels, bcs, opts)                
                     #################################
                     if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
                         output = output + inp[-1]

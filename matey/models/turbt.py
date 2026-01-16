@@ -11,6 +11,7 @@ from .spatial_modules import UpsampleinSpace
 import sys, copy
 from operator import mul
 from functools import reduce
+from ..utils.forward_options import ForwardOptionsBase
 import torch.distributed as dist
 
 def build_turbt(params):
@@ -199,10 +200,18 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c t d h w -> b c (t d h w)')
         return x           
     
-    def forward(self, x, state_labels, bcs, imod=None, imod_bottom=0, sequence_parallel_group=None, leadtime=None, 
-                tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None):
-        
-        if refine_ratio is None and gammaref is None:
+    def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase):
+        ##################################################################       
+        #unpack arguments
+        imod = opts.imod
+        imod_bottom = opts.imod_bottom
+        tkhead_name = opts.tkhead_name
+        sequence_parallel_group = opts.sequence_parallel_group
+        leadtime = opts.leadtime
+        blockdict = opts.blockdict
+        refine_ratio = opts.refine_ratio
+        ##################################################################
+        if refine_ratio is None:
             refineind=None
         else:
             raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
@@ -210,10 +219,11 @@ class TurbT(BaseModel):
         #imod: nhlevels-1, nhlevels-2,...,2,1,0
         if imod<self.nhlevels-1:
             x, blockdict=self.filterdata(x, blockdict=blockdict)
-        #print(f"Pei debugging filter {imod}, {imod_bottom}, {x.shape}")
+            opts.blockdict = blockdict
+        #print(f"Pei debugging filter {imod}, {imod_bottom}, {x.shape}")   
         if imod>imod_bottom:
-            x_pred = self.forward(x, state_labels, bcs, imod=imod-1, imod_bottom=imod_bottom, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                    tkhead_name=tkhead_name, blockdict=blockdict)
+            opts.imod -= 1
+            x_pred = self.forward(x, state_labels, bcs, opts)
         #x_input = x.clone()
         #T,B,C,D,H,W
         T, B, _, D, H, W = x.shape
