@@ -7,63 +7,6 @@ import torch.distributed as dist
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import copy
-from functools import reduce
-from operator import mul
-import random
-import math
-
-def closest_factors(n, dim):
-    #temporary, from Andrey's
-    assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
-
-    if dim == 1:
-        return [n]
-    
-    """
-    factors = []
-    i = 2
-    nn = n
-    while nn > 1:
-        while nn % i == 0:
-            factors.append(i)
-            nn //= i
-        i += 1
-
-    # Reduce the list of factors to match the dimension (dim)
-    while len(factors) > dim:
-        # Combine the two smallest factors
-        factors[1] *= factors[0]
-        factors.pop(0)
-        factors.sort()
-    if len(factors) < dim:
-        factors = [1]*(dim-len(factors)) + factors
-    """
-
-    factors = [1] * dim
-    factors[0] = n
-
-    while True:
-        prev = factors.copy()
-        factors.sort()
-        largest = factors[-1]
-        sqrt_large = int(math.sqrt(largest))
-        for i in range(sqrt_large, 0, -1):
-            if largest % i == 0:
-                factor1, factor2 = i, largest // i
-                break
-        # If cannot further balance, break
-        if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
-            break
-        factors[-1] = factor2
-        factors[0] *= factor1
-        if factors == prev:
-            break
-
-    factors.sort()
-
-    assert reduce(mul, factors) == n and len(factors)==dim, f"factors, {factors}, dim {dim}"
-
-    return factors
 
 def extract_batch(data_iter, device=None):
     """return minibatch of data_iter"""

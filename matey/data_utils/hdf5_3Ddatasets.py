@@ -7,7 +7,7 @@ import h5py
 import glob
 from .shared_utils import get_top_variance_patchids, plot_checking
 import gc, psutil
-from .utils import closest_factors
+from ..utils.distributed_utils import closest_factors
 from functools import reduce
 from operator import mul
 from einops import rearrange
@@ -29,7 +29,7 @@ class BaseHDF53DDataset(Dataset):
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
         patch_size: list of patch sizes for converting from solution fields to patches/tokens
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
 
