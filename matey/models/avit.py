@@ -6,10 +6,8 @@ from einops import rearrange, repeat
 from .spacetime_modules import SpaceTimeBlock
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
-import sys, copy
-from operator import mul
-from functools import reduce
-
+from ..utils.forward_options import ForwardOptionsBase, TrainOptionsBase
+from typing import Optional
 
 def build_avit(params):
     """avit model
@@ -149,8 +147,18 @@ class AViT(BaseModel):
             x = self.add_localpatches(x, xlocal, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, cond_input=None, returnbase4train=False, 
-                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
+        ##################################################################
+        #unpack arguments
+        imod = opts.imod
+        tkhead_name = opts.tkhead_name
+        sequence_parallel_group = opts.sequence_parallel_group
+        leadtime = opts.leadtime
+        blockdict = opts.blockdict
+        cond_dict = opts.cond_dict
+        refine_ratio = opts.refine_ratio
+        cond_input = opts.cond_input
+        ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         #T,B,C,D,H,W
@@ -216,7 +224,7 @@ class AViT(BaseModel):
 
         # Denormalize
         x = x * data_std + data_mean # All state labels in the batch should be identical
-        if returnbase4train:
+        if train_opts is not None and train_opts.returnbase4train:
             xbase = xbase * data_std + data_mean
             return x[-1], xbase[-1]
         return x[-1] # Just return last step - now just predict delta.

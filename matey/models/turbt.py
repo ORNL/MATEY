@@ -11,6 +11,7 @@ from .spatial_modules import UpsampleinSpace
 import sys, copy
 from operator import mul
 from functools import reduce
+from ..utils.forward_options import ForwardOptionsBase
 import torch.distributed as dist
 
 def build_turbt(params):
@@ -176,19 +177,29 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c t d h w -> b c (t d h w)')
         return x            
     
-    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None, cond_input=None,
-                tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None):
-        
-        if refine_ratio is None and gammaref is None:
+    def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase):
+        ##################################################################       
+        #unpack arguments
+        imod = opts.imod
+        tkhead_name = opts.tkhead_name
+        sequence_parallel_group = opts.sequence_parallel_group
+        leadtime = opts.leadtime
+        blockdict = opts.blockdict
+        refine_ratio = opts.refine_ratio
+        cond_input = opts.cond_input
+        ##################################################################
+        if refine_ratio is None:
             refineind=None
         else:
             raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
         
         if imod<self.nhlevels-1:
             x, blockdict=self.filterdata(x, blockdict=blockdict)
+            opts.blockdict = blockdict
+        #print(f"Pei debugging filter {imod}, {imod_bottom}, {x.shape}")   
         if imod>0:
-            x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                    cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict)
+            opts.imod -= 1
+            x_pred = self.forward(x, state_labels, bcs, opts)
         #x_input = x.clone()
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
