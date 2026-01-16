@@ -7,7 +7,6 @@ from operator import mul
 from functools import reduce
 from einops import rearrange, repeat
 from ..utils.distributed_utils import closest_factors
-
 ### Space utils
 #FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it
 class RMSInstanceNormSpace(nn.Module):

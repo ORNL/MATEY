@@ -7,6 +7,7 @@ import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
 from torch.optim.lr_scheduler import CosineAnnealingLR
+import math
 
 def get_log2_int(n):
     npower = n.bit_length() - 1 
@@ -55,12 +56,12 @@ def setup_dist(params):
     return device, world_size, local_rank, global_rank
 
 def closest_factors(n, dim):
-    #temporary, from Andrey's
     assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
 
     if dim == 1:
         return [n]
-
+    
+    """
     factors = []
     i = 2
     nn = n
@@ -76,11 +77,33 @@ def closest_factors(n, dim):
         factors[1] *= factors[0]
         factors.pop(0)
         factors.sort()
-        
     if len(factors) < dim:
         factors = [1]*(dim-len(factors)) + factors
+    """
 
-    assert reduce(mul, factors) == n and len(factors)==dim
+    factors = [1] * dim
+    factors[0] = n
+
+    while True:
+        prev = factors.copy()
+        factors.sort()
+        largest = factors[-1]
+        sqrt_large = int(math.sqrt(largest))
+        for i in range(sqrt_large, 0, -1):
+            if largest % i == 0:
+                factor1, factor2 = i, largest // i
+                break
+        # If cannot further balance, break
+        if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
+            break
+        factors[-1] = factor2
+        factors[0] *= factor1
+        if factors == prev:
+            break
+
+    factors.sort()
+
+    assert reduce(mul, factors) == n and len(factors)==dim, f"factors, {factors}, dim {dim}"
 
     return factors
 
