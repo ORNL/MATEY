@@ -20,6 +20,7 @@ def build_turbt(params):
     sts_train:
                 when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly as well
     leadtime_max: when larger than 1, we use a `ltimeMLP` NN module to incoporate the impact of leadtime
+    cond_input: when True, the model uses an additional inputs (scalar) to condition the predictions
     """
     model = TurbT(tokenizer_heads=params.tokenizer_heads,
                      embed_dim=params.embed_dim,
@@ -28,7 +29,9 @@ def build_turbt(params):
                      n_states=params.n_states,
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                     leadtime=True if hasattr(params, 'leadtime_max') and params.leadtime_max>1 else False,
+                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
+                     cond_input=params.supportdata if hasattr(params,'supportdata') else False,
+                     n_steps=params.n_steps,
                      bias_type=params.bias_type,
                      replace_patch=params.replace_patch if hasattr(params, 'replace_patch') else True,
                      hierarchical=params.hierarchical if hasattr(params, 'hierarchical') else None,
@@ -49,8 +52,8 @@ class TurbT(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, hierarchical=hierarchical, 
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical, 
                          notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
@@ -59,6 +62,7 @@ class TurbT(BaseModel):
         self.sts_train = sts_train
 
         self.num_heads=num_heads
+        self.n_steps=n_steps
         self.processor_blocks=processor_blocks
         self.replace_patch=replace_patch
         assert not (self.replace_patch and self.sts_model)
@@ -172,7 +176,7 @@ class TurbT(BaseModel):
         x = rearrange(x, 'b c t d h w -> b c (t d h w)')
         return x            
     
-    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None,
+    def forward(self, x, state_labels, bcs, imod=None, sequence_parallel_group=None, leadtime=None, cond_input=None,
                 tkhead_name=None, refine_ratio=None, gammaref=None, blockdict=None):
         
         if refine_ratio is None and gammaref is None:
@@ -184,7 +188,7 @@ class TurbT(BaseModel):
             x, blockdict=self.filterdata(x, blockdict=blockdict)
         if imod>0:
             x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                    tkhead_name=tkhead_name, blockdict=blockdict)
+                    cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict)
         #x_input = x.clone()
         #T,B,C,D,H,W
         T, _, _, D, H, W = x.shape
@@ -196,6 +200,8 @@ class TurbT(BaseModel):
             leadtime = self.ltimeMLP[imod](leadtime)
         else:
             leadtime=None
+        if self.cond_input and cond_input is not None:
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')

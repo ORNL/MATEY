@@ -26,6 +26,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+from .utils.training_utils import autoregressive_rollout
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -400,6 +401,30 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=None,
+                       cond_input=None, tkhead_name=None, blockdict=None, cond_dict=None, tar=None, inference=False):
+        # Handles a forward pass through the model, either normal or autoregressive rollout.
+        autoregressive = getattr(self.params, "autoregressive", False)
+        print('Autoregressive:', autoregressive,'Inference:', inference,flush=True)
+        if not autoregressive:
+            output = self.model(
+                inp, field_labels, bcs, imod=imod,
+                sequence_parallel_group=self.current_group,
+                leadtime=leadtime,
+                tkhead_name=tkhead_name,
+                blockdict=blockdict, cond_dict=cond_dict,
+            )
+            return output, None, None
+        else:
+            # autoregressive rollout
+            output, tar, rollout_steps = autoregressive_rollout(
+                self.model, inp, field_labels, bcs, imod, leadtime,
+                cond_input, tkhead_name, blockdict, cond_dict,
+                tar, self.params.n_steps, inference=inference,
+                sequence_parallel_group=self.current_group
+            )
+            return output, tar, rollout_steps
+
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -417,6 +442,7 @@ class Trainer:
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
         sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
+        supportdata = True if hasattr(self.params, 'supportdata') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -431,6 +457,10 @@ class Trainer:
             with record_function_opt("data loading", enabled=self.profiling):
                 data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+                if supportdata:
+                    cond_input = data["cond_input"].to(self.device)
+                else:   
+                    cond_input = None
                 cond_dict = {}
                 try:
                     cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -456,9 +486,16 @@ class Trainer:
                 inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
-                                    sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict)
+                        output, new_tar, rollout_steps = self.model_forward(
+                            inp, field_labels, bcs, imod=imod, leadtime=leadtime,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict,
+                            tar=tar, inference=False
+                        )
+                        # For autoregressive, use the returned target
+                        if new_tar is not None:
+                            tar = new_tar
+                        # if self.global_rank ==0:
+                        #     print('Rollout steps:',rollout_steps)
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -566,22 +603,26 @@ class Trainer:
             except:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
-
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+            supportdata = True if hasattr(self.params, 'supportdata') else False
+            if supportdata:
+                cond_input = data["cond_input"].to(self.device)
+            else:
+                cond_input = None
 
             cond_dict = {}
             try:
                 cond_dict["labels"] = data["cond_field_labels"].to(self.device)
                 cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
             except:
-                continue
+                pass
 
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
                 blockdict = None
             #if self.group_rank==0:
-            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            #   print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -594,9 +635,14 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime,
-                                       tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict)
+                    output, new_tar, rollout_steps = self.model_forward(
+                            inp, field_labels, bcs, imod=imod, leadtime=leadtime,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict,
+                            tar=tar, inference=True
+                    )
+                    # For autoregressive, use the returned target
+                    if new_tar is not None:
+                        tar = new_tar
                     #################################
                     ###full resolution###
                     spatial_dims = tuple(range(output.ndim))[2:]

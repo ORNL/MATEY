@@ -13,6 +13,7 @@ def build_vit(params):
     sts_train:
                 when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly as well
     leadtime_max: when larger than 1, we use a `ltimeMLP` NN module to incoporate the impact of leadtime
+    cond_input: when True, the model uses an additional inputs (scalar) to condition the predictions
     """
     model = ViT_all2all(tokenizer_heads=params.tokenizer_heads,
                      embed_dim=params.embed_dim,
@@ -23,7 +24,9 @@ def build_vit(params):
                      SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                      sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                      sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                     leadtime=True if hasattr(params, 'leadtime_max') and params.leadtime_max>1 else False,
+                     leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
+                     cond_input=params.supportdata if hasattr(params,'supportdata') else False,
+                     n_steps=params.n_steps,
                      bias_type=params.bias_type,
                      replace_patch=params.replace_patch if hasattr(params, 'replace_patch') else True,
                      hierarchical=params.hierarchical if hasattr(params, 'hierarchical') else None
@@ -43,8 +46,9 @@ class ViT_all2all(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical)
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, 
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
         self.blocks = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
@@ -56,6 +60,7 @@ class ViT_all2all(BaseModel):
         self.sts_train = sts_train
 
         self.num_heads=num_heads
+        self.n_steps=n_steps
         self.processor_blocks=processor_blocks
         self.replace_patch=replace_patch
         assert not (self.replace_patch and self.sts_model)
@@ -106,8 +111,7 @@ class ViT_all2all(BaseModel):
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
-                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None):
+    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, cond_input=None, refine_ratio=None, returnbase4train=False, tkhead_name=None, blockdict=None, imod=0, cond_dict=None):
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         #T,B,C,D,H,W
@@ -124,6 +128,8 @@ class ViT_all2all(BaseModel):
             leadtime = self.ltimeMLP[imod](leadtime)
         else:
             leadtime=None
+        if self.cond_input and cond_input is not None:
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         if  self.sts_model:
             #x_padding: coarse tokens; x_local: refined local tokens
