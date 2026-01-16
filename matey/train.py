@@ -474,15 +474,15 @@ class Trainer:
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
-                seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
+                seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #self.train_dataset.DP_dsets else None
                 opts = ForwardOptionsBase(
                 imod=imod, 
                 tkhead_name=tkhead_name,
                 sequence_parallel_group=seq_group,
                 leadtime=leadtime,
                 blockdict=copy.deepcopy(blockdict),
-                #refine_ratio=refine_ratio,
                 cond_dict=copy.deepcopy(cond_dict),
+                cond_input=cond_input
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
@@ -586,15 +586,13 @@ class Trainer:
         else:
             cutoff = 5 #40
 
-        for idx in range(len(self.valid_data_loader)):
+        num_batches = min(len(self.valid_data_loader), self.params.epoch_size)
+
+        for idx in range(num_batches):
             self.check_memory("validate-data")
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
             ##############################################################################################################
-            try:
-                data = next(valid_iter)
-            except:
-                self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
-                break
+            data = next(valid_iter)
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             supportdata = True if hasattr(self.params, 'supportdata') else False
             if supportdata:
@@ -610,9 +608,9 @@ class Trainer:
                 pass
 
             blockdict = getattr(self.valid_dataset.sub_dsets[dset_index[0]], "blockdict", None)
-
+            
             #if self.group_rank==0:
-            #   print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, inp.min(), inp.max(), tar.min(), tar.max(), blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -625,7 +623,7 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
+                    seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #sself.valid_dataset.DP_dsets else None
                     opts = ForwardOptionsBase(
                     imod=imod, 
                     tkhead_name=tkhead_name,
@@ -633,6 +631,7 @@ class Trainer:
                     leadtime=leadtime,
                     blockdict=copy.deepcopy(blockdict),
                     cond_dict=copy.deepcopy(cond_dict),
+                    cond_input=cond_input
                     )
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
