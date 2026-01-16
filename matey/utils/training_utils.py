@@ -2,7 +2,7 @@ import torch
 import torch.distributed as dist
 
 
-def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_input, tkhead_name, blockdict, tar, 
+def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_input, tkhead_name, blockdict, cond_dict, tar, 
                            n_steps, inference=False, pushforward=True, sequence_parallel_group=None):
     device = inp.device
     min_lead = int(leadtime.min().item())
@@ -53,7 +53,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_i
                 x_t, field_labels, bcs, imod=imod,
                 sequence_parallel_group=sequence_parallel_group,
                 leadtime=leadtime, cond_input=cond_input_t,
-                tkhead_name=tkhead_name, blockdict=blockdict
+                tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict
             )
             x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
         tar = tar[:, rollout_steps-1:rollout_steps, :].squeeze(1) # B,C,D,H,W
@@ -75,7 +75,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_i
                     x_t, field_labels, bcs, imod=imod,
                     sequence_parallel_group=sequence_parallel_group,
                     leadtime=leadtime, cond_input=cond_input_t,
-                    tkhead_name=tkhead_name, blockdict=blockdict
+                    tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict
                 )
                 x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
 
@@ -88,7 +88,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, imod, leadtime, cond_i
             x_t, field_labels, bcs, imod=imod,
             sequence_parallel_group=sequence_parallel_group,
             leadtime=leadtime, cond_input=cond_input_t,
-            tkhead_name=tkhead_name, blockdict=blockdict
+            tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict
         )
 
         tar = tar[:, rollout_steps-1:rollout_steps, :].squeeze(1) # B,C,D,H,W

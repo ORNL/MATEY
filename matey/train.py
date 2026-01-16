@@ -402,23 +402,24 @@ class Trainer:
         self.model = self.model.to(self.device)
 
     def model_forward( self, inp, field_labels, bcs, imod=None, leadtime=None,
-                       cond_input=None, tkhead_name=None, blockdict=None, tar=None, inference=False):
+                       cond_input=None, tkhead_name=None, blockdict=None, cond_dict=None, tar=None, inference=False):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
         autoregressive = getattr(self.params, "autoregressive", False)
+        print('Autoregressive:', autoregressive,'Inference:', inference,flush=True)
         if not autoregressive:
             output = self.model(
                 inp, field_labels, bcs, imod=imod,
                 sequence_parallel_group=self.current_group,
                 leadtime=leadtime,
                 tkhead_name=tkhead_name,
-                blockdict=blockdict
+                blockdict=blockdict, cond_dict=cond_dict,
             )
             return output, None, None
         else:
             # autoregressive rollout
             output, tar, rollout_steps = autoregressive_rollout(
                 self.model, inp, field_labels, bcs, imod, leadtime,
-                cond_input, tkhead_name, blockdict,
+                cond_input, tkhead_name, blockdict, cond_dict,
                 tar, self.params.n_steps, inference=inference,
                 sequence_parallel_group=self.current_group
             )
@@ -460,6 +461,12 @@ class Trainer:
                     cond_input = data["cond_input"].to(self.device)
                 else:   
                     cond_input = None
+                cond_dict = {}
+                try:
+                    cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                    cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
+                except:
+                    pass
                 try:
                     blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
                 except:
@@ -481,7 +488,7 @@ class Trainer:
                 with record_function_opt("model forward", enabled=self.profiling):
                         output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
-                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict,
                             tar=tar, inference=False
                         )
                         # For autoregressive, use the returned target
@@ -596,19 +603,27 @@ class Trainer:
             except:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
-
+            print('Debugging: Validating batch:', idx, flush=True)
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             supportdata = True if hasattr(self.params, 'supportdata') else False
             if supportdata:
                 cond_input = data["cond_input"].to(self.device)
             else:
                 cond_input = None
+
+            cond_dict = {}
+            try:
+                cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
+            except:
+                pass
+
             try:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
                 blockdict = None
-            #if self.group_rank==0:
-            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            if self.group_rank==0:
+               print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -621,9 +636,10 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
+                    print('Validating on dataset type:', dset_type, 'Leadtime max:', leadtime.max(), flush=True)
                     output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
-                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict,
+                            cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict,
                             tar=tar, inference=True
                     )
                     # For autoregressive, use the returned target
