@@ -603,7 +603,6 @@ class Trainer:
             except:
                 self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
                 break
-            print('Debugging: Validating batch:', idx, flush=True)
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
             supportdata = True if hasattr(self.params, 'supportdata') else False
             if supportdata:
@@ -622,8 +621,8 @@ class Trainer:
                 blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
             except:
                 blockdict = None
-            if self.group_rank==0:
-               print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            #if self.group_rank==0:
+            #   print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -636,7 +635,6 @@ class Trainer:
                     tar = tar.to(self.device)
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    print('Validating on dataset type:', dset_type, 'Leadtime max:', leadtime.max(), flush=True)
                     output, new_tar, rollout_steps = self.model_forward(
                             inp, field_labels, bcs, imod=imod, leadtime=leadtime,
                             cond_input=cond_input, tkhead_name=tkhead_name, blockdict=blockdict, cond_dict=cond_dict,
