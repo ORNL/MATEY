@@ -12,6 +12,7 @@ try:
     from blasnet_3Ddatasets import *
     from thewell_datasets import *
     from binary_3DSSTdatasets import *
+    from flow3d_datasets import *
 except ImportError:
     from .mixed_dset_sampler import MultisetSampler
     from .hdf5_datasets import *
@@ -21,6 +22,7 @@ except ImportError:
     from .blasnet_3Ddatasets import *
     from .thewell_datasets import *
     from .binary_3DSSTdatasets import *
+    from .flow3d_datasets import *
 import os
 import glob
 
@@ -38,6 +40,8 @@ DSET_NAME_TO_OBJECT = {
     'thermalcollision2d': CollisionDataset,
     ##Doug
     'liquidMetalMHD': MHDDataset,
+    ##SOLPS-ITER
+    'SOLPS2D' :SOLPSDataset,
     ##JHU
     "isotropic1024fine": isotropic1024Dataset,
     #TaylorGreen
@@ -73,6 +77,8 @@ DSET_NAME_TO_OBJECT = {
     "viscoelastic":viscoelastic_instability,
     ##SST
     "sstF4R32": sstF4R32Dataset,
+    ##Flow3D
+    "flow3d": Flow3D_Object,
     }
 
 
@@ -94,6 +100,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                             dt = getattr(params,'dt', 1),
                             leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
                             SR_ratio=getattr(params, 'SR_ratio', None),
+                            supportdata= getattr(params, "supportdata", None),
                             global_rank=global_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
@@ -124,7 +131,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
     return dataloader, dataset, sampler
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   global_rank=0, group_size=1):
@@ -161,7 +168,7 @@ class MixedDataset(Dataset):
                 data_rank=0
                 datagroupsize=1
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
-                                                 dt=dt, leadtime_max = leadtime_max, train_val_test=train_val_test, split=split,
+                                                 dt=dt, leadtime_max = leadtime_max, supportdata = supportdata, train_val_test=train_val_test, split=split,
                                                  tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
                                                  group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
             # Check to make sure our dataset actually exists with these settings
@@ -174,6 +181,7 @@ class MixedDataset(Dataset):
         self.offsets[0] = -1
 
         self.subset_dict = self._build_subset_dict()
+        self.subset_cond_dict = self._build_subset_cond_dict()
 
     def get_state_names(self):
         name_list = []
@@ -218,6 +226,24 @@ class MixedDataset(Dataset):
                     cur_max += len(dset.field_names)
         return subset_dict
 
+    def _build_subset_cond_dict(self):
+        # Maps conditional fields to subsets of conditional variables
+        if self.tie_fields: # Hardcoded, but seems less effective anyway
+            raise ValueError("tie_fields is not implemented for _build_subset_cond_dict; use use_all_fields")
+        elif self.use_all_fields:
+            cur_max = 0
+            subset_dict = {}
+            for name, dset in DSET_NAME_TO_OBJECT.items():
+                try:
+                    cond_field_names = dset.cond_field_names
+                    subset_dict[name] = list(range(cur_max, cur_max + len(cond_field_names)))
+                    cur_max += len(cond_field_names)
+                except: #no conditional fields for dset
+                    continue
+        else:
+            raise ValueError("currently only support use_all_fields for _build_subset_cond_dict")
+        return subset_dict
+
     def __getitem__(self, index):
 
         if hasattr(index, '__len__') and len(index)==2:
@@ -233,9 +259,28 @@ class MixedDataset(Dataset):
         #print(f"Pei debugging: {dset_idx}, {local_idx}, {len(self.sub_dsets)}, {len(self.sub_dsets[dset_idx])}",flush=True)    
         variables = self.sub_dsets[dset_idx][local_idx]
         #assuming variables in order: 
+        #if cond_field_names and cond_input both defined (no such case at the moment):
+        #   x, bcs, y, leadtime, cond_fields, cond_input
+        #if cond_field_names defined:
+        #   x, bcs, y, leadtime, cond_fields
+        #if cond input defined:
+        #   x, bcs, y, leadtime, cond_input
+        #else:
         #   x, bcs, y, leadtime
         datasamples={} 
-        assert len(variables) in [4]
+        assert len(variables) in [4, 5, 6]
+        if len(variables) == 6:
+            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+            datasamples["cond_fields"] = variables[-2]
+            datasamples["cond_input"] = variables[-1]
+            variables = variables[:-2]
+        elif len(variables) == 5 and getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
+            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+            datasamples["cond_fields"] = variables[-1]
+            variables = variables[:-1]
+        elif len(variables) == 5:
+            datasamples["cond_input"] = variables[-1]
+            variables = variables[:-1]
 
         x, bcs, y = variables[:3]
         leadtime = variables[-1]
@@ -245,7 +290,7 @@ class MixedDataset(Dataset):
         datasamples["leadtime"] = leadtime
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
-        
+
         return datasamples
 
     def __len__(self):

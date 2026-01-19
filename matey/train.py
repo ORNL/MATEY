@@ -26,6 +26,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
+from .utils.training_utils import autoregressive_rollout
 import copy
 
 class Trainer:
@@ -388,6 +389,17 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
+        # Handles a forward pass through the model, either normal or autoregressive rollout.
+        autoregressive = getattr(self.params, "autoregressive", False)
+        if not autoregressive:
+            output = self.model(inp, field_labels, bcs, opts)
+            return output, None
+        else:
+            # autoregressive rollout
+            output, rollout_steps = autoregressive_rollout(self.model, inp, field_labels, bcs, opts, pushforward = pushforward)
+            return output, rollout_steps
+
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -404,6 +416,8 @@ class Trainer:
         loss_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
+        sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
+        supportdata = True if hasattr(self.params, 'supportdata') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -416,13 +430,12 @@ class Trainer:
             self.single_print('Training batch:', batch_idx, "of Total:", num_batches)
             ##############################################################################################################
             with record_function_opt("data loading", enabled=self.profiling):
-                try:
-                    data = next(data_iter) 
-                except:
-                    self.single_print(f'warning: not able to sample a dataset at {batch_idx}')
-                    continue
+                data = next(data_iter)
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
-
+                if supportdata:
+                    cond_input = data["cond_input"].to(self.device)
+                else:   
+                    cond_input = None
                 cond_dict = {}
                 try:
                     cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -431,7 +444,6 @@ class Trainer:
                     pass
 
                 blockdict = getattr(self.train_dataset.sub_dsets[dset_index[0]], "blockdict", None)
-
                 #if self.group_rank==0:
                 #    print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.train_dataset.sub_dsets[dset_index[0]].type
@@ -459,9 +471,12 @@ class Trainer:
                 blockdict=copy.deepcopy(blockdict),
                 #refine_ratio=refine_ratio,
                 cond_dict=copy.deepcopy(cond_dict),
+                cond_input=cond_input
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, opts)
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
+                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                 ###full resolution###
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
@@ -583,6 +598,11 @@ class Trainer:
             ##############################################################################################################
             data = next(valid_iter)
             inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
+            supportdata = True if hasattr(self.params, 'supportdata') else False
+            if supportdata:
+                cond_input = data["cond_input"].to(self.device)
+            else:
+                cond_input = None
 
             cond_dict = {}
             try:
@@ -618,8 +638,11 @@ class Trainer:
                     blockdict=copy.deepcopy(blockdict),
                     #refine_ratio=refine_ratio,
                     cond_dict=copy.deepcopy(cond_dict),
+                    cond_input=cond_input
                     )
-                    output= self.model(inp, field_labels, bcs, opts)                
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
+                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W                
                     #################################
                     if getattr(self.params, "learn_res", False):#output[B,C,D,H,W]; input[T,B,C,D,H,W]
                         output = output + inp[-1]

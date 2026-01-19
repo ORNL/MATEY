@@ -54,7 +54,7 @@ class TheWellDataset(Dataset):
         leadtime_max: when >0, future solution solution prediction, tar is a solution at the lead time;
                       when =0, self-supervised learning and tar is None
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
                  gammaref=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):

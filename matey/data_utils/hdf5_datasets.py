@@ -38,7 +38,7 @@ class BaseHDF5DirectoryDataset(Dataset):
         refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
         gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train',
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train',
                  train_val_test=None, subname=None, extra_specific=False, tokenizer_heads=None, 
                  tkhead_name=None, SR_ratio=None, group_id=0, group_rank=0, group_size=1):
         super().__init__()
