@@ -1,5 +1,7 @@
 import torch
 import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
 from .forward_options import ForwardOptionsBase, TrainOptionsBase
 from contextlib import nullcontext
 
@@ -69,3 +71,70 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     output = model(x_t, field_labels, bcs, opts)# B,C,D,H,W
 
     return output, rollout_steps
+
+#gradient loss functions taken from BLASTNET2.0: https://github.com/blastnet/blastnet2_sr_benchmark
+def torch_dx(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=2,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+def torch_dy(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=3,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+def torch_dz(phi,h):
+    assert len(phi.shape) == 5
+    batch_size = phi.shape[0]
+    h = h.reshape(-1)
+    my_list = []
+    for i in range(batch_size):
+        my_list.append(torch.gradient(phi[i:i+1], spacing=h[i],dim=4,edge_order=1)[0])
+        assert len(my_list[-1].shape) == 5
+    t = torch.cat(my_list,0)
+
+    return t
+
+def torch_diff(phi, dx=1.0, dy=1.0, dz=1.0):
+    """
+    Compute spatial gradients of a 5D tensor phi with shape (B, C, D, H, W).
+    """
+    # Compute gradients in all three directions at once
+    grad_z, grad_y, grad_x = torch.gradient(phi, spacing=(dz, dy, dx), dim=(2, 3, 4), edge_order=1)
+    return grad_x, grad_y, grad_z
+
+
+class GradLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input, target):
+        # Both input and target have shape (B, C, D, H, W)
+        dx = dy = dz = 1.0
+        channel_dim = input.shape[1]
+        # Compute gradients for all channels at once
+        dx_inp, dy_inp, dz_inp = torch_diff(input, dx, dy, dz)
+        dx_tgt, dy_tgt, dz_tgt = torch_diff(target, dx, dy, dz)
+
+        # Compute mean squared errors for all gradients
+        loss = (
+            F.mse_loss(dx_inp, dx_tgt) +
+            F.mse_loss(dy_inp, dy_tgt) +
+            F.mse_loss(dz_inp, dz_tgt)
+        )*channel_dim
+
+        return loss

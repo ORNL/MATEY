@@ -32,6 +32,7 @@ basic_config: &basic_config
   n_steps: 1 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  
+  grad_loss_alpha: 1.0 # Weight for spatial gradient loss term
   # Model settings
   model_type:  'turbt' # no need for time_type and space_type inputs
   #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"

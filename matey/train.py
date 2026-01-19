@@ -27,7 +27,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
-from .utils.training_utils import autoregressive_rollout
+from .utils.training_utils import autoregressive_rollout, GradLoss
 import copy
 
 class Trainer:
@@ -499,6 +499,12 @@ class Trainer:
                 raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
                 # Scale loss for accum
                 loss = raw_loss.mean() / self.params.accum_grad
+                #Optional spatial gradient loss
+                alpha = getattr(self.params, "grad_loss_alpha", None)
+                if alpha is not None and alpha > 0.0:
+                    self.grad_loss = GradLoss() #expects B,C,D,H,W
+                    grad_loss = self.grad_loss(output, tar)/ self.params.accum_grad 
+                    loss += self.params.grad_loss_alpha * grad_loss
                 # Logging
                 with torch.no_grad():
                     logs['train_l1'] += F.l1_loss(output, tar)
