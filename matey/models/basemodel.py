@@ -47,9 +47,11 @@ class BaseModel(nn.Module):
                 if all(isinstance(ps, int) for ps in patch_size) and len(patch_size)==3:
                     patch_size = [patch_size]
                 # multiply the patch_size by the SR_ratio elementwise
-                output_patch_size = []
-                for ps in patch_size:
-                    output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
+                # Hunor: FIXME SR is currently handled outside the model (input is interpolated to high-res first)
+                # output_patch_size = []
+                # for ps in patch_size:
+                #     output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
+                output_patch_size = list(patch_size)
                 self.tokenizer_heads_params[head_name]=patch_size
                 self.tokenizer_outheads_params[head_name]=output_patch_size
                 self.tokenizer_heads_gammaref[head_name]=tk.get("gammaref", None)

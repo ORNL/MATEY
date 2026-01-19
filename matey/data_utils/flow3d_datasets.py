@@ -2,14 +2,14 @@ import torch
 import torch.nn
 import numpy as np
 import os, tempfile
-from .blasnet_3Ddatasets import BaseBLASNET3DDataset
+from .blastnet_3Ddatasets import BaseBLASTNET3DDataset
 import h5py
 import json
 from operator import mul
 from functools import reduce
 import sklearn
 
-class Flow3D_Object(BaseBLASNET3DDataset):
+class Flow3D_Object(BaseBLASTNET3DDataset):
 
     #  cond_field_names = ["cell_types"]
     #  cond_field_names = ["sdf_obstacle"]
