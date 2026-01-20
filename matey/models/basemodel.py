@@ -23,7 +23,7 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6, n_states_cond=None, embed_dim=768, leadtime=False,cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, notransposed=False, nlevels=1, smooth=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_cond=None, embed_dim=768, leadtime=False,cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.conditioning = (n_states_cond is not None and n_states_cond > 0)
@@ -37,6 +37,7 @@ class BaseModel(nn.Module):
         self.ltimeMLP=nn.ModuleList()
         self.posbias =nn.ModuleList()
         self.cond_input=cond_input
+        self.model_SR = model_SR
         if self.cond_input:
             self.inconMLP=nn.ModuleList()
         for _ in range(nlevels):
@@ -46,10 +47,14 @@ class BaseModel(nn.Module):
                 patch_size = tk["patch_size"]
                 if all(isinstance(ps, int) for ps in patch_size) and len(patch_size)==3:
                     patch_size = [patch_size]
-                # multiply the patch_size by the SR_ratio elementwise
-                output_patch_size = []
-                for ps in patch_size:
-                    output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
+                if self.model_SR:
+                    # multiply the patch_size by the SR_ratio elementwise
+                    output_patch_size = []
+                    for ps in patch_size:
+                        output_patch_size.append([int(x*y) for x, y in zip(ps, SR_ratio)])
+                else:
+                    # SR is handled outside the model (input is interpolated to high-res first)
+                    output_patch_size = list(patch_size)
                 self.tokenizer_heads_params[head_name]=patch_size
                 self.tokenizer_outheads_params[head_name]=output_patch_size
                 self.tokenizer_heads_gammaref[head_name]=tk.get("gammaref", None)

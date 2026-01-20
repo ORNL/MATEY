@@ -9,7 +9,7 @@ try:
     from hdf5_datasets import *
     from netcdf_datasets import *
     from hdf5_3Ddatasets import *
-    from blasnet_3Ddatasets import *
+    from blastnet_3Ddatasets import *
     from thewell_datasets import *
     from binary_3DSSTdatasets import *
     from flow3d_datasets import *
@@ -19,7 +19,7 @@ except ImportError:
     from .netcdf_datasets import *
     from .exodus_datasets import *
     from .hdf5_3Ddatasets import *
-    from .blasnet_3Ddatasets import *
+    from .blastnet_3Ddatasets import *
     from .thewell_datasets import *
     from .binary_3DSSTdatasets import *
     from .flow3d_datasets import *
@@ -44,7 +44,7 @@ DSET_NAME_TO_OBJECT = {
     "isotropic1024fine": isotropic1024Dataset,
     #TaylorGreen
     "taylorgreen": TaylorGreen,
-    ##BLASNET
+    ##BLASTNET
     "h2vitairli": H2vitairliDataset,
     "h2jetRe": H2jetDataset,
     "pass-fhit": FHITsnapshots,
@@ -95,6 +95,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = params.dt if hasattr(params,'dt') else 1,
                             leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
+                            SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
                             group_id=rank, group_rank=group_rank, group_size=group_size)
     seed = torch.random.seed() if 'train'==split else 0
