@@ -185,6 +185,8 @@ class BaseBLASTNET3DDataset(Dataset):
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         bcs = self._get_specific_bcs()
+        ret_dict = {}
+        ret_dict["bcs"] = torch.as_tensor(bcs)
         if self.type == "SR":
             inp, tar, inp_up, dzdxdy = self._reconstruct_sample(case_idx)
             #inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
@@ -198,13 +200,15 @@ class BaseBLASTNET3DDataset(Dataset):
             trajectory = trajectory[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]
             inp = trajectory[:-1] if self.leadtime_max > 0 else trajectory
             tar = trajectory[-1]
-        # assemble output
-        out = (inp, torch.as_tensor(bcs), tar, leadtime)
-        # optional conditioning fields (non-SR only)
-        if self.type != "SR" and len(variables) == 3:
-            out = (*out, variables[2])
 
-        return out
+            if len(variables) == 3:
+                ret_dict["cond_fields"] = variables[2]
+
+        ret_dict["x"] = inp
+        ret_dict["y"] = tar
+        ret_dict["leadtime"] = leadtime
+
+        return ret_dict
 
     def __len__(self):
         return self.len

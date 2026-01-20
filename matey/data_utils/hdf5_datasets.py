@@ -244,7 +244,7 @@ class BaseHDF5DirectoryDataset(Dataset):
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
-        return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
+        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
 
     def __len__(self):
         return self.len

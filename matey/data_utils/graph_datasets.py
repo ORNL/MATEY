@@ -476,7 +476,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         data.dt = int(self.dt)
         data.leadtime = leadtime.reshape(-1,1).to(torch.float32)
         bcs = self._get_specific_bcs()
-        return data, bcs
+        return {"graph": data, "bcs": bcs}
     
 if __name__ == "__main__":
     from mpi4py import MPI
