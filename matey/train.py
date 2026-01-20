@@ -18,9 +18,10 @@ from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, assemble_samples
 from .utils.visualization_utils import checking_data_pred_tar
 from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
+from .trustworthiness.metrics import calculate_ssim3D
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
@@ -423,7 +424,8 @@ class Trainer:
         self.model.train()
         logs = {'train_rmse': torch.zeros(1).to(self.device),
                 'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device)}
+            'train_l1': torch.zeros(1).to(self.device),
+            'train_ssim': torch.zeros(1).to(self.device)}
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -492,8 +494,10 @@ class Trainer:
                 spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
                 residuals = output - tar
                 if self.params.pei_debug:
-                    checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
-                                           self.device, self.params.debug_outdir, istep=steps, imod=-1)
+                    pred_all, tar_all = assemble_samples(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
+                    if pred_all is not None and tar_all is not None:
+                        checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
+                                            self.device, self.params.debug_outdir, istep=steps, imod=-1)
                 # Differentiate between log and accumulation losses
                 #B,C,D,H,W->B,C
                 raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
@@ -512,6 +516,10 @@ class Trainer:
                     logs['train_nrmse'] += log_nrmse 
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                    if getattr(self.params, "log_ssim", False):
+                        pred_all, tar_all = assemble_samples(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
+                        avg_ssim = calculate_ssim3D(pred_all, tar_all)
+                        logs['train_ssim'] += avg_ssim
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start

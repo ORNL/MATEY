@@ -292,3 +292,27 @@ def add_weight_decay(model, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
     return [
             {'params': no_decay, 'weight_decay': 0.,},
             {'params': decay, 'weight_decay': weight_decay}]
+
+def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device):
+    # Assemble samples from all sequence parallel ranks for prediction and target
+    tar = tar.to(device)
+    pred = pred.to(device)       
+    if group_rank==0:
+        tar_list = [torch.empty_like(tar) for _ in range(group_size)]
+        pred_list = [torch.empty_like(pred) for _ in range(group_size)]
+    else:
+        tar_list = None
+        pred_list = None
+    global_dst = dist.get_global_rank(current_group, 0)
+    dist.gather(tar, tar_list, dst=global_dst, group=current_group)
+    dist.gather(pred, pred_list, dst=global_dst, group=current_group)
+    if global_rank==0:
+        nproc_blocks = blockdict["nproc_blocks"]
+        tar_all = torch.stack(tar_list, dim=0)
+        pred_all = torch.stack(pred_list, dim=0)
+        p1,p2,p3=nproc_blocks
+        tar_all = rearrange(tar_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',    p1=p1, p2=p2, p3=p3)
+        pred_all = rearrange(pred_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',p1=p1, p2=p2, p3=p3)
+        return pred_all, tar_all
+    else :
+        return None, None
