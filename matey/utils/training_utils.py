@@ -76,7 +76,7 @@ def torch_diff(phi, dx=1.0, dy=1.0, dz=1.0):
     Compute spatial gradients of a 5D tensor phi with shape (B, C, D, H, W).
     """
     # Compute gradients in all three directions at once
-    grad_z, grad_y, grad_x = torch.gradient(phi, spacing=(dz, dy, dx), dim=(2, 3, 4), edge_order=1)
+    grad_z, grad_x, grad_y = torch.gradient(phi, spacing=(dz, dx, dy), dim=(2, 3, 4), edge_order=1)
     return grad_x, grad_y, grad_z
 
 
