@@ -502,8 +502,8 @@ class Trainer:
                 #Optional spatial gradient loss
                 alpha = getattr(self.params, "grad_loss_alpha", None)
                 if alpha is not None and alpha > 0.0:
-                    self.grad_loss = GradLoss() #expects B,C,D,H,W
-                    grad_loss = self.grad_loss(output, tar)/ self.params.accum_grad 
+                    #expects B,C,D,H,W
+                    grad_loss = GradLoss(output, tar)/ self.params.accum_grad 
                     loss += self.params.grad_loss_alpha * grad_loss
                 # Logging
                 with torch.no_grad():
