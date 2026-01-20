@@ -18,10 +18,10 @@ from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, assemble_samples
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, assemble_samples, broadcast_scalar
 from .utils.visualization_utils import checking_data_pred_tar
 from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
-from .trustworthiness.metrics import calculate_ssim3D
+from .trustworthiness.metrics import calculate_ssim3D, get_unnormalized
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
@@ -518,7 +518,12 @@ class Trainer:
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
                     if getattr(self.params, "log_ssim", False):
                         pred_all, tar_all = assemble_samples(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
-                        avg_ssim = calculate_ssim3D(pred_all, tar_all)
+                        if self.global_rank == 0:
+                            pred_all, tar_all = get_unnormalized(pred_all, tar_all, self.train_dataset.sub_dsets[dset_index[0]], self.device) # unnormalize to physical units/scale
+                            avg_ssim = calculate_ssim3D(pred_all, tar_all)
+                        else:
+                            avg_ssim = None
+                        avg_ssim = broadcast_scalar(avg_ssim, src=0, device=output.device)
                         logs['train_ssim'] += avg_ssim
                 #################################
                 forward_end = self.timer.get_time()
@@ -583,7 +588,8 @@ class Trainer:
         self.single_print('STARTING VALIDATION!!!')
         logs = {'valid_rmse':  torch.zeros(1).to(self.device),
                 'valid_nrmse': torch.zeros(1).to(self.device),
-                'valid_l1':    torch.zeros(1).to(self.device)}
+                'valid_l1':    torch.zeros(1).to(self.device),
+                'valid_ssim':  torch.zeros(1).to(self.device)}
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -598,7 +604,7 @@ class Trainer:
         if full:
             cutoff = len(self.valid_data_loader)
         else:
-            cutoff = 5 #40
+            cutoff = 21 #40
 
         num_batches = min(len(self.valid_data_loader), self.params.epoch_size)
 
@@ -662,6 +668,15 @@ class Trainer:
                     logs['valid_nrmse'] += raw_loss
                     logs['valid_l1']    += raw_l1_loss
                     logs['valid_rmse']  += raw_rmse_loss
+                    if getattr(self.params, "log_ssim", False):
+                        pred_all, tar_all = assemble_samples(tar, inp[0,:], blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
+                        if self.global_rank == 0:
+                            pred_all, tar_all = get_unnormalized(pred_all, tar_all, self.valid_dataset.sub_dsets[dset_index[0]], self.device) # unnormalize to physical units/scale
+                            avg_ssim = calculate_ssim3D(pred_all, tar_all)
+                        else:
+                            avg_ssim = None
+                        avg_ssim = broadcast_scalar(avg_ssim, src=0, device=output.device)
+                        logs['valid_ssim'] += avg_ssim
 
                     loss_dset_logs[dset_type]      += raw_loss
                     loss_l1_dset_logs[dset_type]   += raw_l1_loss
