@@ -187,35 +187,26 @@ class BaseBLASTNET3DDataset(Dataset):
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         bcs = self._get_specific_bcs()
-        if self.type!="SR":
-            assert len(variables) in [2, 3]
-
-            trajectory = variables[0]
-            leadtime = variables[1]
-            trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
-            if self.leadtime_max>0:
-                inp=trajectory[:-1]
-                tar=trajectory[-1]
-            else: #self-supervised
-                inp=trajectory
-                tar=inp[-1]
-
-            if len(variables) == 2:
-                return inp, torch.as_tensor(bcs), tar, leadtime
-            else:
-                cond_fields = variables[2]
-                return inp, torch.as_tensor(bcs), tar, leadtime, cond_fields
-        else:
+        if self.type == "SR":
             inp, tar, inp_up, dzdxdy = self._reconstruct_sample(case_idx)
-            #blockdict has dims for full resoluton output; need to convert to LR inputs
-            inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
-            tar = tar[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
-            tar = np.squeeze(tar,axis=0) # C, Dloc,Hloc,Wloc
-            inp_up = inp_up[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
-            # set input to interpolated low-res
-            inp = inp_up
+            #inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
+            inp = inp_up[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]                  # interpolated LR to HR grid
+            tar = np.squeeze(tar[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy], axis=0) # C,D,H,W
 
-            return inp, torch.as_tensor(bcs), tar, leadtime
+        else:
+            assert len(variables) in (2, 3)
+            trajectory, leadtime = variables[:2]
+
+            trajectory = trajectory[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]
+            inp = trajectory[:-1] if self.leadtime_max > 0 else trajectory
+            tar = trajectory[-1]
+        # assemble output
+        out = (inp, torch.as_tensor(bcs), tar, leadtime)
+        # optional conditioning fields (non-SR only)
+        if self.type != "SR" and len(variables) == 3:
+            out = (*out, variables[2])
+
+        return out
 
     def __len__(self):
         return self.len
