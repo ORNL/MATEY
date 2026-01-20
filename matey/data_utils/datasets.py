@@ -240,38 +240,21 @@ class MixedDataset(Dataset):
         else:
             dset_idx = np.searchsorted(self.offsets, index, side='right')-1 #which dataset are we are on
             local_idx = index - max(self.offsets[dset_idx], 0) #which sample inside the dataset dset_idx
-            
-        variables = self.sub_dsets[dset_idx][local_idx]
-        #assuming variables in order: 
-        #if cond_field_names and cond_input both defined (no such case at the moment):
-        #   x, bcs, y, leadtime, cond_fields, cond_input
-        #if cond_field_names defined:
-        #   x, bcs, y, leadtime, cond_fields
-        #if cond input defined:
-        #   x, bcs, y, leadtime, cond_input
-        #else:
-        #   x, bcs, y, leadtime
-        datasamples={} 
-        assert len(variables) in [4, 5, 6]
-        if len(variables) == 6:
-            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-            datasamples["cond_fields"] = variables[-2]
-            datasamples["cond_input"] = variables[-1]
-            variables = variables[:-2]
-        elif len(variables) == 5 and getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
-            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-            datasamples["cond_fields"] = variables[-1]
-            variables = variables[:-1]
-        elif len(variables) == 5:
-            datasamples["cond_input"] = variables[-1]
-            variables = variables[:-1]
 
-        x, bcs, y = variables[:3]
-        leadtime = variables[-1]
-        datasamples["input"] = x
-        datasamples["label"] = y
-        datasamples["bcs"] = bcs
-        datasamples["leadtime"] = leadtime
+        variables = self.sub_dsets[dset_idx][local_idx]
+        datasamples = {}
+        if getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
+            assert "cond_fields" in variables
+            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+            datasamples["cond_fields"] = variables["cond_fields"]
+
+        if "cond_input" in variables:
+            datasamples["cond_input"] = variables["cond_input"]
+
+        datasamples["input"] = variables["x"]
+        datasamples["label"] = variables["y"]
+        datasamples["bcs"] = variables["bcs"]
+        datasamples["leadtime"] = variables["leadtime"]
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
 

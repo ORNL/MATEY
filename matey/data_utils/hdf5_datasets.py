@@ -225,7 +225,7 @@ class BaseHDF5DirectoryDataset(Dataset):
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
-        return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
+        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
 
     def __len__(self):
         return self.len

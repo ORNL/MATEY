@@ -237,7 +237,7 @@ class TheWellDataset(Dataset):
                 else:
                     trajectory = np.append(trajectory, np.take(trajectory, [-(ires+1) for ires in range(ps-nres_)], axis=2+ips), axis=2+ips)
 
-        return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
+        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
 
     def __len__(self):
         return self.len
