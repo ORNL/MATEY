@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from .forward_options import ForwardOptionsBase, TrainOptionsBase
 from contextlib import nullcontext
 
@@ -69,3 +70,29 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     output = model(x_t, field_labels, bcs, opts)# B,C,D,H,W
 
     return output, rollout_steps
+
+def torch_diff(phi, dx=1.0, dy=1.0, dz=1.0):
+    """
+    Compute spatial gradients of a 5D tensor phi with shape (B, C, D, H, W).
+    """
+    # Compute gradients in all three directions at once
+    grad_z, grad_x, grad_y = torch.gradient(phi, spacing=(dz, dx, dy), dim=(2, 3, 4), edge_order=1)
+    return grad_x, grad_y, grad_z
+
+
+def GradLoss(input, target):
+    # Both input and target have shape (B, C, D, H, W)
+    dx = dy = dz = 1.0
+    channel_dim = input.shape[1]
+    # Compute gradients for all channels at once
+    dx_inp, dy_inp, dz_inp = torch_diff(input, dx, dy, dz)
+    dx_tgt, dy_tgt, dz_tgt = torch_diff(target, dx, dy, dz)
+
+    # Compute mean squared errors for all gradients
+    loss = (
+        F.mse_loss(dx_inp, dx_tgt) +
+        F.mse_loss(dy_inp, dy_tgt) +
+        F.mse_loss(dz_inp, dz_tgt)
+    )*channel_dim
+
+    return loss
