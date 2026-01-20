@@ -604,7 +604,7 @@ class Trainer:
         if full:
             cutoff = len(self.valid_data_loader)
         else:
-            cutoff = 21 #40
+            cutoff = 5 #40
 
         num_batches = min(len(self.valid_data_loader), self.params.epoch_size)
 
@@ -669,7 +669,7 @@ class Trainer:
                     logs['valid_l1']    += raw_l1_loss
                     logs['valid_rmse']  += raw_rmse_loss
                     if getattr(self.params, "log_ssim", False):
-                        pred_all, tar_all = assemble_samples(tar, inp[0,:], blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
+                        pred_all, tar_all = assemble_samples(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device)
                         if self.global_rank == 0:
                             pred_all, tar_all = get_unnormalized(pred_all, tar_all, self.valid_dataset.sub_dsets[dset_index[0]], self.device) # unnormalize to physical units/scale
                             avg_ssim = calculate_ssim3D(pred_all, tar_all)
