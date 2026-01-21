@@ -12,7 +12,7 @@ basic_config: &basic_config
   #exp_dir: './Dev_BLASTNET_SViT' # Output path
   #exp_dir: './Dev_BLASTNET_AViT' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
-  log_ssim: !!bool True # Whether to log SSIM along with MSE
+  log_ssim: !!bool True # Whether to log SSIM
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
