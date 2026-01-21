@@ -297,7 +297,7 @@ def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_ran
     # Assemble samples from all sequence parallel ranks for prediction and target
     tar = tar.to(device)
     pred = pred.to(device)       
-    if not dist.is_initialized():
+    if not dist.is_initialized() or group_size==1:
         return pred, tar
     if group_rank==0:
         tar_list = [torch.empty_like(tar) for _ in range(group_size)]
@@ -320,24 +320,13 @@ def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_ran
         return None, None
     
 def broadcast_scalar(value, src=0, device=None):
-    """
-    Broadcast a Python scalar from src rank to all ranks.
-
-    Args:
-        value (float or None): Scalar value on src rank. Ignored on others.
-        src (int): Source rank.
-        device (torch.device, optional): Device to place the tensor on.
-
-    Returns:
-        float: Broadcasted scalar value on all ranks.
-    """
     if not dist.is_available() or not dist.is_initialized():
-        return float(value)
+        return value
 
     tensor = torch.zeros(1, device=device)
 
     if dist.get_rank() == src:
-        tensor.fill_(float(value))
+        tensor.fill_(value)
 
     dist.broadcast(tensor, src=src)
     return tensor.item()    

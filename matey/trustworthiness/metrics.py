@@ -6,6 +6,7 @@ from torch import nn
 from torch.autograd import Variable
 import sys
 from math import exp
+from ..utils.distributed_utils import assemble_samples, broadcast_scalar
 
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size//2)**2/float(2*sigma**2)) for x in range(window_size)])
@@ -109,3 +110,14 @@ def calculate_ssim3D(pred, target):
     ssim_value = ssim_module(pred, target)
     
     return ssim_value
+
+def get_ssim(tar,output,blockdict,global_rank,current_group,group_rank,group_size,device,dataset,dset_index):
+    pred_all, tar_all = assemble_samples(tar, output, blockdict, global_rank, current_group, group_rank, group_size, device)
+    if global_rank == 0:
+        pred_all, tar_all = get_unnormalized(pred_all, tar_all, dataset.sub_dsets[dset_index[0]], device) # unnormalize to physical units/scale
+        avg_ssim = calculate_ssim3D(pred_all, tar_all)
+    else:
+        avg_ssim = None
+    avg_ssim = broadcast_scalar(avg_ssim, src=0, device=output.device)
+    
+    return avg_ssim
