@@ -604,6 +604,14 @@ class SR_Benchmark(BaseBLASTNET3DDataset):
         else:
             print('warning: no train mean/std for %s'%self.split, ', using train mean/std.', flush=True)
             self.mean, self.std = self.get_mean_std()
+    def get_normalization(self, device=None, dtype=None):
+        mean = self.mean
+        std = self.std
+        if device is not None:
+            mean = torch.as_tensor(mean, device=device, dtype=dtype)
+            std  = torch.as_tensor(std,  device=device, dtype=dtype)
+
+        return mean, std
     #adapted from https://www.kaggle.com/code/waitongchung/momentum128-readandinfer/notebook
     #get mean/std for train/val sets
     def get_mean_std(self):

@@ -9,6 +9,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import cm, ticker
 import torch
 from einops import rearrange
+from .distributed_utils import assemble_samples
 
 
 def plot_visual_contour(x, var_names, outputname):
@@ -268,26 +269,12 @@ def checking_data_inp_tar(tar, inp, blockdict, global_rank, current_group, group
         #################
 
 def checking_data_pred_tar(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device, outdir, istep=0, imod=0):
-    tar = tar.to(device)
-    pred = pred.to(device)
-    #plot_visual_contourcomp(tar[:,:,0,:,:], pred[:,:,0,:,:], ['Vx', 'Vy', 'Vw', 'pressure'],os.path.join(outdir, f"./datapred_checking_hw_rank{global_rank}_istep{istep}_imod{imod}.png"))       
-    #plot_visual_contourcomp(tar[:,:,:,0,:], pred[:,:,:,0,:], ['Vx', 'Vy', 'Vw', 'pressure'],os.path.join(outdir, f"./datapred_checking_dw_rank{global_rank}_istep{istep}_imod{imod}.png"))       
-    if group_rank==0:
-        tar_list = [torch.empty_like(tar) for _ in range(group_size)]
-        pred_list = [torch.empty_like(pred) for _ in range(group_size)]
+    if group_size>1:
+        pred_all, tar_all = assemble_samples(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device)
     else:
-        tar_list = None
-        pred_list = None
-    global_dst = dist.get_global_rank(current_group, 0)
-    dist.gather(tar, tar_list, dst=global_dst, group=current_group)
-    dist.gather(pred, pred_list, dst=global_dst, group=current_group)
+        pred_all = pred
+        tar_all = tar
     if global_rank==0:
-        nproc_blocks = blockdict["nproc_blocks"]
-        tar_all = torch.stack(tar_list, dim=0)
-        pred_all = torch.stack(pred_list, dim=0)
-        p1,p2,p3=nproc_blocks
-        tar_all = rearrange(tar_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',    p1=p1, p2=p2, p3=p3)
-        pred_all = rearrange(pred_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',p1=p1, p2=p2, p3=p3)
         print("Pred checking", blockdict, pred_all.shape, tar_all.shape, flush=True)
         #################
         #plot_visual_contourcomp(tar_all[:,:,0,:,:], tar_all[:,:,0,:,:], ['Vx', 'Vy', 'Vw', 'pressure'],os.path.join(outdir, f"./datapred_checking_hw_full.png"))       

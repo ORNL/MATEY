@@ -21,6 +21,7 @@ from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
 from .utils.visualization_utils import checking_data_pred_tar
 from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
+from .trustworthiness.metrics import get_ssim
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
@@ -423,7 +424,8 @@ class Trainer:
         self.model.train()
         logs = {'train_rmse': torch.zeros(1).to(self.device),
                 'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device)}
+            'train_l1': torch.zeros(1).to(self.device),
+            'train_ssim': torch.zeros(1).to(self.device)}
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -512,6 +514,9 @@ class Trainer:
                     logs['train_nrmse'] += log_nrmse 
                     loss_logs[dset_type] += loss.item()
                     logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                    if getattr(self.params, "log_ssim", False):
+                        avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.train_dataset, dset_index)
+                        logs['train_ssim'] += avg_ssim
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
@@ -575,7 +580,8 @@ class Trainer:
         self.single_print('STARTING VALIDATION!!!')
         logs = {'valid_rmse':  torch.zeros(1).to(self.device),
                 'valid_nrmse': torch.zeros(1).to(self.device),
-                'valid_l1':    torch.zeros(1).to(self.device)}
+                'valid_l1':    torch.zeros(1).to(self.device),
+                'valid_ssim':  torch.zeros(1).to(self.device)}
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -654,6 +660,9 @@ class Trainer:
                     logs['valid_nrmse'] += raw_loss
                     logs['valid_l1']    += raw_l1_loss
                     logs['valid_rmse']  += raw_rmse_loss
+                    if getattr(self.params, "log_ssim", False):
+                        avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
+                        logs['valid_ssim'] += avg_ssim
 
                     loss_dset_logs[dset_type]      += raw_loss
                     loss_l1_dset_logs[dset_type]   += raw_l1_loss
