@@ -88,11 +88,18 @@ def remove_edges(arr):
         raise ValueError("Input tensor must be 5D or 6D.")
     
 def get_unnormalized(pred, tar, sub_dataset, device, dtype=torch.float64):
+    if not hasattr(sub_dataset, "get_normalization"):
+        print(f"{sub_dataset.__class__.__name__} has no `get_normalization()` method. Returning pred and tar unchanged.")
+        return pred, tar
+
     mean, std = sub_dataset.get_normalization(device=device, dtype=dtype)
+
     mean = torch.as_tensor(mean, device=device, dtype=dtype)
     mean = mean.view(1, 1, -1, 1, 1, 1)
-    std  = torch.as_tensor(std,  device=device, dtype=dtype)
+
+    std = torch.as_tensor(std, device=device, dtype=dtype)
     std = std.view(1, 1, -1, 1, 1, 1)
+
     return pred * std + mean, tar * std + mean
 
 def calculate_ssim3D(pred, target):
