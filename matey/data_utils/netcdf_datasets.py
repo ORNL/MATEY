@@ -173,7 +173,7 @@ class BasenetCDFDirectoryDataset(Dataset):
             #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
             leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,))
         elif self.input_control_act:
-            leadtime = torch.tensor([min(self.leadtime_max, self.file_lens[file_idx]-time_idx+1)])
+            leadtime = torch.tensor([min(self.leadtime_max, self.file_lens[file_idx]-time_idx)])
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
 
