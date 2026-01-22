@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
+import math
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):
@@ -45,12 +46,12 @@ def setup_dist(params):
     return device, world_size, local_rank, global_rank
 
 def closest_factors(n, dim):
-    #temporary, from Andrey's
     assert n > 0 and dim > 0, f"{n} and {dim} must be greater than 0"
 
     if dim == 1:
         return [n]
-
+    
+    """
     factors = []
     i = 2
     nn = n
@@ -66,8 +67,33 @@ def closest_factors(n, dim):
         factors[1] *= factors[0]
         factors.pop(0)
         factors.sort()
+    if len(factors) < dim:
+        factors = [1]*(dim-len(factors)) + factors
+    """
 
-    assert reduce(mul, factors) == n and len(factors)==dim
+    factors = [1] * dim
+    factors[0] = n
+
+    while True:
+        prev = factors.copy()
+        factors.sort()
+        largest = factors[-1]
+        sqrt_large = int(math.sqrt(largest))
+        for i in range(sqrt_large, 0, -1):
+            if largest % i == 0:
+                factor1, factor2 = i, largest // i
+                break
+        # If cannot further balance, break
+        if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
+            break
+        factors[-1] = factor2
+        factors[0] *= factor1
+        if factors == prev:
+            break
+
+    factors.sort()
+
+    assert reduce(mul, factors) == n and len(factors)==dim, f"factors, {factors}, dim {dim}"
 
     return factors
 
@@ -266,3 +292,42 @@ def add_weight_decay(model, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
     return [
             {'params': no_decay, 'weight_decay': 0.,},
             {'params': decay, 'weight_decay': weight_decay}]
+
+def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device):
+    # Assemble samples from all sequence parallel ranks for prediction and target
+    tar = tar.to(device)
+    pred = pred.to(device)       
+    if not dist.is_initialized() or group_size==1:
+        return pred, tar
+    if group_rank==0:
+        tar_list = [torch.empty_like(tar) for _ in range(group_size)]
+        pred_list = [torch.empty_like(pred) for _ in range(group_size)]
+    else:
+        tar_list = None
+        pred_list = None
+    global_dst = dist.get_global_rank(current_group, 0)
+    dist.gather(tar, tar_list, dst=global_dst, group=current_group)
+    dist.gather(pred, pred_list, dst=global_dst, group=current_group)
+    if global_rank==0:
+        nproc_blocks = blockdict["nproc_blocks"]
+        tar_all = torch.stack(tar_list, dim=0)
+        pred_all = torch.stack(pred_list, dim=0)
+        p1,p2,p3=nproc_blocks
+        tar_all = rearrange(tar_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',    p1=p1, p2=p2, p3=p3)
+        pred_all = rearrange(pred_all,'(p1 p2 p3) b c d h w -> b c (p1 d) (p2 h) (p3 w)',p1=p1, p2=p2, p3=p3)
+        return pred_all, tar_all
+    else :
+        return None, None
+    
+def broadcast_scalar(value, src=0, device=None):
+    if not dist.is_available() or not dist.is_initialized():
+        return value
+
+    tensor = torch.zeros(1, device=device)
+
+    if dist.get_rank() == src:
+        tensor.fill_(value)
+
+    dist.broadcast(tensor, src=src)
+    return tensor.item()    
+

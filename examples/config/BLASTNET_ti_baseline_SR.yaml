@@ -8,15 +8,16 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: './Dev_BLASNET' # Output path
-  #exp_dir: './Dev_BLASNET_SViT' # Output path
-  #exp_dir: './Dev_BLASNET_AViT' # Output path
+  exp_dir: './Dev_BLASTNET' # Output path
+  #exp_dir: './Dev_BLASTNET_SViT' # Output path
+  #exp_dir: './Dev_BLASTNET_AViT' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
+  log_ssim: !!bool True # Whether to log SSIM
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 32  
-  max_epochs: 5 #100
+  batch_size: 64  
+  max_epochs: 20 #100
   scheduler_epochs: -1
   epoch_size: 20 
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
@@ -32,8 +33,9 @@ basic_config: &basic_config
   n_steps: 1 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  
+  grad_loss_alpha: 1.0 # Weight for spatial gradient loss term
   # Model settings
-  model_type:  'vit_all2all' # no need for time_type and space_type inputs
+  model_type:  'turbt' # no need for time_type and space_type inputs
   #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
   #time_type: 'all2all_time' # 
   #space_type: 'all2all' #
@@ -46,8 +48,13 @@ basic_config: &basic_config
   processor_blocks: 12 # Number of transformer blocks in the backbone - 12/12/12/24 for Ti/S/B/L
   tokenizer_heads:
     - head_name: "tk-3D"
-      patch_size: [[8, 8, 8]]
+      patch_size: [[4, 4, 4]]
+  hierarchical:
+      filtersize: 2
+      nlevels: 2 #[2^4, 2^3, 2^2, 2^1, 2^0]
+  notransposed: !!bool False # when True, do not use conv_transposed due to checkerboard artifacts; Default, False
   SR_ratio: [8, 8, 8]
+  sp_groupsize: 8 #sequence_parallel_groupsize
   sts_model: !!bool False
   sts_train: !!bool False  #when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly
   #gammaref: 0.2 #pick all tokens that with variances larger than gammaref*max_variance to refine
@@ -61,10 +68,10 @@ basic_config: &basic_config
   extended_names: !!bool False # Whether to use extended names - not currently implemented
   embedding_offset: 0  # Use when adding extra finetuning fields
   train_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/zhangp/BLASTNET/SR/blastnet-momentum-3d-sr-dataset/train_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/lustre/orion/lrn037/proj-shared/BLASTNET/train_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   valid_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/zhangp/BLASTNET/SR/blastnet-momentum-3d-sr-dataset/val_data_summary.csv', 'SR', '', "tk-3D"],
+              ['/lustre/orion/lrn037/proj-shared/BLASTNET/val_data_summary.csv', 'SR', '', "tk-3D"],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

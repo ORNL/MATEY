@@ -6,10 +6,8 @@ from einops import rearrange, repeat
 from .spacetime_modules import SpaceTimeBlock
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
-import sys, copy
-from operator import mul
-from functools import reduce
-
+from ..utils.forward_options import ForwardOptionsBase, TrainOptionsBase
+from typing import Optional
 
 def build_avit(params):
     """avit model
@@ -17,6 +15,7 @@ def build_avit(params):
     sts_train:
              when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly as well
     leadtime_max: when larger than 1, we use a `ltimeMLP` NN module to incoporate the impact of leadtime
+    cond_input: when True, the model uses an additional inputs (scalar) to condition the predictions
     """
     model = AViT(tokenizer_heads=params.tokenizer_heads,
                 embed_dim=params.embed_dim,
@@ -29,7 +28,9 @@ def build_avit(params):
                 SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                 sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                 sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                leadtime=True if hasattr(params, 'leadtime_max') and params.leadtime_max>1 else False,
+                leadtime=hasattr(params, "leadtime_max") and params.leadtime_max >= 0,
+                cond_input=getattr(params,'supportdata', False),
+                n_steps=params.n_steps,
                 bias_type=params.bias_type,
                 hierarchical=params.hierarchical if hasattr(params, 'hierarchical') else None
                 )
@@ -47,8 +48,9 @@ class AViT(BaseModel):
         n_states (int): Number of input state variables.
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  space_type="axial_attention", time_type="attention", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, bias_type="none", SR_ratio=[1,1,1], hierarchical=None):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
+                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 
@@ -64,6 +66,7 @@ class AViT(BaseModel):
         self.sts_train = sts_train
 
         self.num_heads=num_heads
+        self.n_steps=n_steps
         self.processor_blocks=processor_blocks
         self.space_type=space_type
         self.time_type=time_type
@@ -144,8 +147,19 @@ class AViT(BaseModel):
             x = self.add_localpatches(x, xlocal, patch_ids, ntokendim)
         return x
 
-    def forward(self, x, state_labels, bcs, sequence_parallel_group=None, leadtime=None, returnbase4train=False, 
-                tkhead_name=None, refine_ratio=None, blockdict=None, imod=0, cond_dict=None, isgraph = False):
+    def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
+        ##################################################################
+        #unpack arguments
+        imod = opts.imod
+        tkhead_name = opts.tkhead_name
+        sequence_parallel_group = opts.sequence_parallel_group
+        leadtime = opts.leadtime
+        blockdict = opts.blockdict
+        cond_dict = opts.cond_dict
+        refine_ratio = opts.refine_ratio
+        cond_input = opts.cond_input
+        isgraph = opts.isgraph
+        ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
         assert not isgraph, "graph is not supported in AViT"
         #T,B,C,D,H,W
@@ -170,7 +184,8 @@ class AViT(BaseModel):
             leadtime = self.ltimeMLP[imod](leadtime)
         else:
             leadtime=None
-
+        if self.cond_input and cond_input is not None:
+            leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         if self.posbias[imod] is not None:
             posbias = self.posbias[imod](t_pos_area, use_zpos=True if D>1 else False) # b t d h w c -> b t d h w c_emb
             posbias=rearrange(posbias,'b t d h w c -> t b c d h w')
@@ -210,7 +225,7 @@ class AViT(BaseModel):
 
         # Denormalize
         x = x * data_std + data_mean # All state labels in the batch should be identical
-        if returnbase4train:
+        if train_opts is not None and train_opts.returnbase4train:
             xbase = xbase * data_std + data_mean
             return x[-1], xbase[-1]
         return x[-1] # Just return last step - now just predict delta.

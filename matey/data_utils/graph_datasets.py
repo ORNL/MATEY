@@ -23,7 +23,7 @@ class SampleId:
     t: Optional[int] = None  # time index if applicable
     
 class BaseCFDGraphDataset(Dataset):
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
         train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
         group_id=0, group_rank=0, group_size=1, use_MPI=False):
 
@@ -286,7 +286,6 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                 except Exception as e:
                     print(f"Failed to load {filename}: {e}")
                     return False
-            
 
 
     def process(self):

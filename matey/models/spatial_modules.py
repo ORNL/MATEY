@@ -6,8 +6,8 @@ import math
 from operator import mul
 from functools import reduce
 from einops import rearrange, repeat
-from ..data_utils.utils import closest_factors
-from torch_geometric.nn import GCNConv, BatchNorm, GraphNorm
+from ..utils.distributed_utils import closest_factors
+from torch_geometric.nn import GCNConv, GraphNorm
 
 ### Space utils
 #FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it

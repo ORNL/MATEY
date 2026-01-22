@@ -1,15 +1,17 @@
 import torch
 import torch.nn
 import numpy as np
-import os
+import os, tempfile
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking
 import json
 import csv
+from ..utils.distributed_utils import closest_factors
+from functools import reduce
+from operator import mul
 
-class BaseBLASNET3DDataset(Dataset):
+class BaseBLASTNET3DDataset(Dataset):
     """
     Base class for data loaders. Returns data in T x C X D x H x W format.
     Args:
@@ -30,7 +32,7 @@ class BaseBLASNET3DDataset(Dataset):
         SR_ratio: superresolution ratio, used when input and output are at different resolutions, 
         currently only support this case: https://www.kaggle.com/datasets/waitongchung/blastnet-momentum-3d-sr-dataset/data
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
                  gammaref=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
@@ -41,6 +43,10 @@ class BaseBLASNET3DDataset(Dataset):
         self.path = path
         self.split = split
         self.extra_specific = extra_specific # Whether to use parameters in name
+
+        self.group_id = group_id
+        self.group_rank = group_rank
+        self.group_size = group_size
         
         self.dt = 1
         self.leadtime_max = leadtime_max 
@@ -58,6 +64,10 @@ class BaseBLASNET3DDataset(Dataset):
         self.tkhead_name=tkhead_name
         self.refine_ratio = refine_ratio
         self.gammaref = gammaref
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
 
     def get_name(self):
         return self.type
@@ -161,34 +171,81 @@ class BaseBLASNET3DDataset(Dataset):
             #solution info
             casedir = self.cases_split[case_idx]
             dictcase = self.case_dict[casedir]
-            trajectory, leadtime = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
+            variables = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
         elif self.split_level=="snapshot":
             case_idx = self.casesids_split[index]
             leadtime = torch.tensor([0])
-            if self.type!="SR":
+            if self.type != "SR":
                 dictcase = self.case_dict["solutions"][case_idx]
                 nxyz = self.case_dict["Nxyz"][case_idx]
-                trajectory, leadtime= self._reconstruct_sample(dictcase, nxyz, leadtime)
+                variables = self._reconstruct_sample(dictcase, nxyz, leadtime)
         else:
             raise ValueError("unknown %s"%self.split_level)
         ########################################
-        bcs = self._get_specific_bcs()
-        if self.type!="SR":
-            if self.leadtime_max>0:
-                inp=trajectory[:-1]
-                tar=trajectory[-1]
-            else: #self-supervised
-                inp=trajectory
-                tar=inp[-1]
-        else:
-            inp, tar, dzdxdy = self._reconstruct_sample(case_idx)
 
-        return inp, torch.as_tensor(bcs), tar, leadtime
+        #start index and end size of local split for current 
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        bcs = self._get_specific_bcs()
+        if self.type == "SR":
+            inp, tar, inp_up, dzdxdy = self._reconstruct_sample(case_idx)
+            #inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
+            inp = inp_up[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]                  # interpolated LR to HR grid
+            tar = np.squeeze(tar[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy], axis=0) # C,D,H,W
+
+        else:
+            assert len(variables) in (2, 3)
+            trajectory, leadtime = variables[:2]
+
+            trajectory = trajectory[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]
+            inp = trajectory[:-1] if self.leadtime_max > 0 else trajectory
+            tar = trajectory[-1]
+        # assemble output
+        out = (inp, torch.as_tensor(bcs), tar, leadtime)
+        # optional conditioning fields (non-SR only)
+        if self.type != "SR" and len(variables) == 3:
+            out = (*out, variables[2])
+
+        return out
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        H, W, D = self.cubsizes #x,y,z
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                    torch.arange(nproc_blocks[1]),  
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
 
-class H2vitairliDataset(BaseBLASNET3DDataset):
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
+
+class H2vitairliDataset(BaseBLASTNET3DDataset):
     @staticmethod
     def _specifics():
         """22 cases differing turbulence intensity, inflow uin, and integral lenght scale
@@ -263,7 +320,7 @@ class H2vitairliDataset(BaseBLASNET3DDataset):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
 
-class H2jetDataset(BaseBLASNET3DDataset):
+class H2jetDataset(BaseBLASTNET3DDataset):
     @staticmethod
     def _specifics():
         case_str="hydrogen-jet-*00"
@@ -345,7 +402,7 @@ class H2jetDataset(BaseBLASNET3DDataset):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic
 
-class FHITsnapshots(BaseBLASNET3DDataset):
+class FHITsnapshots(BaseBLASTNET3DDataset):
     @staticmethod
     def _specifics():
         # "description": "Passive scalar transport in forced homogeneous isotropic turbulence DNS"
@@ -424,7 +481,7 @@ class FHITsnapshots(BaseBLASNET3DDataset):
         return [0, 0, 0] # Non-periodic
 
 
-class HITDNSsnapshots(BaseBLASNET3DDataset):
+class HITDNSsnapshots(BaseBLASTNET3DDataset):
     @staticmethod
     def _specifics():
         # "Decaying Homogeneous Isotropic Turbulence DNS"
@@ -492,7 +549,7 @@ class HITDNSsnapshots(BaseBLASNET3DDataset):
         return [0, 0, 0] # Non-periodic
 
 ######SR task example from https://www.kaggle.com/code/waitongchung/momentum128-readandinfer/notebook########
-class SR_Benchmark(BaseBLASNET3DDataset):
+class SR_Benchmark(BaseBLASTNET3DDataset):
     @staticmethod
     def _specifics():
         # "description": "Passive scalar transport in forced homogeneous isotropic turbulence DNS"
@@ -532,14 +589,29 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         if self.SR_ratio[0] in [8, 16, 32]:
             self.upscale = self.SR_ratio[0]  
             self.inputbase = self.datapath+'/dataset/LR_'+str(self.upscale)+'x/'+self.split+'/'
+            self.interpbase = self.datapath+'/dataset/LR_'+str(self.upscale)+'x_interpolated/'+self.split+'/'
         else:
             self.upscale = 1
             self.inputbase = self.outputbase
-        if self.split=="train":
+        if self.split=="train" or self.split=="val":
             self.mean, self.std = self.get_mean_std()
-        else:#val or test
+        elif self.split=="test":
             self.mean, self.std = self.get_mean_std_test()
+        elif self.split=="paramvar":
+            self.mean, self.std = self.get_mean_std_paramvar()
+        elif self.split=="forcedhit":
+            self.mean, self.std = self.get_mean_std_forcedhit()
+        else:
+            print('warning: no train mean/std for %s'%self.split, ', using train mean/std.', flush=True)
+            self.mean, self.std = self.get_mean_std()
+    def get_normalization(self, device=None, dtype=None):
+        mean = self.mean
+        std = self.std
+        if device is not None:
+            mean = torch.as_tensor(mean, device=device, dtype=dtype)
+            std  = torch.as_tensor(std,  device=device, dtype=dtype)
 
+        return mean, std
     #adapted from https://www.kaggle.com/code/waitongchung/momentum128-readandinfer/notebook
     #get mean/std for train/val sets
     def get_mean_std(self):
@@ -580,20 +652,63 @@ class SR_Benchmark(BaseBLASNET3DDataset):
     def _reconstruct_sample(self,idx):    
         hash_id = self.datadict['hash'][idx]
         scalars = self.field_names
-        X = []
-        upscale = self.upscale
-        for ivar, scalar in enumerate(scalars):
-            xpath = self.inputbase+scalar+hash_id+'.dat' 
-            var = np.fromfile(xpath,dtype=np.float32).reshape(128//upscale,128//upscale,128//upscale)
-            X.append(self.normalize(var, self.mean[ivar], self.std[ivar]))
-        X = np.stack(X,axis=0)
-        Y = []
-        for ivar, scalar in enumerate(scalars):
-            ypath = self.outputbase+scalar+hash_id+'.dat'
-            var = np.fromfile(ypath,dtype=np.float32).reshape(128,128,128)
-            Y.append(self.normalize(var, self.mean[ivar], self.std[ivar]))
-        Y = np.stack(Y,axis=0)
+        h5_path = self.inputbase + "allvars_id"+hash_id + ".h5"
+        
+        if os.path.exists(h5_path):
+            with h5py.File(h5_path, 'r') as f:
+                X = f['X'][:]
+                X_interp = f['X_interp'][:]
+                Y = f['Y'][:]
+                stored_scalars = [s.decode('utf-8') for s in f['scalars'][:]] if 'scalars' in f else scalars
+                # print(f"load data from hdf5 file {h5_path}!", flush=True)
+        else:
+            
+            upscale = self.upscale
 
+            X = np.empty((len(scalars), 128//upscale,128//upscale,128//upscale), dtype='float32')
+            X_interp = np.empty((len(scalars), 128, 128, 128), dtype='float32')
+            Y = np.empty((len(scalars), 128, 128, 128), dtype='float32')
+
+            for ivar, scalar in enumerate(scalars):
+                xpath = self.inputbase+scalar+hash_id+'.dat' 
+                var = np.fromfile(xpath,dtype=np.float32).reshape(128//upscale,128//upscale,128//upscale)
+                X[ivar, ...] = self.normalize(var, self.mean[ivar], self.std[ivar])
+
+                xinterppath = self.interpbase+scalar+hash_id+'.dat'
+                var_interp = np.fromfile(xinterppath,dtype=np.float32).reshape(128,128,128)
+                X_interp[ivar, ...] = self.normalize(var_interp, self.mean[ivar], self.std[ivar])
+  
+            for ivar, scalar in enumerate(scalars):
+                ypath = self.outputbase+scalar+hash_id+'.dat'
+                var = np.fromfile(ypath,dtype=np.float32).reshape(128,128,128)
+                Y[ivar, ...] = self.normalize(var, self.mean[ivar], self.std[ivar])
+         
+            if self.group_rank==0:
+                dirpath  = os.path.dirname(h5_path) or "."
+                basename = os.path.basename(h5_path)
+                fd, tmp_path = tempfile.mkstemp(prefix=f".{basename}", suffix=".tmp", dir=dirpath)
+                os.close(fd)
+                #only first rank in each group save the data
+                with h5py.File(tmp_path, 'w') as f:
+                    f.create_dataset('X', data=X, compression='gzip')
+                    f.create_dataset('X_interp', data=X_interp, compression='gzip')
+                    f.create_dataset('Y', data=Y, compression='gzip')
+                    dt = h5py.string_dtype(encoding='utf-8')
+                    f.create_dataset('scalars', data=np.array(scalars, dtype=dt))
+
+                with open(tmp_path, "rb", buffering=0) as fh:
+                    os.fsync(fh.fileno())
+
+                os.replace(tmp_path, h5_path)
+                
+                dir_fd = os.open(dirpath, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+
+                print(f"hdf5 file {h5_path} generated!", flush=True)
+            
         dx = torch.tensor(np.float32(self.datadict['dx [m]'][idx]))
         if self.datadict['dy [m]'][idx] != '':
             dy = torch.tensor(np.float32(self.datadict['dy [m]'][idx]))
@@ -604,7 +719,7 @@ class SR_Benchmark(BaseBLASNET3DDataset):
         else:
             dz = dx
         #return: T,C,D,H,W
-        return X[np.newaxis,...].transpose((0, 1, 4, 2, 3)),Y[np.newaxis,...].transpose((0, 1, 4, 2, 3)), [dz, dx, dy]
+        return X[np.newaxis,...].transpose((0, 1, 4, 2, 3)),Y[np.newaxis,...].transpose((0, 1, 4, 2, 3)),X_interp[np.newaxis,...].transpose((0, 1, 4, 2, 3)), [dz, dx, dy]
 
     def _get_specific_bcs(self):
         #FIXME: not used for now

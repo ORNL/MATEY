@@ -4,7 +4,7 @@
 #SBATCH -o %x-%j.out
 #SBATCH -t 00:15:00
 #SBATCH -p batch
-#SBATCH -N 5
+#SBATCH -N 6
 #SBATCH -q debug
 #SBATCH -C nvme
 
@@ -48,6 +48,10 @@ export yaml_config=./config/Demo_MW_vit.yaml
 srun -N$NN -n$((NN*8)) -c7 --gpu-bind=closest python basic_usage.py \
 --run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_vit 2>&1 &
 
+export run_name="demo_vit_autoregressive_test"
+export yaml_config=./config/Demo_SOLPS_vit.yaml
+srun -N$NN -n$((NN*8)) -c7 --gpu-bind=closest python basic_usage.py \
+--run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_vit_autoregressive 2>&1 &
 
 export run_name="demo_turt_test"
 export yaml_config=./config/Demo_JHUTDB_TT.yaml

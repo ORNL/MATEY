@@ -20,6 +20,8 @@ from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
 from .utils.visualization_utils import checking_data_pred_tar
+from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
+from .trustworthiness.metrics import get_ssim
 import json
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
@@ -27,6 +29,8 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
 from torch_geometric.nn import global_mean_pool
+from .utils.training_utils import autoregressive_rollout, GradLoss
+import copy
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
@@ -401,6 +405,17 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
+    def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
+        # Handles a forward pass through the model, either normal or autoregressive rollout.
+        autoregressive = getattr(self.params, "autoregressive", False)
+        if not autoregressive:
+            output = self.model(inp, field_labels, bcs, opts)
+            return output, None
+        else:
+            # autoregressive rollout
+            output, rollout_steps = autoregressive_rollout(self.model, inp, field_labels, bcs, opts, pushforward = pushforward)
+            return output, rollout_steps
+
     def train_one_epoch(self):
 
         self.epoch += 1
@@ -410,7 +425,8 @@ class Trainer:
         self.model.train()
         logs = {'train_rmse': torch.zeros(1).to(self.device),
                 'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device)}
+            'train_l1': torch.zeros(1).to(self.device),
+            'train_ssim': torch.zeros(1).to(self.device)}
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -418,6 +434,7 @@ class Trainer:
         loss_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
         self.single_print('train_loader_size', len(self.train_data_loader), 'train_dataset size', len(self.train_dataset), 'valid_dataset size', len(self.valid_dataset))
         sts_train=self.params.sts_train if hasattr(self.params, 'sts_train') else False
+        supportdata = True if hasattr(self.params, 'supportdata') else False
 
         data_iter = iter(self.train_data_loader)
         num_batches = min(len(self.train_data_loader), self.params.epoch_size)
@@ -439,10 +456,18 @@ class Trainer:
                 else: 
                     inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                     field_labels_out = field_labels
+                if supportdata:
+                    cond_input = data["cond_input"].to(self.device)
+                else:   
+                    cond_input = None
+                cond_dict = {}
                 try:
-                    blockdict = self.train_dataset.sub_dsets[dset_index[0]].blockdict
+                    cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                    cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
                 except:
-                    blockdict = None
+                    pass
+
+                blockdict = getattr(self.train_dataset.sub_dsets[dset_index[0]], "blockdict", None)
                 #if self.group_rank==0:
                 #    print(f"{self.global_rank}, {batch_idx}, Pei checking data shape, ", inp.shape, tar.shape, blockdict, flush=True)
             dset_type = self.train_dataset.sub_dsets[dset_index[0]].type
@@ -462,10 +487,25 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     isgraph = False
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
+                #if self.global_rank == 0:
+                #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
+                seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #self.train_dataset.DP_dsets else None
+                opts = ForwardOptionsBase(
+                imod=imod, 
+                tkhead_name=tkhead_name,
+                sequence_parallel_group=seq_group,
+                leadtime=leadtime,
+                blockdict=copy.deepcopy(blockdict),
+                cond_dict=copy.deepcopy(cond_dict),
+                cond_input=cond_input,
+                isgraph=isgraph,
+                field_labels_out= field_labels_out
+                )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output= self.model(inp, field_labels, bcs, imod=imod,
-                                    sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                    tkhead_name=tkhead_name, blockdict=blockdict, isgraph = isgraph, field_labels_out=field_labels_out)
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
+                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
+               
                 if output.ndim == 2:
                     ###full resolution###
                     residuals = output - tar #[nnodes, C_tar] 
@@ -492,6 +532,12 @@ class Trainer:
                     raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
                     # Scale loss for accum
                     loss = raw_loss.mean() / self.params.accum_grad
+                    #Optional spatial gradient loss
+                    alpha = getattr(self.params, "grad_loss_alpha", None)
+                    if alpha is not None and alpha > 0.0:
+                        #expects B,C,D,H,W
+                        grad_loss = GradLoss(output, tar)/ self.params.accum_grad 
+                        loss += self.params.grad_loss_alpha * grad_loss
                     # Logging
                     with torch.no_grad():
                         logs['train_l1'] += F.l1_loss(output, tar)
@@ -499,6 +545,9 @@ class Trainer:
                         logs['train_nrmse'] += log_nrmse 
                         loss_logs[dset_type] += loss.item()
                         logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+                        if getattr(self.params, "log_ssim", False):
+                            avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.train_dataset, dset_index)
+                            logs['train_ssim'] += avg_ssim
                 #################################
                 forward_end = self.timer.get_time()
                 forward_time = forward_end-model_start
@@ -562,7 +611,8 @@ class Trainer:
         self.single_print('STARTING VALIDATION!!!')
         logs = {'valid_rmse':  torch.zeros(1).to(self.device),
                 'valid_nrmse': torch.zeros(1).to(self.device),
-                'valid_l1':    torch.zeros(1).to(self.device)}
+                'valid_l1':    torch.zeros(1).to(self.device),
+                'valid_ssim':  torch.zeros(1).to(self.device)}
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -579,16 +629,13 @@ class Trainer:
         else:
             cutoff = 5 #40
 
-        for idx in range(len(self.valid_data_loader)):
+        num_batches = min(len(self.valid_data_loader), self.params.epoch_size)
+
+        for idx in range(num_batches):
             self.check_memory("validate-data")
             self.single_print("valid index:", idx, "of:", len(self.valid_data_loader))
             ##############################################################################################################
-            try:
-                data = next(valid_iter)
-            except:
-                self.single_print(f"No more data to sample in valid_data_loader after {idx} batches")
-                break
-
+            data = next(valid_iter)
             if "graph" in data:
                 graphdata = data["graph"].to(self.device)
                 tar = graphdata.y #[nnodes, C_tar] 
@@ -597,12 +644,23 @@ class Trainer:
             else: 
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                 field_labels_out = field_labels
+            supportdata = True if hasattr(self.params, 'supportdata') else False
+            if supportdata:
+                cond_input = data["cond_input"].to(self.device)
+            else:
+                cond_input = None
+
+            cond_dict = {}
             try:
-                blockdict = self.valid_dataset.sub_dsets[dset_index[0]].blockdict
+                cond_dict["labels"] = data["cond_field_labels"].to(self.device)
+                cond_dict["fields"] = rearrange(data["cond_fields"].to(self.device), 'b t c d h w -> t b c d h w')
             except:
-                blockdict = None
+                pass
+
+            blockdict = getattr(self.valid_dataset.sub_dsets[dset_index[0]], "blockdict", None)
+            
             #if self.group_rank==0:
-            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, blockdict, flush=True)
+            #    print(f"{self.global_rank}, {idx}, Pei checking val data shape, ", inp.shape, tar.shape, inp.min(), inp.max(), tar.min(), tar.max(), blockdict, flush=True)
             dset_type = self.valid_dataset.sub_dsets[dset_index[0]].type
             tkhead_name = self.valid_dataset.sub_dsets[dset_index[0]].tkhead_name            
             ##############################################################################################################
@@ -620,9 +678,22 @@ class Trainer:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         isgraph = False
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    output= self.model(inp, field_labels, bcs, imod=imod, 
-                                       sequence_parallel_group=self.current_group, leadtime=leadtime, 
-                                       tkhead_name=tkhead_name, blockdict=blockdict, isgraph = isgraph, field_labels_out=field_labels_out)                   
+                    seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #sself.valid_dataset.DP_dsets else None
+                    opts = ForwardOptionsBase(
+                    imod=imod, 
+                    tkhead_name=tkhead_name,
+                    sequence_parallel_group=seq_group,
+                    leadtime=leadtime,
+                    blockdict=copy.deepcopy(blockdict),
+                    cond_dict=copy.deepcopy(cond_dict),
+                    cond_input=cond_input,
+                    isgraph=isgraph,
+                    field_labels_out= field_labels_out
+                    )
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
+                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
+                
                     #################################
                     if output.ndim == 2:
                         residuals = output - tar #[nnodes, C_tar] 
@@ -650,11 +721,14 @@ class Trainer:
                         logs['valid_nrmse'] += raw_loss
                         logs['valid_l1']    += raw_l1_loss
                         logs['valid_rmse']  += raw_rmse_loss
+                        if getattr(self.params, "log_ssim", False):
+                            avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
+                            logs['valid_ssim'] += avg_ssim
 
                         loss_dset_logs[dset_type]      += raw_loss
                         loss_l1_dset_logs[dset_type]   += raw_l1_loss
                         loss_rmse_dset_logs[dset_type] += raw_rmse_loss
-                        #################################        
+       
             self.check_memory("validate-end")
         self.single_print('DONE VALIDATING - NOW SYNCING')
         logs = {k: v/steps for k, v in logs.items()}
