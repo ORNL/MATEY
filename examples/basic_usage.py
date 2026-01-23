@@ -54,7 +54,7 @@ if __name__ == '__main__':
         print(params.hierarchical, flush=True)
     # Set up distributed training
     device, world_size, local_rank, global_rank = setup_dist(params)
-    print(f"local_rank={local_rank}, global_rank={global_rank}, world_size={world_size}", flush=True)
+    print(f"local_rank={local_rank}, global_rank={global_rank}, world_size={world_size}, host={socket.gethostname()}", flush=True)
 
     # Modify params
     params['batch_size'] =int(params.batch_size//world_size)
