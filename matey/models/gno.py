@@ -208,11 +208,13 @@ class GNOModel(nn.Module):
         geometry = torch.from_numpy(np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1))
         return torch.flatten(geometry, end_dim=-2)
 
-    def forward(self, x, state_labels, bcs, geometry, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
-        assert geometry != None, "GNOModel requires geometry input"
+    def forward(self, x, state_labels, bcs, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
+        if opts.geometry == None:
+            # Pass-through option without using geometry
+            return self.model(x, state_labels, bcs, opts, train_opts)
 
         # We assume that all geometries in a batch are identical for now
-        input_geom = torch.flatten(geometry[0], end_dim=-2)
+        input_geom = torch.flatten(opts.geometry[0], end_dim=-2)
 
         # Rescale auxiliary grid
         latent_geom = self.latent_geom.to(device=x.device)
