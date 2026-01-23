@@ -29,7 +29,7 @@ basic_config: &basic_config
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
   dt: 1 # Striding of data - Not currently implemented > 1
-  leadtime_max: 0 #prediction lead time range [1, leadtime_max]
+  leadtime_max: -1 #prediction lead time range [1, leadtime_max]
   n_steps: 1 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  

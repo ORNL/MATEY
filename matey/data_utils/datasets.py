@@ -88,7 +88,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
 
-    leadtime_max=1 #finetuning higher priority
+    leadtime_max=-1 #finetuning higher priority
     if hasattr(params, 'leadtime_max_finetuning'):
         leadtime_max = params.leadtime_max_finetuning
     elif hasattr(params, 'leadtime_max'):
@@ -98,7 +98,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             tie_fields=params.tie_fields, use_all_fields=params.use_all_fields, enforce_max_steps=params.enforce_max_steps,
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = params.dt if hasattr(params,'dt') else 1,
-                            leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
+                            leadtime_max=max(leadtime_max, 0),
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
                             group_id=rank, group_rank=group_rank, group_size=group_size)
@@ -135,7 +135,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
 
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, supportdata=None, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   group_id=0, group_rank=0, group_size=1):
