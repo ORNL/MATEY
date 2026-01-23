@@ -12,6 +12,7 @@ try:
     from blastnet_3Ddatasets import *
     from thewell_datasets import *
     from binary_3DSSTdatasets import *
+    from graph_datasets import *
     from flow3d_datasets import *
 except ImportError:
     from .mixed_dset_sampler import MultisetSampler
@@ -22,9 +23,10 @@ except ImportError:
     from .blastnet_3Ddatasets import *
     from .thewell_datasets import *
     from .binary_3DSSTdatasets import *
+    from .graph_datasets import *
     from .flow3d_datasets import *
 import os
-import glob
+from torch_geometric.data import Data as GraphData, Batch
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -77,6 +79,8 @@ DSET_NAME_TO_OBJECT = {
     "sstF4R32": sstF4R32Dataset,
     ##Flow3D
     "flow3d": Flow3D_Object,
+    ##deepmindgraphnet
+    "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
     }
 
 def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
@@ -84,7 +88,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
     #group_rank: local rank in the SP group
     # paths, types, include_string = zip(*paths)
 
-    leadtime_max=1 #finetuning higher priority
+    leadtime_max=-1 #finetuning higher priority
     if hasattr(params, 'leadtime_max_finetuning'):
         leadtime_max = params.leadtime_max_finetuning
     elif hasattr(params, 'leadtime_max'):
@@ -94,7 +98,7 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                             tie_fields=params.tie_fields, use_all_fields=params.use_all_fields, enforce_max_steps=params.enforce_max_steps,
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = params.dt if hasattr(params,'dt') else 1,
-                            leadtime_max=leadtime_max, #params.leadtime_max if hasattr(params, 'leadtime_max') else 1,
+                            leadtime_max=max(leadtime_max, 0),
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
                             group_id=rank, group_rank=group_rank, group_size=group_size)
@@ -125,12 +129,13 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
                         drop_last=True,
                         pin_memory=torch.cuda.is_available(), 
                         persistent_workers=True, #ask dataloaders not destroyed after each epoch
+                        collate_fn=my_collate,
                         )
     return dataloader, dataset, sampler
 
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=1, supportdata=None, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   group_id=0, group_rank=0, group_size=1):
@@ -252,31 +257,44 @@ class MixedDataset(Dataset):
         #   x, bcs, y, leadtime, cond_input
         #else:
         #   x, bcs, y, leadtime
-        datasamples={} 
-        assert len(variables) in [4, 5, 6]
-        if len(variables) == 6:
-            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-            datasamples["cond_fields"] = variables[-2]
-            datasamples["cond_input"] = variables[-1]
-            variables = variables[:-2]
-        elif len(variables) == 5 and getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
-            datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-            datasamples["cond_fields"] = variables[-1]
-            variables = variables[:-1]
-        elif len(variables) == 5:
-            datasamples["cond_input"] = variables[-1]
-            variables = variables[:-1]
 
-        x, bcs, y = variables[:3]
-        leadtime = variables[-1]
-        datasamples["input"] = x
-        datasamples["label"] = y
-        datasamples["bcs"] = bcs
-        datasamples["leadtime"] = leadtime
+        #OR
+        #graph, bcs         
+
+        datasamples={} 
+        assert len(variables) in [2, 4, 5, 6]
+
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
 
-        return datasamples
+        if isinstance(variables[0], GraphData):
+            """
+            # data.x = x_seq #[nsteps_input, N, F] 
+            # data.y = y_state #[N, 3] -> (vx, vy, p)
+            # data.leadtime = leadtime
+            """
+            datasamples["graph"] = variables[0]
+            datasamples["bcs"] = variables[1]
+            datasamples["field_labels_out"] = datasamples["field_labels"][-3:]
+            return datasamples
+
+        else:
+            x, bcs, y, leadtime = variables[:4]
+            datasamples["input"] = x
+            datasamples["label"] = y
+            datasamples["bcs"] = bcs
+            datasamples["leadtime"] = leadtime
+            if len(variables) == 6:
+                datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+                datasamples["cond_fields"] = variables[-2]
+                datasamples["cond_input"] = variables[-1]
+            elif len(variables) == 5 and getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
+                datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
+                datasamples["cond_fields"] = variables[-1]
+            elif len(variables) == 5:
+                datasamples["cond_input"] = variables[-1]
+        
+            return datasamples
 
     def __len__(self):
         return sum([len(dset) for dset in self.sub_dsets])
@@ -312,3 +330,13 @@ class _RepeatSampler(object):
     def __iter__(self):
         while True:
             yield from iter(self.sampler)
+
+def my_collate(batch):
+    batch_new = {}
+    for key in batch[0].keys():
+        objs = [b[key] for b in batch]
+        if key =="graph":
+            batch_new[key] = Batch.from_data_list(objs)
+        else:
+            batch_new[key] = torch.stack([torch.as_tensor(obj) for obj in objs], dim=0)    
+    return batch_new

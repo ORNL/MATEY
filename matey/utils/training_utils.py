@@ -3,6 +3,8 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from .forward_options import ForwardOptionsBase, TrainOptionsBase
 from contextlib import nullcontext
+from torch_geometric.nn import global_mean_pool
+from .visualization_utils import checking_data_pred_tar
 
 def preprocess_target(leadtime, ramping_warmup = False):
     """
@@ -44,7 +46,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     """
     #Performs an autoregressive rollout with randomly sampled rollout length.
     #Inputs:
-    # inp: T,B,C,D,H,W.
+    # inp: T,B,C,D,H,W. or Graph
     # field_labels: labels for input
     # opts: Forward options object (must contain .leadtime and .cond_input).
     # pushforward: If True, disables gradient computation, except for the last step.
@@ -54,7 +56,12 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     """
     rollout_steps = preprocess_target(opts.leadtime) 
     x_t = inp
-    n_steps = inp.shape[0]
+    if opts.isgraph:
+        n_steps = x_t.x.shape[1] #[nnodes, T, C]
+        #FIXME: I realize it takes more to make this function work for graphs and will open a seperate PR on this
+        raise ValueError("Autoregressive rollout is not supported yet for graphs")
+    else:
+        n_steps = inp.shape[0]
     ctx = torch.no_grad() if pushforward else nullcontext()
     cond_input = opts.cond_input.clone() if opts.cond_input is not None else None
     with ctx:
@@ -96,3 +103,76 @@ def GradLoss(input, target):
     )*channel_dim
 
     return loss
+
+def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, params):
+    """
+    compute loss and update logging dicts.
+    output: Model prediction [B,C,D,H,W] for tensor inputs or [nnodes, C_tar] for graph
+    tar: target same shape as output
+    logs: dict; Running log dictionary (updated in-place).
+    loss_logs :dict; Dataset-type keyed loss log dict (updated in-place).
+    loss :  loss tensor (already scaled by accum_grad and including grad_loss if used).
+    """
+    residuals = output - tar
+    if output.ndim == 2:
+        ###full resolution###
+         #[nnodes, C_tar] 
+        # Differentiate between log and accumulation losses
+        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        # Scale loss for accum
+        loss = raw_loss.mean() /params.accum_grad
+        spatial_dims = None
+    else:
+        ###full resolution###
+        spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
+        #Differentiate between log and accumulation losses
+        #B,C,D,H,W->B,C
+        raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
+        # Scale loss for accum
+        loss = raw_loss.mean()/params.accum_grad
+        #Optional spatial gradient loss
+        alpha = getattr(params, "grad_loss_alpha", None)
+        if alpha is not None and alpha > 0.0:
+            #expects B,C,D,H,W
+            grad_loss = GradLoss(output, tar)/params.accum_grad 
+            loss += params.grad_loss_alpha * grad_loss
+    # Logging
+    with torch.no_grad():
+        logs['train_l1'] += F.l1_loss(output, tar)
+        log_nrmse = raw_loss.sqrt().mean()
+        logs['train_nrmse'] += log_nrmse 
+        loss_logs[dset_type] += loss.item()
+        logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+            
+    return loss, log_nrmse
+
+def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type):
+    """
+    compute loss and update logging dicts.
+    output: Model prediction [B,C,D,H,W] for tensor inputs or [nnodes, C_tar] for graph
+    tar: target same shape as output
+    logs: dict; Running log dictionary (updated in-place).
+    loss_logs :dict; Dataset-type keyed loss log dict (updated in-place).
+    """
+    residuals = output - tar
+    if output.ndim == 2:
+        #[nnodes, C_tar] 
+        # Differentiate between log and accumulation losses
+        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        raw_loss = raw_loss.sqrt().mean()
+        raw_rmse_loss = residuals.pow(2).mean(dim=0).sqrt().mean()
+    else:
+        ###full resolution###
+        spatial_dims = tuple(range(output.ndim))[2:]
+        # Differentiate between log and accumulation losses
+        raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
+        raw_loss = raw_loss.sqrt().mean()
+        raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
+    raw_l1_loss = F.l1_loss(output, tar)
+    logs['valid_nrmse'] += raw_loss
+    logs['valid_l1']    += raw_l1_loss
+    logs['valid_rmse']  += raw_rmse_loss
+    loss_dset_logs[dset_type]      += raw_loss
+    loss_l1_dset_logs[dset_type]   += raw_l1_loss
+    loss_rmse_dset_logs[dset_type] += raw_rmse_loss
+    return

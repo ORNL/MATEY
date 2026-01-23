@@ -28,8 +28,8 @@ def build_avit(params):
                 SR_ratio=params.SR_ratio if hasattr(params, 'SR_ratio') else [1,1,1],
                 sts_model=params.sts_model if hasattr(params, 'sts_model') else False,
                 sts_train=params.sts_train if hasattr(params, 'sts_train') else False,
-                leadtime=hasattr(params, "leadtime_max") and params.leadtime_max > 1,
-                cond_input=params.supportdata if hasattr(params,'supportdata') else False,
+                leadtime=hasattr(params, "leadtime_max") and params.leadtime_max >= 0,
+                cond_input=getattr(params,'supportdata', False),
                 n_steps=params.n_steps,
                 bias_type=params.bias_type,
                 hierarchical=params.hierarchical if hasattr(params, 'hierarchical') else None
@@ -158,9 +158,10 @@ class AViT(BaseModel):
         cond_dict = opts.cond_dict
         refine_ratio = opts.refine_ratio
         cond_input = opts.cond_input
+        isgraph = opts.isgraph
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
-
+        assert not isgraph, "graph is not supported in AViT"
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
         if self.tokenizer_heads_gammaref[tkhead_name] is None and refine_ratio is None:
