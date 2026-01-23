@@ -38,7 +38,6 @@ class BaseCFDGraphDataset(Dataset):
         self.path = path
         self.processed_dir = self.path+f"/{split}/processed"
         self.processed_index = self.processed_dir + "/index.json"
-        self.split_path = self.processed_dir + "/splits.json"
         self.split = split
         self.train_val_test = train_val_test
         self.extra_specific = extra_specific 
@@ -68,7 +67,7 @@ class BaseCFDGraphDataset(Dataset):
             self._processed_index = json.load(f)
 
         self.samples = self.discover_samples()
-        self.splits= self.load_or_create_splits(self.samples)
+        self.splits= self.create_splits(self.samples)
         self.active_indices = self.splits[self.split]
         random.shuffle(self.active_indices)
 
@@ -139,11 +138,7 @@ class BaseCFDGraphDataset(Dataset):
         node_type = node_type.view(-1).long()
         return F.one_hot(node_type, num_classes=num_types).to(torch.float32)
 
-    def load_or_create_splits(self, samples):
-        if False: #os.path.exists(self.split_path):
-            with open(self.split_path, "r") as f:
-                obj = json.load(f)
-            return {k: list(map(int, v)) for k, v in obj.items()} 
+    def create_splits(self, samples):
         
         groups = [s.group for s in samples]
         if self.train_val_test is not None:
@@ -171,9 +166,6 @@ class BaseCFDGraphDataset(Dataset):
             splits = {"train": [], "val": [], "test": []}
             for i, g in enumerate(groups):
                 splits[self.split].append(i)
-
-        with open(self.split_path, "w") as f:
-            json.dump(splits, f, indent=2)
 
         return splits
     
