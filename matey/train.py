@@ -179,7 +179,8 @@ class Trainer:
             self.model = build_turbt(self.params).to(self.device)
 
         num_channels = 4
-        self.model = build_gno(num_channels, self.model, self.params).to(self.device)
+        if hasattr(self.params, "gno"):
+            self.model = build_gno(num_channels, self.model, self.params).to(self.device)
 
         if self.params.compile:
             print('WARNING: BFLOAT NOT SUPPORTED IN SOME COMPILE OPS SO SWITCHING TO FLOAT16')
@@ -399,11 +400,11 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
-    def model_forward(self, inp, field_labels, bcs, geometry, opts: ForwardOptionsBase, pushforward=True):
+    def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
         autoregressive = getattr(self.params, "autoregressive", False)
         if not autoregressive:
-            output = self.model(inp, field_labels, bcs, geometry, opts)
+            output = self.model(inp, field_labels, bcs, opts)
             return output, None
         else:
             # autoregressive rollout
@@ -458,7 +459,7 @@ class Trainer:
                 try:
                     geometry = data["geometry"].to(self.device)
                 except:
-                    pass
+                    geometry = None
 
                 cond_dict = {}
                 try:
@@ -502,10 +503,11 @@ class Trainer:
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
                 isgraph=isgraph,
-                field_labels_out= field_labels_out
+                field_labels_out= field_labels_out,
+                geometry=geometry
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, geometry, opts)
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                 #compute loss and update (in-place) logging dicts.
@@ -629,7 +631,7 @@ class Trainer:
             try:
                 geometry = data["geometry"].to(self.device)
             except:
-                pass
+                geometry = None
 
             cond_dict = {}
             try:
@@ -672,9 +674,10 @@ class Trainer:
                     cond_dict=copy.deepcopy(cond_dict),
                     cond_input=cond_input,
                     isgraph=isgraph,
-                    field_labels_out= field_labels_out
+                    field_labels_out= field_labels_out,
+                    geometry=geometry
                     )
-                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, geometry, opts)
+                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                     update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
