@@ -5,9 +5,7 @@ import os
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking
-import gc, psutil
-from ..utils.distributed_utils import closest_factors
+from ..utils import closest_factors
 from functools import reduce
 from operator import mul
 from einops import rearrange
@@ -25,12 +23,9 @@ class BaseHDF53DDataset(Dataset):
         train_val_test (tuple): Percent of data to use for train/val/test
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
-        patch_size: list of patch sizes for converting from solution fields to patches/tokens
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None,
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
 
         super().__init__()
@@ -52,8 +47,6 @@ class BaseHDF53DDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref
         self.group_id=group_id
         self.group_rank=group_rank
         self.group_size=group_size
@@ -260,7 +253,10 @@ class BaseHDF53DDataset(Dataset):
         ##############################################################
         #based on sequence_parallel_size, split the data in D, H, W direciton
         if sequence_parallel_size>1:
-            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+            if D==1:
+                nproc_blocks = [1] + closest_factors(sequence_parallel_size, 2)
+            else:
+                nproc_blocks = closest_factors(sequence_parallel_size, 3)
         else:
             nproc_blocks = [1,1,1]
         assert reduce(mul, nproc_blocks)==sequence_parallel_size

@@ -7,7 +7,7 @@ import h5py
 import glob
 import json
 import csv
-from ..utils.distributed_utils import closest_factors
+from ..utils import closest_factors
 from functools import reduce
 from operator import mul
 
@@ -24,17 +24,13 @@ class BaseBLASTNET3DDataset(Dataset):
         train_val_test (tuple): Percent of data to use for train/val/test
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
-        patch_size: list of patch sizes for converting from solution fields to patches/tokens
         leadtime_max: when >0, future solution solution prediction, tar is a solution at the lead time;
                       when =0, self-supervised learning and tar is None
         SR_ratio: superresolution ratio, used when input and output are at different resolutions, 
         currently only support this case: https://www.kaggle.com/datasets/waitongchung/blastnet-momentum-3d-sr-dataset/data
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
-                 gammaref=None, tkhead_name=None, SR_ratio=None,
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
 
@@ -62,8 +58,6 @@ class BaseBLASTNET3DDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref
         self.group_id=group_id
         self.group_rank=group_rank
         self.group_size=group_size

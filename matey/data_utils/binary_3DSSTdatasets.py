@@ -8,8 +8,10 @@ import os
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking
 import re
+from ..utils import closest_factors
+from functools import reduce
+from operator import mul
 
 np.random.seed(2024) 
 
@@ -27,10 +29,10 @@ class BaseBinary3DSSTDataset(Dataset):
         subname (str): Name to use for dataset
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
+                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -47,6 +49,11 @@ class BaseBinary3DSSTDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
+
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+        self.blockdict = self._getblocksplitstat()
 
     def get_name(self):
         return self.type
@@ -397,10 +404,49 @@ class BaseBinary3DSSTDataset(Dataset):
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, leadtime)
         bcs = self._get_specific_bcs()
 
+        #start index and end size of local split for current
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
         return self.len
+    
+    def _getblocksplitstat(self):
+        H, W, D = self.cubsizes #x,y,z
+        sequence_parallel_size=self.group_size
+        Lz, Lx, Ly = 1.0, 1.0, 1.0
+        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+        ##############################################################
+        #based on sequence_parallel_size, split the data in D, H, W direciton
+        if sequence_parallel_size>1:
+            nproc_blocks = closest_factors(sequence_parallel_size, 3)
+        else:
+            nproc_blocks = [1,1,1]
+        assert reduce(mul, nproc_blocks)==sequence_parallel_size
+        ##############################################################
+        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+        Dloc = D//nproc_blocks[0]
+        Hloc = H//nproc_blocks[1]
+        Wloc = W//nproc_blocks[2]
+        #keep track of each block/split ID
+        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]),
+                                    torch.arange(nproc_blocks[1]),
+                                    torch.arange(nproc_blocks[2]), indexing="ij")
+        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
+
+        blockdict={}
+        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+        blockdict["nproc_blocks"] = nproc_blocks
+        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+        #######################
+        idz, idx, idy = blockIDs[self.group_rank,:]
+        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+        return blockdict
 
 class sstF4R32Dataset(BaseBinary3DSSTDataset):
     @staticmethod
