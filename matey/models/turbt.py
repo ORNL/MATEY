@@ -245,12 +245,12 @@ class TurbT(BaseModel):
             if imod<self.nhlevels-1:
                 x, blockdict=self.filterdata(x, blockdict=blockdict)
                 opts.blockdict = blockdict
-            if imod>0:
+            if imod>imod_bottom:
                 opts.imod -= 1
                 x_pred = self.forward(x, state_labels, bcs, opts)
             #x_input = x.clone()
             #T,B,C,D,H,W
-            T, _, _, D, H, W = x.shape
+            T, B, _, D, H, W = x.shape
             #self.debug_nan(x, message="input")
             x, data_mean, data_std = normalize_spatiotemporal_persample(x)
             #self.debug_nan(x, message="input after normalization")
@@ -274,7 +274,7 @@ class TurbT(BaseModel):
         ######## Process ########
         #only send mask if mask_padding indicates padding tokens
         mask4attblk = None if (mask_padding is not None and mask_padding.all()) else mask_padding
-        local_att = not isgraph and imod>0 
+        local_att = not isgraph and imod>imod_bottom 
         if local_att:
             #each mode similar cost
             nfact=max(2**(2*(imod-imod_bottom))//blockdict["nproc_blocks"][-1], 1) if blockdict is not None else max(2**(2*(imod-imod_bottom)), 1)
@@ -285,9 +285,11 @@ class TurbT(BaseModel):
             """
             x, nfact=self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
+            b_mod=x.shape[0]
+            leadtime=leadtime if isgraph else leadtime.repeat(b_mod//B, 1)
             #print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
             if iblk==0:
-                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
+                x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime if leadtime is not None else leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask4attblk, local_att=local_att)
         #self.debug_nan(x_padding, message="attention block")

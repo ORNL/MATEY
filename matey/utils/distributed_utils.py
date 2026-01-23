@@ -6,7 +6,14 @@ import torch
 import torch.distributed as dist
 from einops import rearrange
 from datetime import timedelta
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import math
+
+def get_log2_int(n):
+    npower = n.bit_length() - 1
+    #remain = math.ceil(n/2**npower)//2
+    #return npower, npower+remain
+    return npower
 
 def check_sp(sequence_parallel_groups, global_rank):
     for groupid, group in enumerate(sequence_parallel_groups):
@@ -293,6 +300,36 @@ def add_weight_decay(model, weight_decay=1e-5, inner_lr=1e-3, skip_list=()):
             {'params': no_decay, 'weight_decay': 0.,},
             {'params': decay, 'weight_decay': weight_decay}]
 
+class CosineNoIncrease(CosineAnnealingLR):
+    def get_lr(self):
+        if self.last_epoch >= self.T_max:
+            return [self.eta_min] * len(self.base_lrs)
+        return super().get_lr()
+
+def determine_turt_levels(ps, DHW, nlevels_more, cutoff=20):
+    """
+    #ps: patch size
+    #DHW: D,H,W
+    #nlevels_more: specified number of levels in TT, beyond base (so when nlevles_more=0, 1 layer/equivalent ViT)
+
+    #Currently simple, heuristic way to decide how many TT levels for each dataset based on data resolution and patch sie
+    #Roughtly speaking, finer resolution (larger log2intsum) leads to more levels;
+    #but then the maximum levels are also constrained by the smaller grid size in 2/3 directions and patch size (assuming equal in each direction)
+    #There might be not enough cells to filter/patch.
+    """
+    ips = get_log2_int(ps[-1])
+    #####
+    log2intsum = sum([get_log2_int(dim_) for dim_ in DHW])
+    if DHW[0]==1:
+        log2int = min([get_log2_int(DHW[1]), get_log2_int(DHW[2])])
+    else:
+        log2int = min([get_log2_int(dim_) for dim_ in DHW])
+    if log2intsum>=cutoff:
+        imod_bottom=max(0, nlevels_more-ips)
+    else:
+        imod_bottom=max(min(nlevels_more, nlevels_more-log2int+4),0)
+    return imod_bottom
+
 def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device):
     # Assemble samples from all sequence parallel ranks for prediction and target
     tar = tar.to(device)
@@ -331,3 +368,38 @@ def broadcast_scalar(value, src=0, device=None):
     dist.broadcast(tensor, src=src)
     return tensor.item()    
 
+
+def getblocksplitstat(group_rank, group_size, D, H, W): 
+    Lz, Lx, Ly = 1.0, 1.0, 1.0
+    Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
+    ##############################################################
+    #based on group_size, split the data in D, H, W direciton
+    if group_size>1:
+        if D==1:
+            nproc_blocks = [1] + closest_factors(group_size, 2)
+        else:
+            nproc_blocks = closest_factors(group_size, 3)
+    else:
+        nproc_blocks = [1,1,1]
+    assert reduce(mul, nproc_blocks)==group_size
+    ##############################################################
+    #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
+    Dloc = D//nproc_blocks[0]
+    Hloc = H//nproc_blocks[1]
+    Wloc = W//nproc_blocks[2]
+    #keep track of each block/split ID
+    iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]), 
+                                torch.arange(nproc_blocks[1]),  
+                                torch.arange(nproc_blocks[2]), indexing="ij")
+    blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[group_size, 3]
+
+    blockdict={}
+    blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
+    blockdict["nproc_blocks"] = nproc_blocks
+    blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
+    #######################
+    idz, idx, idy = blockIDs[group_rank,:]
+    blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
+    Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+    blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+    return blockdict

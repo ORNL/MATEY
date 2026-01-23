@@ -10,7 +10,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap as ruamelDict
 from matey import Trainer
 from matey.utils import setup_dist, check_sp, profile_function, log_to_file, log_versions, YParams
-import glob
+import glob, socket
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

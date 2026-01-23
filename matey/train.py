@@ -483,20 +483,21 @@ class Trainer:
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
+                imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 if "graph" in data:
                     isgraph = True
                     inp = graphdata
+                    imod_bottom = imod
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     isgraph = False
                     imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
-                imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
-                seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #self.train_dataset.DP_dsets else None
+                seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
                 opts = ForwardOptionsBase(
                 imod=imod, 
-                imod_bottom=imod if isgraph else imod_bottom,
+                imod_bottom=imod_bottom ,
                 tkhead_name=tkhead_name,
                 sequence_parallel_group=seq_group,
                 leadtime=leadtime,
@@ -649,18 +650,19 @@ class Trainer:
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
                     tar = tar.to(self.device)
+                    imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     if "graph" in data:
                         isgraph = True
                         inp = graphdata
+                        imod_bottom = imod
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         isgraph = False
                         imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
-                    imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #sself.valid_dataset.DP_dsets else None
+                    seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
                     opts = ForwardOptionsBase(
                     imod=imod, 
-                    imod_bottom=imod if isgraph else imod_bottom,
+                    imod_bottom=imod_bottom,
                     tkhead_name=tkhead_name,
                     sequence_parallel_group=seq_group,
                     leadtime=leadtime,

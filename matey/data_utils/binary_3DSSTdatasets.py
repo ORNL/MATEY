@@ -9,9 +9,7 @@ from torch.utils.data import Dataset
 import h5py
 import glob
 import re
-from ..utils import closest_factors
-from functools import reduce
-from operator import mul
+from ..utils import getblocksplitstat
 
 np.random.seed(2024) 
 
@@ -53,7 +51,9 @@ class BaseBinary3DSSTDataset(Dataset):
         self.group_id=group_id
         self.group_rank=group_rank
         self.group_size=group_size
-        self.blockdict = self._getblocksplitstat()
+
+        H, W, D = self.cubsizes #x,y,z
+        self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
 
     def get_name(self):
         return self.type
@@ -414,40 +414,6 @@ class BaseBinary3DSSTDataset(Dataset):
     def __len__(self):
         return self.len
     
-    def _getblocksplitstat(self):
-        H, W, D = self.cubsizes #x,y,z
-        sequence_parallel_size=self.group_size
-        Lz, Lx, Ly = 1.0, 1.0, 1.0
-        Lz_start, Lx_start, Ly_start = 0.0, 0.0, 0.0
-        ##############################################################
-        #based on sequence_parallel_size, split the data in D, H, W direciton
-        if sequence_parallel_size>1:
-            nproc_blocks = closest_factors(sequence_parallel_size, 3)
-        else:
-            nproc_blocks = [1,1,1]
-        assert reduce(mul, nproc_blocks)==sequence_parallel_size
-        ##############################################################
-        #split a sample by space into nprocz blocks for z-dim, nprocx blocks for x-dim, and nprocy blocks for y-dim
-        Dloc = D//nproc_blocks[0]
-        Hloc = H//nproc_blocks[1]
-        Wloc = W//nproc_blocks[2]
-        #keep track of each block/split ID
-        iz, ix, iy = torch.meshgrid(torch.arange(nproc_blocks[0]),
-                                    torch.arange(nproc_blocks[1]),
-                                    torch.arange(nproc_blocks[2]), indexing="ij")
-        blockIDs = torch.stack([iz.flatten(), ix.flatten(), iy.flatten()], dim=-1) #[sequence_parallel_size, 3]
-
-        blockdict={}
-        blockdict["Lzxy"] = [Lz/nproc_blocks[0], Lx/nproc_blocks[1], Ly/nproc_blocks[2]]
-        blockdict["nproc_blocks"] = nproc_blocks
-        blockdict["Ind_dim"] = [Dloc, Hloc, Wloc]
-        #######################
-        idz, idx, idy = blockIDs[self.group_rank,:]
-        blockdict["Ind_start"] = [idz*Dloc, idx*Hloc, idy*Wloc]
-        Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
-        blockdict["zxy_start"]=[Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
-        return blockdict
-
 class sstF4R32Dataset(BaseBinary3DSSTDataset):
     @staticmethod
     def _specifics():

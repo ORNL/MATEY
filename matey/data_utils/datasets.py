@@ -104,7 +104,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                             leadtime_max=max(leadtime_max, 0),
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
-                            global_rank=global_rank, group_size=group_size)
+                            global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]))
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
         base_sampler = DistributedSampler
@@ -139,7 +139,7 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
-                  global_rank=0, group_size=1):
+                  global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"]):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
@@ -158,7 +158,7 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
-        self.DP_dsets= list(DSET_NAME_TO_OBJECT.keys()) #datasets that use distributed reading and each rank get a local subplit
+        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if "graph" not in subset] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
 
         for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
             if dset in self.DP_dsets:

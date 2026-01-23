@@ -26,17 +26,18 @@ class MultisetSampler(Sampler):
             self.sub_samplers = []
             self.batch_size = []
             for subset in self.sub_dsets:
-                batch_size_subset = self._determine_batchsize_(subset)
-                self.batch_size.append(batch_size_subset)
                 if subset.type in dataset.DP_dsets:
+                    batch_size_subset = self._determine_batchsize_(subset)
                     group_id=global_rank//group_size #rank of current group within num_sp_groups
                     num_replicas=num_sp_groups
                     dset_rank=0 #all num_sp_groups groups read from the same datset
                     ##dset_rank=group_id #allow each group read from different dataset: not work as different model parts (FIXME)
                 else:
+                    batch_size_subset = self.batch_size_base
                     group_id=global_rank
                     num_replicas=None
                     dset_rank=0
+                self.batch_size.append(batch_size_subset)
                 self.sub_samplers.append(base_sampler(subset, drop_last=drop_last, num_replicas=num_replicas, rank=group_id, shuffle=shuffle))
         else:
             self.sub_samplers = [base_sampler(subset) for subset in self.sub_dsets]
@@ -78,7 +79,7 @@ class MultisetSampler(Sampler):
             else:
                 ratio = math.ceil(probsize/probsize_ref)
                 expo = ratio.bit_length() - 1
-               return int(max(self.batch_size_base/2**expo, 1))
+                return int(max(self.batch_size_base/2**expo, 1))
         else:
             if subset.type in ["MHD256"]:
                 return self.batch_size_base//2
