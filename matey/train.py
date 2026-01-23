@@ -29,7 +29,7 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
 from torch_geometric.nn import global_mean_pool
-from .utils.training_utils import autoregressive_rollout, GradLoss
+from .utils.training_utils import autoregressive_rollout, compute_loss_and_logs, update_loss_logs_inplace_eval
 import copy
 
 class Trainer:
@@ -505,46 +505,13 @@ class Trainer:
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
-               
-                if output.ndim == 2:
-                    ###full resolution###
-                    residuals = output - tar #[nnodes, C_tar] 
-                    # Differentiate between log and accumulation losses
-                    raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
-                    # Scale loss for accum
-                    loss = raw_loss.mean() / self.params.accum_grad
-                    # Logging
-                    with torch.no_grad():
-                        logs['train_l1'] += F.l1_loss(output, tar)
-                        log_nrmse = raw_loss.sqrt().mean()
-                        logs['train_nrmse'] += log_nrmse 
-                        loss_logs[dset_type] += loss.item()
-                        logs['train_rmse'] += residuals.pow(2).mean().sqrt().mean()
-                else:
-                    ###full resolution###
-                    spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
-                    residuals = output - tar
+                #compute loss and update (in-place) logging dicts.
+                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                if not isgraph:
                     if self.params.pei_debug:
                         checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
                                             self.device, self.params.debug_outdir, istep=steps, imod=-1)
-                    # Differentiate between log and accumulation losses
-                    #B,C,D,H,W->B,C
-                    raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
-                    # Scale loss for accum
-                    loss = raw_loss.mean() / self.params.accum_grad
-                    #Optional spatial gradient loss
-                    alpha = getattr(self.params, "grad_loss_alpha", None)
-                    if alpha is not None and alpha > 0.0:
-                        #expects B,C,D,H,W
-                        grad_loss = GradLoss(output, tar)/ self.params.accum_grad 
-                        loss += self.params.grad_loss_alpha * grad_loss
-                    # Logging
                     with torch.no_grad():
-                        logs['train_l1'] += F.l1_loss(output, tar)
-                        log_nrmse = raw_loss.sqrt().mean()
-                        logs['train_nrmse'] += log_nrmse 
-                        loss_logs[dset_type] += loss.item()
-                        logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
                         if getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.train_dataset, dset_index)
                             logs['train_ssim'] += avg_ssim
@@ -575,7 +542,7 @@ class Trainer:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
-                        batch_idx, self.global_rank, inp.shape if isinstance(inp, torch.Tensor) else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
+                        batch_idx, self.global_rank, inp.shape if not isgraph else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
                 data_start = self.timer.get_time()
             self.check_memory("train-end %d"%batch_idx)
         if self.params.scheduler == 'steplr':
@@ -693,42 +660,10 @@ class Trainer:
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
-                
-                    #################################
-                    if output.ndim == 2:
-                        residuals = output - tar #[nnodes, C_tar] 
-                        # Differentiate between log and accumulation losses
-                        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
-                        raw_loss = raw_loss.sqrt().mean()
-                        raw_l1_loss = F.l1_loss(output, tar)
-                        raw_rmse_loss = residuals.pow(2).mean(dim=0).sqrt().mean()
-                        logs['valid_nrmse'] += raw_loss
-                        logs['valid_l1']    += raw_l1_loss
-                        logs['valid_rmse']  += raw_rmse_loss
-
-                        loss_dset_logs[dset_type]      += raw_loss
-                        loss_l1_dset_logs[dset_type]   += raw_l1_loss
-                        loss_rmse_dset_logs[dset_type] += raw_rmse_loss
-                    else:
-                        ###full resolution###
-                        spatial_dims = tuple(range(output.ndim))[2:]
-                        residuals = output - tar
-                        # Differentiate between log and accumulation losses
-                        raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
-                        raw_loss = raw_loss.sqrt().mean()
-                        raw_l1_loss = F.l1_loss(output, tar)
-                        raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
-                        logs['valid_nrmse'] += raw_loss
-                        logs['valid_l1']    += raw_l1_loss
-                        logs['valid_rmse']  += raw_rmse_loss
-                        if getattr(self.params, "log_ssim", False):
+                    update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
+                    if not isgraph and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
                             logs['valid_ssim'] += avg_ssim
-
-                        loss_dset_logs[dset_type]      += raw_loss
-                        loss_l1_dset_logs[dset_type]   += raw_l1_loss
-                        loss_rmse_dset_logs[dset_type] += raw_rmse_loss
-       
             self.check_memory("validate-end")
         self.single_print('DONE VALIDATING - NOW SYNCING')
         logs = {k: v/steps for k, v in logs.items()}
