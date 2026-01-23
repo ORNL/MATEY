@@ -216,9 +216,10 @@ class TurbT(BaseModel):
 
             if imod<self.nhlevels-1:
                 x, blockdict=self.filterdata(x, blockdict=blockdict)
+                opts.blockdict = blockdict
             if imod>0:
-                x_pred = self.forward(x, state_labels, bcs, imod=imod-1, sequence_parallel_group=sequence_parallel_group, leadtime=leadtime, 
-                        tkhead_name=tkhead_name, blockdict=blockdict)
+                opts.imod -= 1
+                x_pred = self.forward(x, state_labels, bcs, opts)
             #x_input = x.clone()
             #T,B,C,D,H,W
             T, _, _, D, H, W = x.shape
