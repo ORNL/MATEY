@@ -11,7 +11,12 @@ from torch_geometric.data import Data
 from torch.utils.data import Dataset
 from torch_geometric.utils import coalesce
 import torch.nn.functional as F
-import tensorflow as tf
+try:
+    import tensorflow as tf
+    tf_exist = True
+except ImportError:
+    tf = None
+    tf_exist = False
 import random
 
 @dataclass(frozen=True)
@@ -53,7 +58,7 @@ class BaseCFDGraphDataset(Dataset):
 
         os.makedirs(self.processed_dir, exist_ok=True)
 
-        self.field_names, self.type, self.tffeatures_dict, self.time_steps, self.num_node_types = self._specifics()
+        self.field_names, self.type, self.time_steps, self.num_node_types = self._specifics()
         self.title = self.type
 
         if not os.path.exists(self.processed_index):
@@ -215,16 +220,11 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         - 'velocity' : raw float32 bytes, shape [T, N, 2]
         - 'pressure' : raw float32 bytes, shape [T, N, 1]
         """
-        tffeatures_dict={"cells": tf.io.FixedLenFeature([], tf.string),
-                         "mesh_pos": tf.io.FixedLenFeature([], tf.string),
-                         "node_type": tf.io.FixedLenFeature([], tf.string),
-                         "velocity": tf.io.FixedLenFeature([], tf.string), 
-                         "pressure": tf.io.FixedLenFeature([], tf.string)}
         field_names = ['velocityx', 'velocityy', 'pressure']
         type = 'meshgraphnetairfoil'
         time_steps=601
         num_node_types = 5
-        return field_names, type, tffeatures_dict, time_steps, num_node_types
+        return field_names, type, time_steps, num_node_types
     field_names_out = _specifics()[0] #class attributes
     field_names = ["pos_x", "pos_y"] + [f"nodetype{iht}" for iht in range( _specifics()[-1])]+ ['velocityx', 'velocityy', 'pressure']
     def _minmax_features(self):
@@ -249,7 +249,14 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         """
         Decode one MeshGraphNets CFD into numpy arrays
         """
-        feat_desc = self.tffeatures_dict
+        if not tf_exist:
+            raise RuntimeError("TensorFlow is required for loading *tfrecord data in MeshGraphNetsAirfoilDataset.")
+        
+        feat_desc={"cells": tf.io.FixedLenFeature([], tf.string),
+                         "mesh_pos": tf.io.FixedLenFeature([], tf.string),
+                         "node_type": tf.io.FixedLenFeature([], tf.string),
+                         "velocity": tf.io.FixedLenFeature([], tf.string), 
+                         "pressure": tf.io.FixedLenFeature([], tf.string)}
         ex = tf.io.parse_single_example(serialized_ex, feat_desc)
         cells_raw = tf.io.decode_raw(ex["cells"], tf.int32)
         mesh_pos_raw = tf.io.decode_raw(ex["mesh_pos"], tf.float32)
