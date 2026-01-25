@@ -4,27 +4,16 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 import os
-try:
-    from mixed_dset_sampler import MultisetSampler
-    from hdf5_datasets import *
-    from netcdf_datasets import *
-    from hdf5_3Ddatasets import *
-    from blastnet_3Ddatasets import *
-    from thewell_datasets import *
-    from binary_3DSSTdatasets import *
-    from graph_datasets import *
-    from flow3d_datasets import *
-except ImportError:
-    from .mixed_dset_sampler import MultisetSampler
-    from .hdf5_datasets import *
-    from .netcdf_datasets import *
-    from .exodus_datasets import *
-    from .hdf5_3Ddatasets import *
-    from .blastnet_3Ddatasets import *
-    from .thewell_datasets import *
-    from .binary_3DSSTdatasets import *
-    from .graph_datasets import *
-    from .flow3d_datasets import *
+from .mixed_dset_batchsampler import MultisetBatchSampler
+from .hdf5_datasets import *
+from .netcdf_datasets import *
+from .exodus_datasets import *
+from .hdf5_3Ddatasets import *
+from .blastnet_3Ddatasets import *
+from .thewell_datasets import *
+from .binary_3DSSTdatasets import *
+from .graph_datasets import *
+from .flow3d_datasets import *
 import os
 from torch_geometric.data import Data as GraphData, Batch
 
@@ -110,7 +99,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
         base_sampler = DistributedSampler
     else:
         base_sampler = RandomSampler
-    sampler = MultisetSampler(dataset, base_sampler, params.batch_size,
+    sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size,
                                distributed=distributed, max_samples=params.epoch_size,
                                global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups)
     # sampler = DistributedSampler(dataset) if distributed else None
@@ -127,7 +116,6 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                         num_workers=params.num_data_workers,
                         #prefetch_factor=2,
                         batch_sampler=sampler,
-                        #drop_last=True,
                         pin_memory=torch.cuda.is_available(), 
                         persistent_workers=True, #ask dataloaders not destroyed after each epoch
                         collate_fn=my_collate,

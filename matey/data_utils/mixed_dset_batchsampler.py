@@ -1,10 +1,10 @@
 from typing import  Iterator
 import torch
-from torch.utils.data import Sampler, Dataset
+from torch.utils.data import Sampler, BatchSampler, Dataset
 import functools, operator, math
 
-class MultisetSampler(Sampler):
-    r"""Sampler that samples from multiple datasets with samples inside each mini-batch from a specific dataset.
+class MultisetBatchSampler(BatchSampler):
+    r"""Batch Sampler that samples from multiple datasets with samples inside each mini-batch from a specific dataset.
     """
     def __init__(self, dataset: Dataset, base_sampler:Sampler, batch_size: int, shuffle: bool = True,
                  seed: int = 0, drop_last: bool = True, max_samples=10, ordered_sampling=True, nbatchs_loc=5,
@@ -42,7 +42,6 @@ class MultisetSampler(Sampler):
         else:
             self.sub_samplers = [base_sampler(subset) for subset in self.sub_dsets]
             self.batch_size = [batch_size for _ in self.sub_dsets]
-        self.len_samplers = sum([len(sampler)//batchsize for sampler, batchsize in zip(self.sub_samplers, self.batch_size)])
         self.dataset = dataset
         self.epoch = 0
         self.seed = seed
@@ -51,7 +50,8 @@ class MultisetSampler(Sampler):
         self.group_size = group_size
         self.rank = dset_rank
         self.batches_perset = [len(sampler)//batchsize for sampler, batchsize in zip(self.sub_samplers, self.batch_size)]
-
+        #acutal total minibatches
+        self.len_batchsamplers = sum(self.batches_perset)
         self.iset_choices = torch.tensor([iset for iset, n in enumerate(self.batches_perset) for _ in range(n)], dtype=torch.long)
         min_batches = min(self.batches_perset)
         self.iset_choices_ordered_truc = []
@@ -107,7 +107,7 @@ class MultisetSampler(Sampler):
             yield [next(it) + off for _ in range(self.batch_size[idx])]
         
     def __len__(self) -> int:
-        return self.len_samplers
+        return self.max_samples
 
     def set_epoch(self, epoch: int) -> None:
         r"""
