@@ -7,6 +7,7 @@ import glob, re
 from .shared_utils import get_top_variance_patchids, plot_checking, plot_refinedtokens
 import exodusii
 from scipy.interpolate import LinearNDInterpolator
+from ..utils import getblocksplitstat
 
 class BaseExodusDirectoryDataset(Dataset):
     """
@@ -21,11 +22,10 @@ class BaseExodusDirectoryDataset(Dataset):
         split (str): train/val/test split
         train_val_test (tuple): Percent of data to use for train/val/test
         subname (str): Name to use for dataset
-        refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=None, supportdata=None, split='train',
-                 train_val_test=None, subname=None, tokenizer_heads=None, refine_ratio=None, gammaref=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, subname=None, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
+                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -39,13 +39,21 @@ class BaseExodusDirectoryDataset(Dataset):
         self.include_string = include_string
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
-        self.time_index, self.sample_index, self.field_names, self.type, self.split_level = self._specifics()
+        self.time_index, self.sample_index, self.field_names, self.type, self.split_level, self.cubsizes = self._specifics()
         self._get_directory_stats(path)
         self.title = self.type
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+
+        if len(self.cubsizes)==3:
+            H, W, D = self.cubsizes #x,y,z
+        else:
+            H, W= self.cubsizes #x,y
+            D=1
+        self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
 
         if self.leadtime_max is None:
             self.leadtime_max=1
@@ -200,6 +208,11 @@ class BaseExodusDirectoryDataset(Dataset):
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
 
+        #start index and end size of local split for current
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
@@ -213,7 +226,8 @@ class  MHDDataset(BaseExodusDirectoryDataset):
         field_names = ['velocity_0', 'velocity_1', 'induced_magnetic_field_0', 'induced_magnetic_field_1']
         type = 'liquidMetalMHD'
         split_level = None #not used, since one trajectory per file
-        return time_index, sample_index, field_names, type, split_level
+        cubsizes=[128, 128]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
 
     def get_min_max(self):

@@ -4,8 +4,8 @@ import os
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking, plot_refinedtokens
 import yaml
+from ..utils import getblocksplitstat
 
 """
 WELL_DATASETS = [
@@ -47,15 +47,11 @@ class TheWellDataset(Dataset):
         train_val_test (tuple): Percent of data to use for train/val/test
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        refine_ratio: pick int(refine_ratio*ntoken_coarse) tokens to refine
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
-        patch_size: list of patch sizes for converting from solution fields to patches/tokens
         leadtime_max: when >0, future solution solution prediction, tar is a solution at the lead time;
                       when =0, self-supervised learning and tar is None
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, refine_ratio=None, 
-                 gammaref=None, tkhead_name=None, SR_ratio=None,
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
 
@@ -82,10 +78,18 @@ class TheWellDataset(Dataset):
         self.title = self.type
 
         self.tokenizer_heads = tokenizer_heads
-        self.refine_ratio = refine_ratio
-        self.gammaref = gammaref 
         self.tkhead_name=tkhead_name
-        self.__class__.field_names = self.field_names #class attributes
+
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+
+        if len(self.cubsizes)==3:
+                H, W, D = self.cubsizes #x,y,z
+        else:
+            H, W= self.cubsizes #x,y
+            D=1    
+        self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
     
     def get_name(self):
         return self.type
@@ -283,19 +287,26 @@ class TheWellDataset(Dataset):
         time_idx += self.time_skip
         #get input history
         comb_x = self._readdata(file, sample_idx, time_idx, time_idx+nsteps_input)
-        assert comb_x.shape==tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)]), self.path
+        if self.type not in ["postneutronstarmerger"]: #temporary, reduced D from 66 to 64
+            assert comb_x.shape==tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)]), f"{comb_x.shape}, {tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)])}, {file}"
         #get the label at time_idx-1+leadtime
         time_idx = time_idx+nsteps_input+leadtime.item()-1
         comb_y = self._readdata(file, sample_idx, time_idx, time_idx+1)
-        assert comb_y.shape==tuple([1]+[dim for dim in self.cubsizes]+[len(self.field_names)])
-        comb = np.concatenate((comb_x, comb_y), axis=0)
+        if self.type not in ["postneutronstarmerger"]: #temporary, reduced D from 66 to 64
+            assert comb_y.shape==tuple([1]+[dim for dim in self.cubsizes]+[len(self.field_names)])
+        comb = np.concatenate((comb_x, comb_y), axis=0) #T, H, W, C or T, D, H, W, C
+
+        #start index and end size of local split for current
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+
         if self.spatial_dims==2:#return: T,C,H,W
-            return comb.transpose(0, 3, 1, 2), leadtime.to(torch.float32)
+            return comb.transpose(0, 3, 1, 2)[:,:,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime.to(torch.float32)
         elif self.spatial_dims==3:#return: T,C,D,H,W
-            return comb.transpose(0, 4, 1, 2, 3), leadtime.to(torch.float32)
+            return comb.transpose(0, 4, 1, 2, 3)[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime.to(torch.float32)
         else:
             raise ValueError(f"unknown spatial dims {self.spatial_dims}")
-    
+
 class acoustic_scattering_maze(TheWellDataset):
     @staticmethod
     def _specifics():
@@ -519,7 +530,9 @@ class post_neutron_star_merger(TheWellDataset):
         vector_names = ['magnetic_field', 'velocity']
         tensor_names = []
         type = 'postneutronstarmerger'
-        cubsizes=[192, 128, 66] 
+        #cubsizes=[192, 128, 66] 
+        #FIXME: hardcoded now
+        cubsizes=[192, 128, 64]
         spatial_dims = 3
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
@@ -596,8 +609,8 @@ class supernova_explosion_64(TheWellDataset):
         split_level="sample"  #pre-split in the well
         return scalar_names, vector_names, tensor_names, type, cubsizes, spatial_dims, split_level
     field_names = _specifics()[0]
-    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1]]
-    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1]for jdim in [0,1]]
+    field_names += [varname+str(idim) for varname in  _specifics()[1] for idim in [0,1,2]]
+    field_names += [varname+str(idim)+str(jdim) for varname in  _specifics()[2] for idim in [0,1,2]for jdim in [0,1,2]]
     def _get_specific_bcs(self, file):
         #FIXME: not used for now
         return [0, 0, 0] # Non-periodic

@@ -18,7 +18,7 @@ from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
 from .utils.visualization_utils import checking_data_pred_tar
 from .utils.forward_options import ForwardOptionsBase, TrainOptionsBase
 from .trustworthiness.metrics import get_ssim
@@ -41,7 +41,6 @@ class Trainer:
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         self.log_to_screen = self.params.log_to_screen
         # Basic setup
-        self.train_loss = nn.MSELoss()
         self.startEpoch = 0
         self.epoch = 0
         self.mp_type = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.half
@@ -146,6 +145,9 @@ class Trainer:
             print("Memory summary: %s, CUDA %f GB; RAM %f GB, %f percentage"%(message, torch.cuda.memory_allocated()/ 1024**3, psutil.virtual_memory().used/1024**3, psutil.virtual_memory().percent))
     
     def initialize_data(self):
+        #self.global_rank: global rank
+        #self.group_size: number of ranks in each SP group
+        #len(self.sequence_parallel_groups): number of SP groups
         data_rank=None
         num_replicas=None
         if  hasattr(self.params, "sp_groupsize") or hasattr(self.params, "num_sequence_parallel_groups"):
@@ -165,13 +167,13 @@ class Trainer:
             group_rank=0
         #print("Pei debugging", self.group_size, group_rank, in_rank, parallel_group_size, num_replicas, flush=True)
         if self.log_to_screen:
-            print(f"Initializing data on rank {self.global_rank}", flush=True)
+            print(f"Initializing data on rank {self.global_rank}; total {len(self.sequence_parallel_groups)} SP groups with {self.group_size} ranks each", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
-                          dist.is_initialized(), split='train', rank=in_rank, group_rank=group_rank, group_size=parallel_group_size, 
-                          num_replicas=num_replicas, train_offset=self.params.embedding_offset)
+                          dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
-                          dist.is_initialized(), split='val',   rank=in_rank, group_rank=group_rank, group_size=parallel_group_size,
-                          num_replicas=num_replicas)
+                          dist.is_initialized(), split='val',
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
         
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
@@ -243,7 +245,8 @@ class Trainer:
             else:
                 k = self.params.warmup_steps
                 warmup = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=.01, end_factor=1.0, total_iters=k)
-                decay = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
+                #decay = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
+                decay = CosineNoIncrease(self.optimizer, eta_min=self.params.learning_rate / 100, T_max=sched_epochs*self.params.epoch_size//self.params.accum_grad-k)
                 self.scheduler = torch.optim.lr_scheduler.SequentialLR(self.optimizer, [warmup, decay], [k])#, last_epoch=(self.params.epoch_size*self.startEpoch)-1)
         elif self.params.scheduler == 'warmuponly':
             k = self.params.warmup_steps
@@ -480,18 +483,21 @@ class Trainer:
             with amp.autocast(self.params.enable_amp, dtype=self.mp_type):
                 model_start = self.timer.get_time()
                 tar = tar.to(self.device)
+                imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 if "graph" in data:
                     isgraph = True
                     inp = graphdata
+                    imod_bottom = imod
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     isgraph = False
-                imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
+                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
-                seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #self.train_dataset.DP_dsets else None
+                seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
                 opts = ForwardOptionsBase(
                 imod=imod, 
+                imod_bottom=imod_bottom ,
                 tkhead_name=tkhead_name,
                 sequence_parallel_group=seq_group,
                 leadtime=leadtime,
@@ -507,6 +513,12 @@ class Trainer:
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                 #compute loss and update (in-place) logging dicts.
                 loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                bad = torch.isnan(loss).any() or torch.isinf(loss)
+                torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
+                if bad.item() > 0:
+                    print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                    print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    continue
                 if not isgraph:
                     if self.params.pei_debug:
                         checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
@@ -638,16 +650,19 @@ class Trainer:
                 loss_dset_counts[dset_type] += 1
                 with torch.no_grad():
                     tar = tar.to(self.device)
+                    imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     if "graph" in data:
                         isgraph = True
                         inp = graphdata
+                        imod_bottom = imod
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         isgraph = False
-                    imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
-                    seq_group = self.current_group if dset_type in ["isotropic1024fine", "taylorgreen"] else None #sself.valid_dataset.DP_dsets else None
+                        imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
+                    seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
                     opts = ForwardOptionsBase(
                     imod=imod, 
+                    imod_bottom=imod_bottom,
                     tkhead_name=tkhead_name,
                     sequence_parallel_group=seq_group,
                     leadtime=leadtime,

@@ -4,29 +4,19 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 import os
-try:
-    from mixed_dset_sampler import MultisetSampler
-    from hdf5_datasets import *
-    from netcdf_datasets import *
-    from hdf5_3Ddatasets import *
-    from blastnet_3Ddatasets import *
-    from thewell_datasets import *
-    from binary_3DSSTdatasets import *
-    from graph_datasets import *
-    from flow3d_datasets import *
-except ImportError:
-    from .mixed_dset_sampler import MultisetSampler
-    from .hdf5_datasets import *
-    from .netcdf_datasets import *
-    from .exodus_datasets import *
-    from .hdf5_3Ddatasets import *
-    from .blastnet_3Ddatasets import *
-    from .thewell_datasets import *
-    from .binary_3DSSTdatasets import *
-    from .graph_datasets import *
-    from .flow3d_datasets import *
+from .mixed_dset_batchsampler import MultisetBatchSampler
+from .hdf5_datasets import *
+from .netcdf_datasets import *
+from .exodus_datasets import *
+from .hdf5_3Ddatasets import *
+from .blastnet_3Ddatasets import *
+from .thewell_datasets import *
+from .binary_3DSSTdatasets import *
+from .graph_datasets import *
+from .flow3d_datasets import *
 import os
 from torch_geometric.data import Data as GraphData, Batch
+import warnings
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -36,6 +26,8 @@ DSET_NAME_TO_OBJECT = {
     'incompNS': IncompNSDataset,
     'diffre2d': DiffRe2DDataset,
     'compNS': CompNSDataset,
+    'compNS128': CompNSDataset128,
+    'compNS512': CompNSDataset512,
     ##Matt
     'thermalcollision2d': CollisionDataset,
     ##Doug
@@ -83,10 +75,11 @@ DSET_NAME_TO_OBJECT = {
     "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
     }
 
-def get_data_loader(params, paths, distributed, split='train', rank=0, group_rank=0, group_size=1, train_offset=0, num_replicas=None, multiepoch_loader=False):
-    #rank: SP group ID, used for sample index
-    #group_rank: local rank in the SP group
-    # paths, types, include_string = zip(*paths)
+def get_data_loader(params, paths, distributed, split='train', global_rank=0, num_sp_groups=None, group_size=1, train_offset=0, multiepoch_loader=False):
+    #global_rank: global_rank
+    #num_sp_groups: number of SP groups
+    #group_size: number of ranks in each group
+    #paths, types, include_string = zip(*paths)
 
     leadtime_max=-1 #finetuning higher priority
     if hasattr(params, 'leadtime_max_finetuning'):
@@ -94,26 +87,26 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
     elif hasattr(params, 'leadtime_max'):
         leadtime_max = params.leadtime_max
 
-    dataset = MixedDataset(paths, n_steps=params.n_steps, train_val_test=params.train_val_test if hasattr(params, 'train_val_test')  else None, split=split,
+    dataset = MixedDataset(paths, n_steps=params.n_steps, train_val_test=getattr(params, 'train_val_test', None), split=split,
                             tie_fields=params.tie_fields, use_all_fields=params.use_all_fields, enforce_max_steps=params.enforce_max_steps,
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
-                            dt = params.dt if hasattr(params,'dt') else 1,
+                            dt = getattr(params,'dt', 1),
                             leadtime_max=max(leadtime_max, 0),
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
-                            group_id=rank, group_rank=group_rank, group_size=group_size)
+                            global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]))
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
         base_sampler = DistributedSampler
     else:
         base_sampler = RandomSampler
-    sampler = MultisetSampler(dataset, base_sampler, params.batch_size,
+    sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size,
                                distributed=distributed, max_samples=params.epoch_size,
-                               rank=rank, num_replicas=num_replicas)
+                               global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups)
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
         if split != 'train':
-            print("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
+            warnings.warn("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
                   "sampler RNG state if the number of consumed samples differs from the number of yielded samples. Falling back to default DataLoader for valid.")
             loader = DataLoader
         else:
@@ -121,12 +114,9 @@ def get_data_loader(params, paths, distributed, split='train', rank=0, group_ran
     else:
         loader = DataLoader
     dataloader = loader(dataset,
-                        batch_size=int(params.batch_size),
                         num_workers=params.num_data_workers,
                         #prefetch_factor=2,
-                        shuffle=False, #(sampler is None),
-                        sampler=sampler, # Since validation is on a subset, use a fixed random subset,
-                        drop_last=True,
+                        batch_sampler=sampler,
                         pin_memory=torch.cuda.is_available(), 
                         persistent_workers=True, #ask dataloaders not destroyed after each epoch
                         collate_fn=my_collate,
@@ -138,14 +128,14 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
-                  group_id=0, group_rank=0, group_size=1):
+                  global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"]):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
         try:
             self.path_list, self.type_list, self.include_string = zip(*path_list)
             self.tkhead_name=[tokenizer_heads[0]["head_name"] for _ in self.path_list]
-            print("Warning: no tkhead_type provided in config for datasets; we will use the first tokenizer_heads: %s"%(" ").join(self.tkhead_name))
+            warnings.warn("Warning: no tkhead_type provided in config for datasets; we will use the first tokenizer_heads: %s"%(" ").join(self.tkhead_name))
         except:
             self.path_list, self.type_list, self.include_string, self.tkhead_name = zip(*path_list)
 
@@ -157,11 +147,27 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
+        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if "graph" not in subset] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
+        if len(self.DP_dsets)==0 and group_size>1:
+            warnings.warn(
+                "SP group is set, but no DP_dsets is defined. As a result, no SP will be used."
+                "Please verify if this is intentional."
+            )
         for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
+            if dset in self.DP_dsets:
+                #For every group with group_size ranks, they read the subparts from the same sample
+                group_id=global_rank//group_size #id of each group, e.g., 0,1,2,3 for 4 sp groups
+                data_rank=global_rank%group_size #local rank inside each SP group, e.g., 0,1,2,...,7 if group_size=8 (assigning 8 GPUs to load the same sample)
+                datagroupsize=group_size
+            else:
+                group_id=global_rank
+                data_rank=0
+                datagroupsize=1
+
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
                                                  dt=dt, leadtime_max = leadtime_max, supportdata = supportdata, train_val_test=train_val_test, split=split,
                                                  tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
-                                                 group_id=group_id, group_rank=group_rank, group_size=group_size)
+                                                 group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
             # Check to make sure our dataset actually exists with these settings
             try:
                 len(subdset)

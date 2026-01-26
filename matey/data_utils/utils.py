@@ -85,6 +85,16 @@ def construct_filterkernel(kernel_size):
         gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
     return gaussian_kernel
 
+def construct_filterkernel2D(kernel_size):
+    with torch.no_grad():
+        center = kernel_size // 2
+        x, y = np.indices((kernel_size, kernel_size))
+        dist2 = (x - center)**2 + (y - center)**2
+        kernel = np.exp(-dist2/2.0)
+        kernel /= np.sum(kernel)
+        gaussian_kernel = torch.tensor(kernel, dtype=torch.float32).unsqueeze(0).unsqueeze(0).unsqueeze(0)
+    return gaussian_kernel
+
 def construct_multimods_v2(datax, datay, datafilter_kernels, hierarchical_parameters):
     #T,B,C,D,H,W
     T,B,C,D,H,W = datax.shape

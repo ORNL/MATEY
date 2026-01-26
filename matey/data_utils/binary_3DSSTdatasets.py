@@ -8,8 +8,8 @@ import os
 from torch.utils.data import Dataset
 import h5py
 import glob
-from .shared_utils import get_top_variance_patchids, plot_checking
 import re
+from ..utils import getblocksplitstat
 
 np.random.seed(2024) 
 
@@ -27,10 +27,10 @@ class BaseBinary3DSSTDataset(Dataset):
         subname (str): Name to use for dataset
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
-        gammaref: pick all tokens that with variances larger than gammaref*max_variance to refine
     """
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
-                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None):
+                 train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
+                 group_id=0, group_rank=0, group_size=1):
         super().__init__()
         self.path = path
         self.split = split
@@ -47,6 +47,13 @@ class BaseBinary3DSSTDataset(Dataset):
 
         self.tokenizer_heads = tokenizer_heads
         self.tkhead_name=tkhead_name
+
+        self.group_id=group_id
+        self.group_rank=group_rank
+        self.group_size=group_size
+
+        H, W, D = self.cubsizes #x,y,z
+        self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
 
     def get_name(self):
         return self.type
@@ -397,11 +404,16 @@ class BaseBinary3DSSTDataset(Dataset):
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, leadtime)
         bcs = self._get_specific_bcs()
 
+        #start index and end size of local split for current
+        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+
         return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
 
     def __len__(self):
         return self.len
-
+    
 class sstF4R32Dataset(BaseBinary3DSSTDataset):
     @staticmethod
     def _specifics():
