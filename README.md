@@ -1,57 +1,87 @@
 
 # MATEY ![MATEY](https://github.com/ORNL/MATEY/blob/main/imgs/Matey_logo_single.png?raw=true?)
-MATEY is a Multiscale AdapTivE trustworthY codebase for developing transformer-based spatiotemporal foundation models of physcial systems.
+MATEY is a scalable open-source framework for developing transformer-based spatiotemporal foundation models for physcial systems. It supports both strucutred and unstructured scientific datasets,providing multiscale representations, and enables efficient training on HPC systems. 
 
 ## Installation
-- Running jobs on Frontier (Conda env installed)
-    * ROCM 6.3.1 (recommended), `source /lustre/orion/world-shared/stf218/junqi/forge/matey-env-rocm631.sh`; see the usage example in `./examples/submit_JHTDB_demo.sh`
-    * ROCM 6.0.0 (outdated), `conda activate /lustre/orion/proj-shared/lrn037/gounley1/conda600whl`; see the usage example in `submit_batch.sh`
-    * ROMC 6.0.0 (world-shared) (outdated), `source /lustre/orion/world-shared/lrn037/gounley1/env600.sh`; see the usage example in `submit_batch.sh`
-- Install your own virtual env
-    * `python3.9 -m venv ~/virtual/matey`
-    * `source ~/virtual/matey/bin/activate`
-    * `pip install -r requirements.txt`
+- Option 1 - Frontier: a preconfigured Conda environment is available.
+    * ROCM 6.3.1 
+    * Activate the environment:
+      ```bash 
+      source /lustre/orion/world-shared/stf218/junqi/forge/matey-env-rocm631.sh
+      ```
+      
+    * Example usage: `./examples/submit_JHTDB_demo.sh`
+- Optional 2 - Create your own virtual env
+    ```bash
+    python3.9 -m venv ~/virtual/matey
+    source ~/virtual/matey/bin/activate
+    pip install -r requirements.txt
+    ```
+      
 ## Running
  
-### Slurm Launch
-- see the slurm job scripts inside `./examples`, e.g., `sbatch submit_batch.sh`
+### Launching with Slurm
+- Use the example Slurm job scripts inside `./examples`, e.g., 
+  ```bash
+  sbatch submit_batch.sh
+  ```
 
-## Train MATEY using your own datasets
+## Training MATEY on Your Own Dataset
 
 ### Data loading
-- Add script to load from your data files in `./matey/data_utils/<your_dataset_scripts>`; see `hdf5_3Ddatasets.py`, `thewell_datasets.py` or `blasnet_3Ddatasets.py` for reference.
-- Add your dataset name to `DSET_NAME_TO_OBJECT` inside `./matey/data_utils/dataset.py`.
-- Set your data directory in your config file 
+- Add your data loading script under: 
 
-### Model configuring
-- Define your model architectures and data configurations in <your_config_yaml_file>, see examples in `./examples/config/Demo_*.ymal`.
+  `./matey/data_utils/<your_dataset_scripts>`
 
-### Submit jobs
-- Update <your_slurm_job_script> with as `export yaml_config=directory of <your_config_yaml_file>`
-- submit job with `sbatch <your_slurm_job_script>`  
+  See references:
+  * `hdf5_3Ddatasets.py` 
+  * `thewell_datasets.py` 
+  * `netcdf_datasets.py`
+- Register your dataset name in:
+
+  `./matey/data_utils/dataset.py`->`DSET_NAME_TO_OBJECT`.
+  
+- Point your config file to the correct data directory 
+
+### Model configuration
+- Define your model architectures and data configurations in <your_config_yaml_file>.
+
+  See examples in `./examples/config/Demo_*.ymal`.
+
+### Submitting jobs
+- Update <your_slurm_job_script> to include:
+
+  ```bash
+  export yaml_config=directory of <your_config_yaml_file>
+  ```
+- submit your job:
+  ```bash
+  sbatch <your_slurm_job_script>
+  ```  
 
 ## Publications & Presentations
-- Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley, MATEY: multiscale adaptive foundation models for spatiotemporal physical systems. [arXiv:2412.20601](https://arxiv.org/abs/2412.20601)
-- Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley, MATEY: multiscale adaptive foundation models for spatiotemporal physical systems, NeurIPS 2024 Workshop on  Machine Learning and the Physical Sciences. [accepted]  
+- Hunor Csala, Sebastian De Pascuale, Paul Laiu, Jeremy Lore, Jae-Sun Park, Pei Zhang. Autoregressive long-horizon prediction of plasma edge dynamics. [arXiv:2512.23884](https://arxiv.org/abs/2512.23884)
+- Junqi Yin, Mijanur Palash, M. Paul Laiu, Muralikrishnan Gopalakrishnan Meena, John Gounley, Stephen M. de Bruyn Kops, Feiyi Wang, Ramanan Sankaran, Pei Zhang. Pixel-Resolved Long-Context Learning for Turbulence at Exascale: Resolving Small-scale Eddies Toward the Viscous Limit. [arXiv:2507.16697](https://arxiv.org/abs/2507.16697)
+- Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley. MATEY: multiscale adaptive foundation models for spatiotemporal physical systems. [arXiv:2412.20601](https://arxiv.org/abs/2412.20601)
+- Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley. MATEY: multiscale adaptive foundation models for spatiotemporal physical systems, NeurIPS 2024 Workshop on  Machine Learning and the Physical Sciences. 
 
 ## Contributors
-This code structure was originally seeded in January 2024 from [PolymathicAI/multiple _physics_pretraining](https://github.com/PolymathicAI/multiple_physics_pretraining) (with the commit: [67ffa35](https://github.com/PolymathicAI/multiple_physics_pretraining/tree/67ffa35acb087ed69b2c03b424dc2bf998b9ce0b)). Since then the codebase has been substantially rewritten and evolved independently, with ongoing development led by the following contributors.
+This codebase was originally seeded (Jan 2024) from [PolymathicAI/multiple _physics_pretraining](https://github.com/PolymathicAI/multiple_physics_pretraining) (with the commit: [67ffa35](https://github.com/PolymathicAI/multiple_physics_pretraining/tree/67ffa35acb087ed69b2c03b424dc2bf998b9ce0b)). It has since been substantially rewritten and evolved independently, with ongoing development led by the following contributors.
 
 ### Active Contributors
-
 - Hunor Csala, ORNL
 - Andrey Prokopenko, ORNL
 - Junqi Yin, ORNL
-- Mijanur R Palash, ORNL
 - Murali Gopalakrishnan Meena, ORNL
 - John Gounley, ORNL
 - Paul Laiu, ORNL
 - Pei Zhang, ORNL
 
 ### Previous Contributors
-
-- Sheikh Md Shakeel Hassan Nln (University of California, Irvine)
-- Joseph Quinn (Vanderbilt University)
+- Mijanur R Palash, ORNL
+- Xiao Jing (Georgia Tech; 2025 Summer Intern)
+- Sheikh Md Shakeel Hassan Nln (University of California, Irvine; 2024 Summer Intern)
+- Joseph Quinn (Vanderbilt University; 2024 Summer Intern)
 
 
 
