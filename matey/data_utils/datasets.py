@@ -16,6 +16,7 @@ from .graph_datasets import *
 from .flow3d_datasets import *
 import os
 from torch_geometric.data import Data as GraphData, Batch
+import warnings
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -105,7 +106,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
         if split != 'train':
-            print("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
+            warnings.warn("Warning: Using MultiEpochsDataLoader for validation can silently desynchronize " \
                   "sampler RNG state if the number of consumed samples differs from the number of yielded samples. Falling back to default DataLoader for valid.")
             loader = DataLoader
         else:
@@ -134,7 +135,7 @@ class MixedDataset(Dataset):
         try:
             self.path_list, self.type_list, self.include_string = zip(*path_list)
             self.tkhead_name=[tokenizer_heads[0]["head_name"] for _ in self.path_list]
-            print("Warning: no tkhead_type provided in config for datasets; we will use the first tokenizer_heads: %s"%(" ").join(self.tkhead_name))
+            warnings.warn("Warning: no tkhead_type provided in config for datasets; we will use the first tokenizer_heads: %s"%(" ").join(self.tkhead_name))
         except:
             self.path_list, self.type_list, self.include_string, self.tkhead_name = zip(*path_list)
 
@@ -147,7 +148,11 @@ class MixedDataset(Dataset):
         self.use_all_fields = use_all_fields
 
         self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if "graph" not in subset] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
-
+        if len(self.DP_dsets)==0 and group_size>1:
+            warnings.warn(
+                "SP group is set, but no DP_dsets is defined. As a result, no SP will be used."
+                "Please verify if this is intentional."
+            )
         for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
             if dset in self.DP_dsets:
                 #For every group with group_size ranks, they read the subparts from the same sample

@@ -17,7 +17,7 @@ class MultisetBatchSampler(BatchSampler):
             supporting varying batch sizes across dataset & multiple ranks coordinate together to load the same sample
 
             For world_size ranks, split them into "group_size" X "num_sp_groups" 2D ranks;
-            For every group with group_size ranks, they read the subparts from the same sample, seeded by gound_id
+            For every group with group_size ranks, they read the subparts from the same sample, seeded by group_id
             All num_sp_groups read from the same dataset, seeded by a constant 0 (FIXME: this can/should be related to multiple datasets later)
             So the actual batch size is: "self.batch_size" X "num_sp_groups"
 

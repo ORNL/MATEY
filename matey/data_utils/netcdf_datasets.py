@@ -300,8 +300,9 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         sample_index = None
         field_names = ['density', 'temperature','radiated power'] #state field names, omit input field names for now
         type = 'SOLPS2D'
+        cubsizes=[98, 38]
         split_level = None #not used, since one trajectory per file
-        return time_index, sample_index, field_names, type, split_level
+        return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
     #FIXME: On NERSC and PSC we get an error, so use the __func__() way
     #field_names = _specifics.__func__()[2] #class attributes
