@@ -1,6 +1,6 @@
 
 # MATEY ![MATEY](https://github.com/ORNL/MATEY/blob/main/imgs/Matey_logo_single.png?raw=true?)
-MATEY is a scalable open-source framework for developing transformer-based spatiotemporal foundation models for physcial systems. It supports both strucutred and unstructured scientific datasets,providing multiscale representations, and enables efficient training on HPC systems. 
+MATEY is a scalable open-source framework for developing transformer-based spatiotemporal foundation models for physcial systems. It supports both strucutred and unstructured scientific datasets, providing multiscale representations, and enables efficient training on HPC systems. 
 
 ## Installation
 - Option 1 - Frontier: a preconfigured Conda environment is available.
@@ -54,7 +54,7 @@ MATEY is a scalable open-source framework for developing transformer-based spati
   ```bash
   export yaml_config=directory of <your_config_yaml_file>
   ```
-- submit your job:
+- Submit your job:
   ```bash
   sbatch <your_slurm_job_script>
   ```  
