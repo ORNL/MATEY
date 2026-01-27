@@ -12,6 +12,8 @@ from typing import List, Literal, Optional, Callable
 from einops import rearrange
 import psutil
 
+import time
+
 class CustomNeighborSearch(nn.Module):
     def __init__(self, return_norm=False):
         super().__init__()
@@ -29,13 +31,20 @@ def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: fl
     key = (tuple(data.shape), tuple(queries.shape), radius)
 
     if key not in custom_neighbor_search.nbr_dict:
+        start = time.time()
         kdtree = sklearn.neighbors.KDTree(data.cpu(), leaf_size=2)
+        construction_time = time.time() - start
 
+        start = time.time()
         if return_norm:
             indices, dists = kdtree.query_radius(queries.cpu(), r=radius, return_distance=True)
             weights = torch.from_numpy(np.concatenate(dists)).to(queries.device)
         else:
             indices = kdtree.query_radius(queries.cpu(), r=radius)
+        query_time = time.time() - start
+
+        print(f'neighbors: indices = {indices.size}, avg_indices = {indices.size//int(queries.shape[0])}')
+        print(f'neighbors: construction = {construction_time}, query = {query_time}', flush=True)
 
         sizes = np.array([arr.size for arr in indices])
         nbr_indices = torch.from_numpy(np.concatenate(indices)).to(queries.device)
