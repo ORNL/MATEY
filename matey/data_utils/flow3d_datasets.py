@@ -164,7 +164,7 @@ class Flow3D_Object(BaseBLASNET3DDataset):
 
     def _get_filesinfo(self, file_paths):
         dictcase = {}
-        for datacasedir in file_paths:
+        for case_id, datacasedir in enumerate(file_paths):
             file = os.path.join(datacasedir, "data.h5")
             f = h5py.File(file)
             nsteps = 5000
@@ -182,6 +182,7 @@ class Flow3D_Object(BaseBLASNET3DDataset):
             dictcase[datacasedir]["ntimes"] = nsteps
             dictcase[datacasedir]["features"] = features
             dictcase[datacasedir]["features_mapping"] = features_mapping
+            dictcase[datacasedir]["geometry_id"] = case_id
 
             sdf_path = os.path.join(datacasedir, "sdf_neg_one.npz")
             if not os.path.exists(sdf_path):
@@ -308,7 +309,8 @@ class Flow3D_Object(BaseBLASNET3DDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), torch.from_numpy(self.geometry[indices_z, indices_x, indices_y])
+        #  print(f'Returning geometry id {dictcase["geometry_id"]}', flush=True)
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "geometry": torch.from_numpy(self.geometry[indices_z, indices_x, indices_y])}
 
     def _get_specific_bcs(self):
         # FIXME: not used for now
