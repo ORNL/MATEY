@@ -456,9 +456,10 @@ class Trainer:
                 else:   
                     cond_input = None
 
-                try:
-                    geometry = data["geometry"].to(self.device)
-                except:
+                if "geometry" in data:
+                    geometry = data["geometry"]
+                    geometry["geometry"] = geometry["geometry"].to(self.device)
+                else:
                     geometry = None
 
                 cond_dict = {}
@@ -628,9 +629,10 @@ class Trainer:
             else:
                 cond_input = None
 
-            try:
-                geometry = data["geometry"].to(self.device)
-            except:
+            if "geometry" in data:
+                geometry = data["geometry"]
+                geometry["geometry"] = geometry["geometry"].to(self.device)
+            else:
                 geometry = None
 
             cond_dict = {}
