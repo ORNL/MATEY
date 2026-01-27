@@ -25,40 +25,23 @@ class CustomNeighborSearch(nn.Module):
         return return_dict
 
 def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: float, return_norm: bool=False):
-    if not hasattr(custom_neighbor_search, "nbr_dict"):
-        custom_neighbor_search.nbr_dict = {}
+    start = time.time()
+    kdtree = sklearn.neighbors.KDTree(data.cpu(), leaf_size=2)
+    construction_time = time.time() - start
 
-    key = (tuple(data.shape), tuple(queries.shape), radius)
-
-    if key not in custom_neighbor_search.nbr_dict:
-        start = time.time()
-        kdtree = sklearn.neighbors.KDTree(data.cpu(), leaf_size=2)
-        construction_time = time.time() - start
-
-        start = time.time()
-        if return_norm:
-            indices, dists = kdtree.query_radius(queries.cpu(), r=radius, return_distance=True)
-            weights = torch.from_numpy(np.concatenate(dists)).to(queries.device)
-        else:
-            indices = kdtree.query_radius(queries.cpu(), r=radius)
-        query_time = time.time() - start
-
-        print(f'neighbors: indices = {indices.size}, avg_indices = {indices.size//int(queries.shape[0])}')
-        print(f'neighbors: construction = {construction_time}, query = {query_time}', flush=True)
-
-        sizes = np.array([arr.size for arr in indices])
-        nbr_indices = torch.from_numpy(np.concatenate(indices)).to(queries.device)
-        nbrhd_sizes = torch.cumsum(torch.from_numpy(sizes).to(queries.device), dim=0)
-        if return_norm:
-            custom_neighbor_search.nbr_dict[key] = (nbr_indices, nbrhd_sizes, weights)
-        else:
-            custom_neighbor_search.nbr_dict[key] = (nbr_indices, nbrhd_sizes)
-
+    start = time.time()
     if return_norm:
-        nbr_indices, nbrhd_sizes, weights = custom_neighbor_search.nbr_dict[key]
+        indices, dists = kdtree.query_radius(queries.cpu(), r=radius, return_distance=True)
+        weights = torch.from_numpy(np.concatenate(dists)).to(queries.device)
     else:
-        nbr_indices, nbrhd_sizes = custom_neighbor_search.nbr_dict[key]
+        indices = kdtree.query_radius(queries.cpu(), r=radius)
+    query_time = time.time() - start
 
+    print(f'neighbors: construction = {construction_time}, query = {query_time}', flush=True)
+
+    sizes = np.array([arr.size for arr in indices])
+    nbr_indices = torch.from_numpy(np.concatenate(indices)).to(queries.device)
+    nbrhd_sizes = torch.cumsum(torch.from_numpy(sizes).to(queries.device), dim=0)
     splits = torch.cat((torch.tensor([0.]).to(queries.device), nbrhd_sizes))
 
     nbr_dict = {}
@@ -150,12 +133,21 @@ class ModifiedGNOBlock(nn.Module):
             reduction=reduction
         )
 
-    def forward(self, y, x, f_y=None):
+        self.neighbors_dict = {}
+
+    def forward(self, y, x, f_y, key):
         if f_y is not None:
             if f_y.ndim == 3 and f_y.shape[0] == -1:
                 f_y = f_y.squeeze(0)
 
-        neighbors_dict = self.neighbor_search(data=y, queries=x, radius=self.radius)
+        key = f'{key}:{self.radius}:{y.shape}:{x.shape}'
+        if not key in self.neighbors_dict:
+            print(f'{key}: building new neighbors')
+            neigh = self.neighbor_search(data=y, queries=x, radius=self.radius)
+            self.neighbors_dict[key] = neigh
+        else:
+            #  print(f'{key}: using cached neighbors')
+            pass
 
         if self.pos_embedding is not None:
             y_embed = self.pos_embedding(y)
@@ -166,7 +158,7 @@ class ModifiedGNOBlock(nn.Module):
 
         out_features = self.integral_transform(y=y_embed,
                                                x=x_embed,
-                                               neighbors=neighbors_dict,
+                                               neighbors=self.neighbors_dict[key],
                                                f_y=f_y)
 
         return out_features
@@ -182,12 +174,15 @@ class GNOModel(nn.Module):
     def __init__(self, num_channels, inner_model, params=None):
         super().__init__()
 
+        self.radius_in = params.gno["radius_in"]
+        self.radius_out = params.gno["radius_out"]
+
         print(params, flush=True)
         self.gno_in = ModifiedGNOBlock(
             in_channels=num_channels,
             out_channels=num_channels,
             coord_dim=3,
-            radius=params.gno["radius_in"]
+            radius=self.radius_in
             #  weighting_fn=params.weighting_fn,
             #  reduction=params.reduction
         )
@@ -196,7 +191,7 @@ class GNOModel(nn.Module):
             in_channels=num_channels,
             out_channels=num_channels,
             coord_dim=3,
-            radius=params.gno["radius_out"],
+            radius=self.radius_out
             #  weighting_fn=params.gno.weighting_fn,
             #  reduction=params.gno.reduction
         )
@@ -222,35 +217,43 @@ class GNOModel(nn.Module):
             # Pass-through option without using geometry
             return self.model(x, state_labels, bcs, opts, train_opts)
 
-        # We assume that all geometries in a batch are identical for now
-        input_geom = torch.flatten(opts.geometry[0], end_dim=-2)
-
-        # Rescale auxiliary grid
-        latent_geom = self.latent_geom.to(device=x.device)
-        bmin = [0, 0, 0]
-        bmax = [1, 1, 1]
-        for d in range(3):
-            bmin[d] = input_geom[:,d].min()
-            bmax[d] = input_geom[:,d].max()
-        for d in range(3):
-            latent_geom[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_geom[:,d]
-
         T, B, C, D, H, W = x.shape
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
-        # Pre-process using GNO
         out = torch.zeros(T, B, C, Dlat, Hlat, Wlat, device=x.device)
-        for t in range(T):
-            y = rearrange(x[t,:], 'b c d h w -> b (h w d) c')
-            out_y = self.gno_in(y=input_geom, x=latent_geom, f_y=y)
-            out[t,:] = rearrange(out_y, 'b (h w d) c -> b c d h w', d=Dlat, h=Hlat, w=Wlat)
+
+        # Pre-process using GNO
+        # The challenge is that different samples in the same batch may correspond to different geometries
+        input_geom = [None] * B
+        latent_geom = [None] * B
+        for b in range(B):
+            geometry_id = opts.geometry["geometry_id"][b]
+            input_geom[b] = torch.flatten(opts.geometry["geometry"][b], end_dim=-2)
+
+            # Rescale auxiliary grid
+            bmin = [None] * 3
+            bmax = [None] * 3
+            for d in range(3):
+                bmin[d] = input_geom[b][:,d].min()
+                bmax[d] = input_geom[b][:,d].max()
+            latent_geom[b] = self.latent_geom.to(device=x.device)
+            for d in range(3):
+                latent_geom[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_geom[b][:,d]
+
+            # Use T as batch
+            y = rearrange(x[:,b,:,:,:,:], 't c d h w -> t (h w d) c')
+            out_y = self.gno_in(y=input_geom[b], x=latent_geom[b], f_y=y, key=str(geometry_id) + ":in")
+            out[:,b,:,:,:,:] = rearrange(out_y, 't (h w d) c -> t c d h w', d=Dlat, h=Hlat, w=Wlat)
 
         # Run regular model
-        out = self.model(out, state_labels, bcs, opts, train_opts)
+        out_model = self.model(out, state_labels, bcs, opts, train_opts)
 
         # Post-process using GNO
+        out = torch.zeros(B, C, D, H, W, device=x.device)
+        out_model = rearrange(out, 'b c d h w -> b (h w d) c')
         out = rearrange(out, 'b c d h w -> b (h w d) c')
-        out = self.gno_out(y=latent_geom, x=input_geom, f_y=out)
+        for b in range(B):
+            out[b] = self.gno_out(y=latent_geom[b], x=input_geom[b], f_y=out_model[b], key=str(geometry_id) + ":out")
         out = rearrange(out, 'b (h w d) c -> b c d h w', d=D, h=H, w=W)
 
         return out
