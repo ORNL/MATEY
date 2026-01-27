@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 UT-Battelle, LLC
+# This file is part of the MATEY Project.
+
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from torch import Tensor

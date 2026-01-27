@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 UT-Battelle, LLC
+# This file is part of the MATEY Project.
+
 import torch
 import torch.nn as nn
 import numpy as np

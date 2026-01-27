@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 UT-Battelle, LLC
+# This file is part of the MATEY Project.
+
 from .logging_utils import Timer, profile_function, record_function_opt, log_to_file, log_versions
 from .YParams import YParams
 from .distributed_utils import setup_dist, check_sp, parse_slurm_nodelist, get_sequence_parallel_group, locate_group, add_weight_decay, CosineNoIncrease, closest_factors, determine_turt_levels, getblocksplitstat

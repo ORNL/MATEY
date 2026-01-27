@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 UT-Battelle, LLC
+# This file is part of the MATEY Project.
+
 from typing import  Iterator
 import torch
 from torch.utils.data import Sampler, BatchSampler, Dataset

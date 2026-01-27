@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 UT-Battelle, LLC
+# This file is part of the MATEY Project.
+
 from torch_geometric.utils import to_dense_batch
 
 def graph_to_densenodes(x, batch):
