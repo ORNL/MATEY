@@ -13,7 +13,7 @@ from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group
+from .utils.distributed_utils import get_sequence_parallel_group, locate_group, determine_turt_levels
 from .utils.forward_options import ForwardOptionsBase
 from .trustworthiness.metrics import get_ssim
 import json
