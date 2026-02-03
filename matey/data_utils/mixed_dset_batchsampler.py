@@ -58,6 +58,8 @@ class MultisetBatchSampler(BatchSampler):
         self.len_batchsamplers = sum(self.batches_perset)
         self.iset_choices = torch.tensor([iset for iset, n in enumerate(self.batches_perset) for _ in range(n)], dtype=torch.long)
         min_batches = min(self.batches_perset)
+        if min_batches<nbatchs_loc:
+            nbatchs_loc = min_batches
         self.iset_choices_ordered_truc = []
         for _ in range(min_batches//nbatchs_loc):
             for iset in range(len(self.batches_perset)):
