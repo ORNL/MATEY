@@ -84,16 +84,23 @@ def closest_factors(n, dim):
         prev = factors.copy()
         factors.sort()
         largest = factors[-1]
-        sqrt_large = int(math.sqrt(largest))
-        for i in range(sqrt_large, 0, -1):
+        factor1=factor2=None
+        for i in range(math.isqrt(largest), 1, -1):
             if largest % i == 0:
                 factor1, factor2 = i, largest // i
                 break
+        if factor1 is None:
+            break
         # If cannot further balance, break
         if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
             break
-        factors[-1] = factor2
-        factors[0] *= factor1
+        cand = factors.copy()
+        cand[-1] = factor2
+        cand[0] *= factor1
+        if max(cand)/min(cand)>max(factors)/min(factors):
+            #exit when more imbalanced
+            break
+        factors = cand
         if factors == prev:
             break
 
