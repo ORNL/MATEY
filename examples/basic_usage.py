@@ -7,11 +7,6 @@ import os
 import torch
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap as ruamelDict
-import argparse
-import os
-import torch
-from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap as ruamelDict
 from matey import Trainer
 from matey.utils import setup_dist, check_sp, profile_function, log_to_file, log_versions, YParams
 import glob, socket
@@ -102,7 +97,7 @@ if __name__ == '__main__':
     trainer = Trainer(params, global_rank, local_rank, device)
 
     #check if groups are defined properly
-    check_sp(trainer.sequence_parallel_groups, global_rank)
+    check_sp(trainer.current_group, global_rank, trainer.group_id)
     
     with profile_function(enabled=trainer.profiling, logdir="./log_profiler_section_8worker_pinmem_prefetch_factor2") as prof:
         trainer.train()

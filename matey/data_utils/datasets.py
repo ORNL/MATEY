@@ -106,7 +106,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
         base_sampler = RandomSampler
     sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size,
                                distributed=distributed, max_samples=params.epoch_size,
-                               global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups)
+                               global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups, ordered_sampling=getattr(params, "ordered_sampling", True))
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
         if split != 'train':
