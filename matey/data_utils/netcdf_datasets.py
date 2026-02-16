@@ -196,6 +196,7 @@ class BasenetCDFDirectoryDataset(Dataset):
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         trajectory=np.expand_dims(trajectory, axis=2)
+        assert list(trajectory.shape[-2:])==self.cubsizes, f"shape mismatch, {trajectory.shape[-2:], self.cubsizes}"
 
         #start index and end size of local split for current
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
@@ -304,7 +305,7 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         sample_index = None
         field_names = ['density', 'temperature','radiated power'] #state field names, omit input field names for now
         type = 'SOLPS2D'
-        cubsizes=[98, 38]
+        cubsizes=[38, 98] #h,w
         split_level = None #not used, since one trajectory per file
         return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes

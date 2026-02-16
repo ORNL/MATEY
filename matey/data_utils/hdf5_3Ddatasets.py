@@ -287,9 +287,9 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         field_names = ['Vx', 'Vy', 'Vw', 'pressure']
         type = 'isotropic1024fine'
         #cubsizes=[64, 64, 64]
-        cubsizes=[128,128,128]
+        #cubsizes=[128,128,128]
         #cubsizes=[192,192,192]
-        #cubsizes=[256, 256, 256]
+        cubsizes=[256, 256, 256]
         #cubsizes=[512, 512, 512]
         #cubsizes=[1024,1024,512] #x,y,z
         #cubsizes=[1024,1024,1024]

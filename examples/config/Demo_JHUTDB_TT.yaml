@@ -25,7 +25,7 @@ basic_config: &basic_config
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
   dt: 1 # Striding of data - Not currently implemented > 1
-  # leadtime_max: 10 #prediction lead time range [1, leadtime_max]
+  leadtime_max: 1 #prediction lead time range [1, leadtime_max]
   n_steps: 3 #16 # Length of history to include in input
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1 
@@ -49,8 +49,8 @@ basic_config: &basic_config
       filtersize: 2
       nlevels: 3 #[2^3, 2^2, 2^1, 2^0]
   notransposed: !!bool False # when True, do not use conv_transposed due to checkerboard artifacts; Default, False
-  batch_size: 64 
-  sp_groupsize: 8 #sequence_parallel_groupsize
+  batch_size: 16 
+  sp_groupsize: 16 #sequence_parallel_groupsize
   #num_sequence_parallel_groups: 1 # number of sequence groups used to split the samples for scalable sequence parallelism for extrem resolutions
   
   sts_model: !!bool False

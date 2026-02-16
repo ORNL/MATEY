@@ -289,11 +289,10 @@ class TurbT(BaseModel):
             """
             x, nfact=self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
-            b_mod=x.shape[0]
-            if not isgraph and leadtime is not None:
-                leadtime = leadtime.repeat(b_mod // B, 1)
-            #print("Pei debugging", f"iblk {iblk}, imod {imod}, {x.shape}, CUDA {torch.cuda.memory_allocated()/1024**3} GB")
             if iblk==0:
+                b_mod=x.shape[0]
+                if not isgraph and leadtime is not None:
+                    leadtime = leadtime.repeat(b_mod // B, 1)
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask4attblk, local_att=local_att)
