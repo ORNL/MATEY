@@ -58,23 +58,6 @@ class Inferencer:
         #self.global_rank: global rank
         #self.group_size: number of ranks in each SP group
         #self.num_sequence_parallel_groups: number of SP groups
-        data_rank=None
-        num_replicas=None
-        if  hasattr(self.params, "sp_groupsize") or hasattr(self.params, "num_sequence_parallel_groups"):
-            data_rank=True
-        if self.params.tie_batches:
-            in_rank = 0
-            parallel_group_size=1
-            group_rank=0
-        elif data_rank:
-            parallel_group_size = self.group_size
-            in_rank = self.global_rank//parallel_group_size #SP group ID
-            group_rank = self.global_rank%parallel_group_size #local rank inside each SP group
-            num_replicas = self.num_sequence_parallel_groups
-        else:
-            in_rank = self.global_rank
-            parallel_group_size=self.group_size
-            group_rank=0
         print(f"Initializing data on rank {self.global_rank}; total {self.num_sequence_parallel_groups} SP groups with {self.group_size} ranks each", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
                           dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,

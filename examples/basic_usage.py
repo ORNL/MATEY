@@ -7,11 +7,6 @@ import os
 import torch
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap as ruamelDict
-import argparse
-import os
-import torch
-from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap as ruamelDict
 from matey import Trainer
 from matey.utils import setup_dist, check_sp, profile_function, log_to_file, log_versions, YParams
 import glob, socket
