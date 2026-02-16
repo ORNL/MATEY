@@ -19,15 +19,10 @@ def get_log2_int(n):
     #return npower, npower+remain
     return npower
 
-def check_sp(sequence_parallel_groups, global_rank):
-    for groupid, group in enumerate(sequence_parallel_groups):
-        try:
-            group_rank = dist.get_group_rank(group, global_rank)
-            if group_rank != -1:  
-                current_group = group
-                print(f"Rank {global_rank} is in group {groupid}, {group} with local rank {group_rank}")
-        except ValueError as e:
-            pass
+def check_sp(group, global_rank, group_id):
+    group_rank = dist.get_group_rank(group, global_rank)
+    print(f"Rank {global_rank} is in group {group_id}, {group} with group rank {group_rank}")
+  
         
 def setup_dist(params):
     #num_gpus_per_node = torch.cuda.device_count()
@@ -108,47 +103,28 @@ def closest_factors(n, dim):
 
     return factors
 
-def get_rank_ingroup(rank, group):
-    try:
-        group_rank = dist.get_group_rank(group, rank)
-        return group_rank
-    except:
-        return -1
-
 def get_sequence_parallel_group(sequence_parallel_groupsize=None, num_sequence_parallel_groups=None):
     """
-    Create sequence parallel groups based on number of sequence_parallel_groups.
+    Create sequence parallel group based on number of sequence_parallel_groups or sequence_parallel_groupsize on each rank.
     """
     world_size = dist.get_world_size()
+    rank = dist.get_rank()
     if sequence_parallel_groupsize is None:
         sequence_parallel_size=world_size//num_sequence_parallel_groups
     else:
         sequence_parallel_size = sequence_parallel_groupsize
-    sequence_parallel_groups = []
-    for start in range(0, world_size, sequence_parallel_size):
-        ranks = list(range(start, start + sequence_parallel_size))
-        sequence_parallel_group = dist.new_group(ranks,timeout=timedelta(minutes=40))
-        sequence_parallel_groups.append(sequence_parallel_group)
-    return sequence_parallel_groups, sequence_parallel_size
+        num_sequence_parallel_groups=world_size//sequence_parallel_size
+    group_id = rank // sequence_parallel_size
+    group_start = group_id * sequence_parallel_size
+    ranks = list(range(group_start, group_start + sequence_parallel_size))
+    sequence_parallel_group = dist.new_group(ranks=ranks, timeout=timedelta(minutes=40))
+    return sequence_parallel_group, group_id, num_sequence_parallel_groups
 
-def locate_group(sequence_parallel_groups, global_rank):
-    if len(sequence_parallel_groups)==dist.get_world_size():
-        return None, global_rank
-    for group in sequence_parallel_groups:
-        group_rank = get_rank_ingroup(global_rank, group)
-        if group_rank>-1:
-            return group, group_rank
-    raise ValueError(f"global_rank {group_rank} is not in [0, {sequence_parallel_groups})")
-
-def splitsample(x, y, sequence_parallel_groups, blockdict=None):
+def splitsample(x, y, group, sequence_parallel_size, blockdict=None):
     """
     split a sample based on sequence split groups
     """
     D, H, W = x.shape[3:]
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    num_sequence_parallel_groups = len(sequence_parallel_groups)
-    sequence_parallel_size=world_size//num_sequence_parallel_groups
     ##############################################################
     #based on sequence_parallel_size, split the data in D, H, W direciton
     nproc_blocks = closest_factors(sequence_parallel_size, 3)
@@ -185,27 +161,18 @@ def splitsample(x, y, sequence_parallel_groups, blockdict=None):
     blockdict["Ind_dim"] = [d_dim//nproc_blocks[0], h_dim//nproc_blocks[1], w_dim//nproc_blocks[2]]
     #######################
     #get the split at group_rank of x and y
-    for group in sequence_parallel_groups:
-        group_rank = get_rank_ingroup(rank, group)
-        if 0<=group_rank<sequence_parallel_size:
-            #correct position
-            idz, idx, idy = blockIDs[group_rank,:]
-            Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
-            blockdict["zxy_start"] = [Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
-            return xsplits[group_rank,...], ysplits[group_rank,...], blockdict
-        else:
-            continue
-    raise ValueError(f"unkown rank {rank}, not taken by any group")
-
-def splitsample_rank0(x, y, sequence_parallel_groups, blockdict=None):
+    group_rank = dist.get_rank(group)
+    #correct position
+    idz, idx, idy = blockIDs[group_rank,:]
+    Lz_loc, Lx_loc, Ly_loc = blockdict["Lzxy"]
+    blockdict["zxy_start"] = [Lz_start+idz*Lz_loc, Lx_start+idx*Lx_loc, Ly_start+idy*Ly_loc]
+    return xsplits[group_rank,...], ysplits[group_rank,...], blockdict
+    
+def splitsample_rank0(x, y, sequence_parallel_size, blockdict=None):
     """
     split a sample based on sequence split groups, operated only on group_rank=0
     """
     D, H, W = x.shape[3:]
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    num_sequence_parallel_groups = len(sequence_parallel_groups)
-    sequence_parallel_size=world_size//num_sequence_parallel_groups
     ##############################################################
     #based on sequence_parallel_size, split the data in D, H, W direciton
     nproc_blocks = closest_factors(sequence_parallel_size, 3)

@@ -13,7 +13,7 @@ import torch
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap as ruamelDict
 from matey import Inferencer
-from matey.utils import setup_dist, check_sp, profile_function, log_to_file, log_versions, YParams
+from matey.utils import setup_dist YParams
 import glob, socket
 
 if __name__ == '__main__':

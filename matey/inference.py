@@ -13,7 +13,7 @@ from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
-from .utils.distributed_utils import get_sequence_parallel_group, locate_group, determine_turt_levels
+from .utils.distributed_utils import get_sequence_parallel_group, determine_turt_levels
 from .utils.forward_options import ForwardOptionsBase
 from .trustworthiness.metrics import get_ssim
 import json
@@ -30,11 +30,12 @@ class Inferencer:
 
         #define sequence parallel groups and local group info
         if hasattr(self.params, "sp_groupsize"):
-            self.sequence_parallel_groups, self.group_size = get_sequence_parallel_group(sequence_parallel_groupsize=self.params.sp_groupsize)
+            self.current_group, self.group_id, self.num_sequence_parallel_groups = get_sequence_parallel_group(sequence_parallel_groupsize=self.params.sp_groupsize)
         else:
-            self.sequence_parallel_groups, self.group_size = get_sequence_parallel_group(num_sequence_parallel_groups=self.params.num_sequence_parallel_groups if hasattr(self.params, "num_sequence_parallel_groups") else self.world_size)
+            self.current_group, self.group_id, self.num_sequence_parallel_groups = get_sequence_parallel_group(num_sequence_parallel_groups=self.params.num_sequence_parallel_groups if hasattr(self.params, "num_sequence_parallel_groups") else self.world_size)
 
-        self.current_group, self.group_rank = locate_group(self.sequence_parallel_groups, self.global_rank)
+        self.group_rank = dist.get_rank(self.current_group)
+        self.group_size = dist.get_world_size(self.current_group)
 
         self.initialize_data()
         #checking input_states value
@@ -56,7 +57,7 @@ class Inferencer:
     def initialize_data(self):
         #self.global_rank: global rank
         #self.group_size: number of ranks in each SP group
-        #len(self.sequence_parallel_groups): number of SP groups
+        #self.num_sequence_parallel_groups: number of SP groups
         data_rank=None
         num_replicas=None
         if  hasattr(self.params, "sp_groupsize") or hasattr(self.params, "num_sequence_parallel_groups"):
@@ -69,18 +70,18 @@ class Inferencer:
             parallel_group_size = self.group_size
             in_rank = self.global_rank//parallel_group_size #SP group ID
             group_rank = self.global_rank%parallel_group_size #local rank inside each SP group
-            num_replicas = len(self.sequence_parallel_groups)
+            num_replicas = self.num_sequence_parallel_groups
         else:
             in_rank = self.global_rank
             parallel_group_size=self.group_size
             group_rank=0
-        print(f"Initializing data on rank {self.global_rank}; total {len(self.sequence_parallel_groups)} SP groups with {self.group_size} ranks each", flush=True)
+        print(f"Initializing data on rank {self.global_rank}; total {self.num_sequence_parallel_groups} SP groups with {self.group_size} ranks each", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
                           dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
                           dist.is_initialized(), split='val',
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=len(self.sequence_parallel_groups))
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
 
     def initialize_model(self):
