@@ -1,11 +1,19 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from neuralop.layers.channel_mlp import LinearChannelMLP
-from neuralop.layers.integral_transform import IntegralTransform
-from neuralop.layers.embeddings import SinusoidalEmbedding
-from neuralop.layers.gno_block import GNOBlock
-import sklearn
+try:
+    from neuralop.layers.channel_mlp import LinearChannelMLP
+    from neuralop.layers.integral_transform import IntegralTransform
+    from neuralop.layers.embeddings import SinusoidalEmbedding
+    from neuralop.layers.gno_block import GNOBlock
+    neuralop_exist = True
+except ImportError:
+    neuralop_exist = False
+try:
+    import sklearn
+    sklearn_exist = True
+except ImportError:
+    sklearn_exist = False
 import torch.nn.functional as F
 from ..utils.forward_options import ForwardOptionsBase, TrainOptionsBase
 from typing import List, Literal, Optional, Callable
@@ -25,6 +33,9 @@ class CustomNeighborSearch(nn.Module):
         return return_dict
 
 def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: float, return_norm: bool=False):
+    if not sklearn_exist:
+        raise RuntimeError("sklearn is required for constructing neighbors.")
+
     start = time.time()
     kdtree = sklearn.neighbors.KDTree(data.cpu(), leaf_size=2)
     construction_time = time.time() - start
@@ -79,6 +90,9 @@ class ModifiedGNOBlock(nn.Module):
         self.coord_dim = coord_dim
 
         self.radius = radius
+
+        if not neuralop_exist:
+            raise RuntimeError("NeuralOp is required for running GNO module.")
 
         # Apply sinusoidal positional embedding
         self.pos_embedding_type = pos_embedding_type
