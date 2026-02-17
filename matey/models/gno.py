@@ -178,16 +178,17 @@ class ModifiedGNOBlock(nn.Module):
         return out_features
 
 
-def build_gno(num_channels, inner_model, params):
-    model = GNOModel(num_channels, inner_model, params)
+def build_gno(inner_model, params):
+    model = GNOModel(inner_model, params)
 
     return model
 
 
 class GNOModel(nn.Module):
-    def __init__(self, num_channels, inner_model, params=None):
+    def __init__(self, inner_model, params=None):
         super().__init__()
 
+        num_channels = params.gno["n_channels"]
         self.radius_in = params.gno["radius_in"]
         self.radius_out = params.gno["radius_out"]
 

@@ -178,9 +178,8 @@ class Trainer:
         elif self.params.model_type == "turbt":
             self.model = build_turbt(self.params).to(self.device)
 
-        num_channels = 4
         if hasattr(self.params, "gno"):
-            self.model = build_gno(num_channels, self.model, self.params).to(self.device)
+            self.model = build_gno(self.model, self.params).to(self.device)
 
         if self.params.compile:
             print('WARNING: BFLOAT NOT SUPPORTED IN SOME COMPILE OPS SO SWITCHING TO FLOAT16')
