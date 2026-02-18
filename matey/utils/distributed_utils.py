@@ -121,10 +121,15 @@ def get_sequence_parallel_group(sequence_parallel_groupsize=None, num_sequence_p
     else:
         sequence_parallel_size = sequence_parallel_groupsize
         num_sequence_parallel_groups=world_size//sequence_parallel_size
+    
+    sequence_parallel_groups = []
+    for start in range(0, world_size, sequence_parallel_size):
+        ranks = list(range(start, start + sequence_parallel_size))
+        sequence_parallel_group = dist.new_group(ranks,timeout=timedelta(minutes=40))
+        sequence_parallel_groups.append(sequence_parallel_group)
+
     group_id = rank // sequence_parallel_size
-    group_start = group_id * sequence_parallel_size
-    ranks = list(range(group_start, group_start + sequence_parallel_size))
-    sequence_parallel_group = dist.new_group(ranks=ranks, timeout=timedelta(minutes=40))
+    sequence_parallel_group = sequence_parallel_groups[group_id] 
     return sequence_parallel_group, group_id, num_sequence_parallel_groups
 
 def splitsample(x, y, group, sequence_parallel_size, blockdict=None):
