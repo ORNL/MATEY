@@ -7,6 +7,7 @@ import torch.nn
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import default_collate
 import os
 from .mixed_dset_batchsampler import MultisetBatchSampler
 from .hdf5_datasets import *
@@ -345,8 +346,8 @@ def my_collate(batch):
     batch_new = {}
     for key in batch[0].keys():
         objs = [b[key] for b in batch]
-        if key =="graph":
+        if key == "graph":
             batch_new[key] = Batch.from_data_list(objs)
         else:
-            batch_new[key] = torch.stack([torch.as_tensor(obj) for obj in objs], dim=0)    
+            batch_new[key] = default_collate(objs)
     return batch_new
