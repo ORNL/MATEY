@@ -84,16 +84,23 @@ def closest_factors(n, dim):
         prev = factors.copy()
         factors.sort()
         largest = factors[-1]
-        sqrt_large = int(math.sqrt(largest))
-        for i in range(sqrt_large, 0, -1):
+        factor1=factor2=None
+        for i in range(math.isqrt(largest), 1, -1):
             if largest % i == 0:
                 factor1, factor2 = i, largest // i
                 break
+        if factor1 is None:
+            break
         # If cannot further balance, break
         if factor1 == 1 or factor2 == largest or len(set(factors)) == 1:
             break
-        factors[-1] = factor2
-        factors[0] *= factor1
+        cand = factors.copy()
+        cand[-1] = factor2
+        cand[0] *= factor1
+        if max(cand)/min(cand)>max(factors)/min(factors):
+            #exit when more imbalanced
+            break
+        factors = cand
         if factors == prev:
             break
 
@@ -114,10 +121,15 @@ def get_sequence_parallel_group(sequence_parallel_groupsize=None, num_sequence_p
     else:
         sequence_parallel_size = sequence_parallel_groupsize
         num_sequence_parallel_groups=world_size//sequence_parallel_size
+    
+    sequence_parallel_groups = []
+    for start in range(0, world_size, sequence_parallel_size):
+        ranks = list(range(start, start + sequence_parallel_size))
+        sequence_parallel_group = dist.new_group(ranks,timeout=timedelta(minutes=40))
+        sequence_parallel_groups.append(sequence_parallel_group)
+
     group_id = rank // sequence_parallel_size
-    group_start = group_id * sequence_parallel_size
-    ranks = list(range(group_start, group_start + sequence_parallel_size))
-    sequence_parallel_group = dist.new_group(ranks=ranks, timeout=timedelta(minutes=40))
+    sequence_parallel_group = sequence_parallel_groups[group_id] 
     return sequence_parallel_group, group_id, num_sequence_parallel_groups
 
 def splitsample(x, y, group, sequence_parallel_size, blockdict=None):
