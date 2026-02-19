@@ -244,7 +244,7 @@ class BaseHDF53DDataset(Dataset):
         bcs = self._get_specific_bcs()
         #########################################
         #print("hdf5_3Ddatasets:", self.path, trajectory.min(), trajectory.max(), ix, iy, iz, icx, icy, icz, leadtime, flush=True)
-        return trajectory[:-1], torch.as_tensor(bcs), trajectory[-1], leadtime
+        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
 
     def __len__(self):
         return self.len

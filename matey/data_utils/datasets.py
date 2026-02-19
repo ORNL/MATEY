@@ -273,37 +273,34 @@ class MixedDataset(Dataset):
         #graph, bcs         
 
         datasamples={} 
-        assert len(variables) in [2, 4, 5, 6]
 
         datasamples["field_labels"] = torch.tensor(self.subset_dict[self.sub_dsets[dset_idx].get_name()])
         datasamples["dset_idx"] = dset_idx
 
-        if isinstance(variables[0], GraphData):
+        if "graph" in variables:
             """
             # data.x = x_seq #[nsteps_input, N, F] 
             # data.y = y_state #[N, 3] -> (vx, vy, p)
             # data.leadtime = leadtime
             """
-            datasamples["graph"] = variables[0]
-            datasamples["bcs"] = variables[1]
-            datasamples["field_labels_out"] = datasamples["field_labels"][-3:]
+            datasamples["graph"] = variables["graph"]
+            datasamples["bcs"] = variables["bcs"]
+            datasamples["field_labels_out"] = datasamples["field_labels"][variables["field_labels_out"]]
             return datasamples
 
         else:
-            x, bcs, y, leadtime = variables[:4]
-            datasamples["input"] = x
-            datasamples["label"] = y
-            datasamples["bcs"] = bcs
-            datasamples["leadtime"] = leadtime
-            if len(variables) == 6:
+            datasamples["input"] = variables["x"]
+            datasamples["label"] = variables["y"]
+            datasamples["bcs"] = variables["bcs"]
+            datasamples["leadtime"] = variables["leadtime"]
+
+            if "cond_fields" in variables:
+                assert hasattr(self.sub_dsets[dset_idx], "cond_field_names")
                 datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-                datasamples["cond_fields"] = variables[-2]
-                datasamples["cond_input"] = variables[-1]
-            elif len(variables) == 5 and getattr(self.sub_dsets[dset_idx], "cond_field_names", None) is not None:
-                datasamples["cond_field_labels"] = torch.tensor(self.subset_cond_dict[self.sub_dsets[dset_idx].get_name()])
-                datasamples["cond_fields"] = variables[-1]
-            elif len(variables) == 5:
-                datasamples["cond_input"] = variables[-1]
+                datasamples["cond_fields"] = variables["cond_fields"]
+
+            if "cond_input" in variables:
+                datasamples["cond_input"] = variables["cond_input"]
         
             return datasamples
 
