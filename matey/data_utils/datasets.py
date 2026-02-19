@@ -284,7 +284,7 @@ class MixedDataset(Dataset):
             """
             datasamples["graph"] = variables["graph"]
             datasamples["bcs"] = variables["bcs"]
-            datasamples["field_labels_out"] = datasamples["field_labels"][-3:]
+            datasamples["field_labels_out"] = datasamples["field_labels"][variables["field_labels_out"]]
             return datasamples
 
         else:

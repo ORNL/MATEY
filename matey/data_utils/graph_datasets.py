@@ -61,7 +61,7 @@ class BaseCFDGraphDataset(Dataset):
 
         os.makedirs(self.processed_dir, exist_ok=True)
 
-        self.field_names, self.type, self.time_steps, self.num_node_types = self._specifics()
+        self.field_names_out, self.type, self.time_steps, self.num_node_types = self._specifics()
         self.title = self.type
 
         if not os.path.exists(self.processed_index):
@@ -216,13 +216,12 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         - 'velocity' : raw float32 bytes, shape [T, N, 2]
         - 'pressure' : raw float32 bytes, shape [T, N, 1]
         """
-        field_names = ['velocityx', 'velocityy', 'pressure']
+        field_names_out = ['velocityx', 'velocityy', 'pressure']
         type = 'meshgraphnetairfoil'
         time_steps=601
         num_node_types = 5
-        return field_names, type, time_steps, num_node_types
-    field_names_out = _specifics()[0] #class attributes
-    field_names = ["pos_x", "pos_y"] + [f"nodetype{iht}" for iht in range( _specifics()[-1])]+ ['velocityx', 'velocityy', 'pressure']
+        return field_names_out, type, time_steps, num_node_types
+    field_names = ["pos_x", "pos_y"] + [f"nodetype{iht}" for iht in range(_specifics()[-1])] + _specifics()[0]
     def _minmax_features(self):
         """
         #x: pos + node_type + velocity_t + pressure_t
@@ -476,8 +475,8 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         data.dt = int(self.dt)
         data.leadtime = leadtime.reshape(-1,1).to(torch.float32)
         bcs = self._get_specific_bcs()
-        return {"graph": data, "bcs": bcs}
-    
+        return {"graph": data, "bcs": bcs, "field_labels_out": [self.field_names.index(x) for x in self.field_names_out]}
+
 if __name__ == "__main__":
     from mpi4py import MPI
 
