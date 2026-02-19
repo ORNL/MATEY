@@ -20,6 +20,7 @@ from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT
 from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
+from .models.gno import build_gno
 from .models.turbt import build_turbt
 from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
@@ -176,6 +177,9 @@ class Trainer:
             self.model = build_vit(self.params).to(self.device)
         elif self.params.model_type == "turbt":
             self.model = build_turbt(self.params).to(self.device)
+
+        if hasattr(self.params, "gno"):
+            self.model = build_gno(self.model, self.params).to(self.device)
 
         if self.params.compile:
             print('WARNING: BFLOAT NOT SUPPORTED IN SOME COMPILE OPS SO SWITCHING TO FLOAT16')
@@ -450,6 +454,13 @@ class Trainer:
                     cond_input = data["cond_input"].to(self.device)
                 else:   
                     cond_input = None
+
+                if "geometry" in data:
+                    geometry = data["geometry"]
+                    geometry["geometry"] = geometry["geometry"].to(self.device)
+                else:
+                    geometry = None
+
                 cond_dict = {}
                 try:
                     cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -492,7 +503,8 @@ class Trainer:
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
                 isgraph=isgraph,
-                field_labels_out= field_labels_out
+                field_labels_out= field_labels_out,
+                geometry=geometry
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
@@ -616,6 +628,12 @@ class Trainer:
             else:
                 cond_input = None
 
+            if "geometry" in data:
+                geometry = data["geometry"]
+                geometry["geometry"] = geometry["geometry"].to(self.device)
+            else:
+                geometry = None
+
             cond_dict = {}
             try:
                 cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -657,7 +675,8 @@ class Trainer:
                     cond_dict=copy.deepcopy(cond_dict),
                     cond_input=cond_input,
                     isgraph=isgraph,
-                    field_labels_out= field_labels_out
+                    field_labels_out= field_labels_out,
+                    geometry=geometry
                     )
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
