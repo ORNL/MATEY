@@ -53,7 +53,7 @@ class BaseHDF53DDataset(Dataset):
         self.group_rank=group_rank
         self.group_size=group_size
 
-        H, W, D = self.cubsizes #x,y,z
+        D, H, W = self.cubsizes #z,y,x
         self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
 
     def get_name(self):
@@ -110,7 +110,7 @@ class BaseHDF53DDataset(Dataset):
             self.time_dict[it]["xmax"]=xmax
             self.time_dict[it]["ymax"]=ymax
             self.time_dict[it]["zmax"]=zmax
-            samples_perstep = (xmax//self.cubsizes[0])*(ymax//self.cubsizes[1])*(zmax//self.cubsizes[2])
+            samples_perstep = (xmax//self.cubsizes[2])*(ymax//self.cubsizes[1])*(zmax//self.cubsizes[0])
             self.file_samples_perstep.append(samples_perstep)
         #FIXME: assuming all data files contain same grid points
         assert len(list(set(self.file_samples_perstep)))==1, list(set(self.file_samples_perstep))
@@ -145,17 +145,17 @@ class BaseHDF53DDataset(Dataset):
             self.sample_info[isample]["yrange"]=[]
             self.sample_info[isample]["zrange"]=[]
             self.sample_info[isample]["filepath"] = []
-            nx = self.time_dict[it]["xmax"]//self.cubsizes[0]
+            nx = self.time_dict[it]["xmax"]//self.cubsizes[2]
             ny = self.time_dict[it]["ymax"]//self.cubsizes[1]
-            nz = self.time_dict[it]["zmax"]//self.cubsizes[2]
+            nz = self.time_dict[it]["zmax"]//self.cubsizes[0]
             #nx, ny, nz samples in x, y, and z directions, respecitvely
             iz = ispace//(nx*ny) #the iz-th sample
             iy = ispace%(nx*ny)//nx #the iy-th sample
             ix = ispace%(nx*ny)%nx #the ix-th sample
             #so sample index 
-            xl = ix*self.cubsizes[0]; xu = xl + self.cubsizes[0]
+            xl = ix*self.cubsizes[2]; xu = xl + self.cubsizes[2]
             yl = iy*self.cubsizes[1]; yu = yl + self.cubsizes[1]
-            zl = iz*self.cubsizes[2]; zu = zl + self.cubsizes[2]
+            zl = iz*self.cubsizes[0]; zu = zl + self.cubsizes[0]
             for file, xrange, yrange, zrange in zip(dict_t["filename"], dict_t["xrange"], dict_t["yrange"], dict_t["zrange"]):
                 # Check overlap in the y dimension
                 overlap_x = (xrange[0] < xu) and (xl < xrange[1])
@@ -289,9 +289,9 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         #cubsizes=[64, 64, 64]
         #cubsizes=[128,128,128]
         #cubsizes=[192,192,192]
-        cubsizes=[256, 256, 256]
+        cubsizes=[256, 256, 256] #z(D), y(H), x(W)
         #cubsizes=[512, 512, 512]
-        #cubsizes=[1024,1024,512] #x,y,z
+        #cubsizes=[1024,1024,512]
         #cubsizes=[1024,1024,1024]
         return time_index, sample_index, field_names, type, cubsizes
     field_names = _specifics()[2] #class attributes
@@ -349,12 +349,12 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         #(icx, icy, icz): contains [start, end] index for each sample
         #return solutions in shape: [T, C, Dloc, Hloc, Wloc] for current rank, self.group_rank
 
-        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        cbszz, cbszy, cbszx = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         #start and end index of local split for current 
-        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        isz0, isy0, isx0    = self.blockdict["Ind_start"] # [idz, idy, idx]
         iblockstart = [isz0, isy0, isx0 ]
         iblockend = [isz0+cbszz, isy0+cbszy, isx0+cbszx] 
-        comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, W, H, C
+        comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, H, W, C
         #get input history
         time_idx = time_idx+self.time_start
         for file_pointers, blk_ix, blk_iy, blk_iz, icx, icy, icz in zip(file_pointerslist,blk_ixs, blk_iys, blk_izs, icxs, icys, iczs):
@@ -385,7 +385,8 @@ class isotropic1024Dataset(BaseHDF53DDataset):
             comb_xy[-1, rz0:rz1, ry0:ry1, rx0:rx1, 3:4] = p   [bz0:bz1, by0:by1, bx0:bx1,:]
 
         #return: T,C,D,H,W
-        return comb_xy.transpose((0, 4, 1, 3, 2)), leadtime.to(torch.float32)
+        #NOTE: cautious or not transpose spatial dimensions with parallel loading/splitting
+        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime.to(torch.float32)
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic
 
@@ -396,7 +397,7 @@ class TaylorGreen(BaseHDF53DDataset):
         sample_index = 0
         field_names = ["r", "u", "v", "w"] #density (r), velocity in 3 directions (u,v,w)
         type = 'taylorgreen'
-        #cubsizes=[256, 256, 256] #nx, ny,nz
+        #cubsizes=[256, 256, 256] #nz,ny,nx
         cubsizes=[-1,-1,-1] #[512, 512, 256]; [768, 768, 384]; [1024, 1024, 512]
         return time_index, sample_index, field_names, type, cubsizes
     field_names = _specifics()[2] #class attributes
@@ -423,7 +424,7 @@ class TaylorGreen(BaseHDF53DDataset):
             time_dict[its]["yrange"].append([0, ny])
             time_dict[its]["zrange"].append([0, nz])
             if self.cubsizes==[-1,-1,-1]:
-                self.cubsizes=[nx,ny,nz]
+                self.cubsizes=[nz,ny,nx]
                 #self.cubsizes=[nz,nz,nz]
         return time_dict
     
@@ -451,13 +452,13 @@ class TaylorGreen(BaseHDF53DDataset):
         #(icx, icy, icz): contains [start, end] index for each sample
         #return solutions in shape: [T, C, Dloc, Hloc, Wloc] for current rank, self.group_rank
 
-        cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
+        cbszz, cbszy, cbszx = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         #start and end index of local split for current 
-        isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
+        isz0, isy0, isx0    = self.blockdict["Ind_start"] # [idz, idy, idx]
         iblockstart = [isz0, isy0 , isx0]
         iblockend = [isz0+cbszz, isy0+cbszy, isx0+cbszx] 
 
-        comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, W, H, C
+        comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, H, W, C
         #get input history
         time_idx = time_idx+self.time_start
         for file_pointers, blk_ix, blk_iy, blk_iz, icx, icy, icz in zip(file_pointerslist,blk_ixs, blk_iys, blk_izs, icxs, icys, iczs):
@@ -481,7 +482,8 @@ class TaylorGreen(BaseHDF53DDataset):
                 comb_xy[-1,rz0:rz1, ry0:ry1, rx0:rx1,ivar] = varcomp[bz0:bz1, by0:by1, bx0:bx1]
         #return: T,C,D,H,W
         #print("reconstruct:", comb_xy.min(), comb_xy.max(),  blk_ixs, blk_iys, blk_izs, icxs, icys, iczs, time_idx, file_pointerslist, flush=True)
-        return comb_xy.transpose((0, 4, 1, 3, 2)), leadtime.to(torch.float32)
+        #NOTE: cautious or not transpose spatial dimensions with parallel loading/splitting
+        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime.to(torch.float32)
     
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic
