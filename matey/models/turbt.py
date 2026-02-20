@@ -249,15 +249,16 @@ class TurbT(BaseModel):
             if imod<self.nhlevels-1:
                 x, blockdict=self.filterdata(x, blockdict=blockdict)
                 opts.blockdict = blockdict
+            else:
+                #self.debug_nan(x, message="input")
+                x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+                #self.debug_nan(x, message="input after normalization")
             if imod>imod_bottom:
                 opts.imod -= 1
                 x_pred = self.forward(x, state_labels, bcs, opts)
             #x_input = x.clone()
             #T,B,C,D,H,W
             T, B, _, D, H, W = x.shape
-            #self.debug_nan(x, message="input")
-            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
-            #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
