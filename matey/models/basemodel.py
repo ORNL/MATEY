@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
-from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output
+from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output, GNOhMLP_stem, GNOhMLP_output
 from .time_modules import leadtimeMLP
 from .input_modules import input_control_MLP
 from .positionbias_modules import positionbias_mod
@@ -76,6 +76,11 @@ class BaseModel(nn.Module):
                         debed_ensemble.append(GraphhMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, smooth=smooth))
                         if self.conditioning:
                             embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                    elif "gno" in head_name:
+                        embed_ensemble.append(GNOhMLP_stem(tk, in_chans=embed_dim//4, out_chans=embed_dim))
+                        debed_ensemble.append(GNOhMLP_output(tk, in_chans=embed_dim, out_chans=n_states_out))
+                        if self.conditioning:
+                            embed_ensemble_cond.append(GNOhMLP_stem(tk, in_chans=embed_dim//4, embed_dim=embed_dim))
                     else:
                         embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                         debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, notransposed=notransposed, smooth=smooth))
@@ -198,6 +203,12 @@ class BaseModel(nn.Module):
             x = rearrange(x, 't b d h w c -> t b c d h w')
             #self.debug_nan(x)
             return x
+        elif tkhead_type == 'gno':
+            x, geometry = x
+            x = rearrange(x, 't b c d h w -> t b d h w c')
+            x = op(x, state_labels)
+            x = rearrange(x, 't b d h w c -> t b c d h w')
+            return (x, geometry)
         elif tkhead_type == 'graph':
             #input: (node_features, batch, edge_index); output: (emb node_features, batch, edge_index)
             node_features, batch, edge_index = x 
@@ -216,6 +227,10 @@ class BaseModel(nn.Module):
             x = tokenizer[embed_index](x)
             x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
             #self.debug_nan(x, message="embed_ensemble")
+        elif tkhead_type == 'gno':
+            ## input: (x, geometry); output: (x)
+            # x: [t, b, c_emb//4, d, h, w]
+            x = tokenizer[embed_index](x)
         elif tkhead_type == 'graph':
             #input: (node_features, batch, edge_index); output: (node_features, batch, edge_index)
             x = tokenizer[embed_index](x) 
@@ -445,6 +460,10 @@ class BaseModel(nn.Module):
             #t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
             t_pos_area = None
             return x, None, None, mask_padding, None, None, t_pos_area, None
+        elif tkhead_type == 'gno':
+            x = rearrange(x, 't b c d h w -> t b c (d h w)')
+            t_pos_area = None
+            return x, None, None, None, None, None, t_pos_area, None
         elif tkhead_type == 'default':
             x = rearrange(x, 't b c d h w -> t b c (d h w)')
             t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
@@ -481,6 +500,8 @@ class BaseModel(nn.Module):
         ########################################################################
         if tkhead_type == 'graph':
             return debed_ensemble[-1](x_padding) #return batched graph
+        elif tkhead_type == 'gno':
+            return debed_ensemble[-1](x_padding, space_dims)
 
         T, B = x_padding.shape[:2]
         ntokendim   =[]

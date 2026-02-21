@@ -486,7 +486,7 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     tkhead_type = 'gno'
                     inp = (inp, geometry)
-                    imod_bottom = imod
+                    imod_bottom = -1 # not used
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     tkhead_type = 'default'
@@ -660,9 +660,11 @@ class Trainer:
                         tkhead_type = 'graph'
                         inp = graphdata
                         imod_bottom = imod
-                    elif 'gno' in data:
+                    elif "geometry" in data:
+                        inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         tkhead_type = 'gno'
                         inp = (inp, geometry)
+                        imod_bottom = -1 # not used
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         tkhead_type = 'default'

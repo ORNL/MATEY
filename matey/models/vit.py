@@ -144,6 +144,12 @@ class ViT_all2all(BaseModel):
             x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
             refineind=None
             x = (x, batch, edge_index)
+        elif tkhead_type == 'gno':
+            x, geometry = data
+            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+            T, _, _ , D, H, W = x.shape
+            refineind=None
+            x = (x, geometry)
         else:
             x = data
             #T,B,C,D,H,W
@@ -211,6 +217,8 @@ class ViT_all2all(BaseModel):
                 x= densenodes_to_graphnodes(x_padding, mask_padding) #[nnodes, T, C]
                 x_padding = (x, batch, edge_index)
                 D, H, W = -1, -1, -1 #place holder
+            elif tkhead_type == 'gno':
+                x_padding = (x_padding, geometry)
 
             x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, tkhead_type=tkhead_type)
 
