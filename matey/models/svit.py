@@ -125,13 +125,13 @@ class sViT_all2all(BaseModel):
         #unpack arguments
         imod = opts.imod
         tkhead_name = opts.tkhead_name
+        tkhead_type = opts.tkhead_type
         sequence_parallel_group = opts.sequence_parallel_group
         leadtime = opts.leadtime
         blockdict = opts.blockdict
         cond_dict = opts.cond_dict
         refine_ratio = opts.refine_ratio
         cond_input = opts.cond_input
-        isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
@@ -139,14 +139,14 @@ class sViT_all2all(BaseModel):
         if field_labels_out is None:
             field_labels_out = state_labels
 
-        if isgraph:
+        if tkhead_type == 'graph':
             x = data.x#nnodes, T, C
             edge_index = data.edge_index #
             batch = data.batch ##[N_total]
             x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
             refineind=None
             x = (x, batch, edge_index)
-        else:
+        elif tkhead_type == 'default':
             x = data
             #T,B,C,D,H,W
             T, _, _, D, H, W = x.shape
@@ -165,19 +165,19 @@ class sViT_all2all(BaseModel):
             leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [T, B, C_emb, ntoken_len_tot]########
         if  self.sts_model:
-            assert not isgraph, "Not set sts_model yet"
+            assert tkhead_type == 'default', "Not set sts_model yet"
             #x_padding: coarse tokens; x_local: refined local tokens
             x_padding, patch_ids, _, _, x_local, leadtime_local, tposarea_padding, tposarea_local = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, leadtime=leadtime, blockdict=blockdict)
             mask_padding = None
             x_local = rearrange(x_local, 'nrfb t c dhw_sts -> t nrfb c dhw_sts')
         else:
-            x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+            x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, tkhead_type=tkhead_type)
 
         # Repeat the steps for conditioning if present
         if conditioning:
             assert self.sts_model == False
             assert refineind == None
-            assert not isgraph, "Not set conditioning yet"
+            assert tkhead_type == 'default', "Not set conditioning yet"
             c, _, _, _, _, _, _, _ = self.get_patchsequence(cond_dict["fields"], cond_dict["labels"], tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, conditioning=conditioning)
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
@@ -202,15 +202,15 @@ class sViT_all2all(BaseModel):
             xbase = self.get_spatiotemporalfromsequence(x_padding, None, None, [D, H, W], tkhead_name)
             x = self.add_sts_model(xbase, patch_ids, x_local, bcs, tkhead_name, leadtime=leadtime_local, t_pos_area=tposarea_local)
         else:
-            if isgraph:
+            if tkhead_type == 'graph':
                 x_padding = rearrange(x_padding, 't b c ntoken_tot -> b ntoken_tot t c')
                 #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
                 # #output: [N_total, T, C] (only real nodes)
                 x= densenodes_to_graphnodes(x_padding, mask_padding) #[nnodes, T, C]
                 x_padding = (x, batch, edge_index)
                 D, H, W = -1, -1, -1 #place holder
-            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
-            if isgraph:
+            x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, tkhead_type=tkhead_type)
+            if tkhead_type == 'graph':
                 node_ft, batch, edge_index = x
                 #node_ft: [nnodes, T, C]
                 x = node_ft[:,:,field_labels_out[0]]

@@ -472,12 +472,12 @@ class Trainer:
                 tar = tar.to(self.device)
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 if "graph" in data:
-                    isgraph = True
+                    tkhead_type = 'graph'
                     inp = graphdata
                     imod_bottom = imod
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                    isgraph = False
+                    tkhead_type = 'default'
                     imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
@@ -491,7 +491,7 @@ class Trainer:
                 blockdict=copy.deepcopy(blockdict),
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
-                isgraph=isgraph,
+                tkhead_type=tkhead_type,
                 field_labels_out= field_labels_out
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
@@ -499,14 +499,14 @@ class Trainer:
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                 #compute loss and update (in-place) logging dicts.
-                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if tkhead_type == 'graph' else None, logs, loss_logs, dset_type, self.params)
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
                 torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
                 if bad.item() > 0:
                     print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
                     print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
                     continue
-                if not isgraph:
+                if tkhead_type == 'default':
                     if self.params.pei_debug:
                         checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
                                             self.device, self.params.debug_outdir, istep=steps, imod=-1)
@@ -541,7 +541,7 @@ class Trainer:
                     print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
-                        batch_idx, self.global_rank, inp.shape if not isgraph else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
+                        batch_idx, self.global_rank, inp.shape if tkhead_type == 'default' else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
                 data_start = self.timer.get_time()
             self.check_memory("train-end %d"%batch_idx)
         if self.params.scheduler == 'steplr':
@@ -639,12 +639,12 @@ class Trainer:
                     tar = tar.to(self.device)
                     imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                     if "graph" in data:
-                        isgraph = True
+                        tkhead_type = 'graph'
                         inp = graphdata
                         imod_bottom = imod
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                        isgraph = False
+                        tkhead_type = 'default'
                         imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                     seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
                     opts = ForwardOptionsBase(
@@ -656,14 +656,14 @@ class Trainer:
                     blockdict=copy.deepcopy(blockdict),
                     cond_dict=copy.deepcopy(cond_dict),
                     cond_input=cond_input,
-                    isgraph=isgraph,
+                    tkhead_type=tkhead_type,
                     field_labels_out= field_labels_out
                     )
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
-                    update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
-                    if not isgraph and getattr(self.params, "log_ssim", False):
+                    update_loss_logs_inplace_eval(output, tar, graphdata if tkhead_type == 'graph' else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
+                    if tkhead_type == 'default' and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
                             logs['valid_ssim'] += avg_ssim
             self.check_memory("validate-end")

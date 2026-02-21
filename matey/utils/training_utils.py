@@ -60,7 +60,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     """
     rollout_steps = preprocess_target(opts.leadtime) 
     x_t = inp
-    if opts.isgraph:
+    if opts.tkhead_type == 'graph':
         n_steps = x_t.x.shape[1] #[nnodes, T, C]
         #FIXME: I realize it takes more to make this function work for graphs and will open a seperate PR on this
         raise ValueError("Autoregressive rollout is not supported yet for graphs")

@@ -215,12 +215,12 @@ class TurbT(BaseModel):
         imod = opts.imod
         imod_bottom = opts.imod_bottom
         tkhead_name = opts.tkhead_name
+        tkhead_type = opts.tkhead_type
         sequence_parallel_group = opts.sequence_parallel_group
         leadtime = opts.leadtime
         blockdict = opts.blockdict
         refine_ratio = opts.refine_ratio
         cond_input = opts.cond_input
-        isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
         ##################################################################
         if refine_ratio is None:
@@ -231,7 +231,7 @@ class TurbT(BaseModel):
         if field_labels_out is None:
             field_labels_out = state_labels
 
-        if isgraph:
+        if tkhead_type == 'graph':
             """
             For graph objects: support one level for now
             FIXME: extend to multiple levels
@@ -266,7 +266,7 @@ class TurbT(BaseModel):
         if self.cond_input and cond_input is not None:
             leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
-        x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+        x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, tkhead_type=tkhead_type)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
@@ -278,7 +278,7 @@ class TurbT(BaseModel):
         ######## Process ########
         #only send mask if mask_padding indicates padding tokens
         mask4attblk = None if (mask_padding is not None and mask_padding.all()) else mask_padding
-        local_att = not isgraph and imod>imod_bottom 
+        local_att = (tkhead_type == 'default') and imod>imod_bottom 
         if local_att:
             #each mode similar cost
             nfact=max(2**(2*(imod-imod_bottom))//blockdict["nproc_blocks"][-1], 1) if blockdict is not None else max(2**(2*(imod-imod_bottom)), 1)
@@ -291,7 +291,7 @@ class TurbT(BaseModel):
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
             if iblk==0:
                 b_mod=x.shape[0]
-                if not isgraph and leadtime is not None:
+                if tkhead_type == 'default' and leadtime is not None:
                     leadtime = leadtime.repeat(b_mod // B, 1)
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:
@@ -303,7 +303,7 @@ class TurbT(BaseModel):
         ################################################################################
         x = rearrange(x, 'b c (t ntoken_tot) -> t b c ntoken_tot', t=T)
         #################################################################################
-        if isgraph:
+        if tkhead_type == 'graph':
             x = rearrange(x, 't b c ntoken_tot -> b ntoken_tot t c')
             #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
             #output: [N_total, T, C] (only real nodes)
@@ -311,8 +311,8 @@ class TurbT(BaseModel):
             x = (x, batch, edge_index)
             D, H, W = -1, -1, -1 #place holder
         ######## Decode ########
-        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
-        if isgraph:
+        x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, tkhead_type=tkhead_type)
+        if tkhead_type == 'graph':
             node_ft, batch, edge_index = x
             #node_ft: [nnodes, T, C]
             x = node_ft[:,:,field_labels_out[0]]
