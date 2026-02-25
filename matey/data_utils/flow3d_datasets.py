@@ -292,6 +292,10 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
         comb_x, cond_data = get_data(time_idx, time_idx + self.nsteps_input)
         comb_y, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
 
+        # Make sure that the generated sample matches the cubsizes
+        D, H, W = comb_x.shape[-3:]
+        assert [H, W, D] == self.cubsizes
+
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
         return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "geometry": torch.from_numpy(self.geometry)}
