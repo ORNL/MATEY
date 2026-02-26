@@ -527,33 +527,35 @@ class GNOhMLP_stem(nn.Module):
         """
         x, geometry = data
 
-        T, B, C, D, H, W = x.shape
+        T, B, _, _, _, _ = x.shape
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
         out = torch.zeros(T, B, self.out_chans, Dlat, Hlat, Wlat, device=x.device)
 
-        x = rearrange(x, 't b c d h w -> b t (h w d) c')
-
         # The challenge is that different samples in the same batch may correspond to different geometries
-        input_grid = [None] * B
-        latent_grid = [None] * B
+        x   = rearrange(x,   't b c d h w -> b t (h w d) c')
         out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_grid[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            geometry_mask = geometry["geometry_mask"][b]
+
+            input_grid = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            input_grid = input_grid[geometry_mask,:]
+
+            xin = x[b,:,geometry_mask,:]
 
             # Rescale auxiliary grid
             bmin = [None] * 3
             bmax = [None] * 3
             for d in range(3):
-                bmin[d] = input_grid[b][:,d].min()
-                bmax[d] = input_grid[b][:,d].max()
-            latent_grid[b] = self.latent_grid.to(device=x.device)
+                bmin[d] = input_grid[:,d].min()
+                bmax[d] = input_grid[:,d].max()
+            latent_grid = self.latent_grid.to(device=x.device)
             for d in range(3):
-                latent_grid[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[b][:,d]
+                latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
 
             # Use T as batch
-            out[b] = self.gno(y=input_grid[b], x=latent_grid[b], f_y=x[b], key=str(geometry_id) + ":in")
+            out[b] = self.gno(y=input_grid, x=latent_grid, f_y=xin, key=str(geometry_id) + ":in")
         out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=Dlat, h=Hlat, w=Wlat)
 
         return out
@@ -593,33 +595,34 @@ class GNOhMLP_output(nn.Module):
         """
         x, geometry = data
 
-        T, B, C, N = x.shape
+        T, B, C, _ = x.shape
         D, H, W = space_dims
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
-        input_grid = [None] * B
-        latent_grid = [None] * B
+        out = torch.zeros(T, B, self.out_chans, D, H, W, device=x.device)
+
+        x = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
+
+        out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_grid[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            geometry_mask = geometry["geometry_mask"][b]
+
+            output_grid = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            output_grid = output_grid[geometry_mask,:]
 
             # Rescale auxiliary grid
             bmin = [None] * 3
             bmax = [None] * 3
             for d in range(3):
-                bmin[d] = input_grid[b][:,d].min()
-                bmax[d] = input_grid[b][:,d].max()
-            latent_grid[b] = self.latent_grid.to(device=x.device)
+                bmin[d] = output_grid[:,d].min()
+                bmax[d] = output_grid[:,d].max()
+            latent_grid = self.latent_grid.to(device=x.device)
             for d in range(3):
-                latent_grid[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[b][:,d]
+                latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
 
-        x = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
-
-        out = torch.zeros(T, B, self.out_chans, D, H, W, device=x.device)
-        out = rearrange(out, 't b c d h w -> b t (h w d) c')
-        for b in range(B):
             # Use T as batch
-            out[b] = self.gno(y=latent_grid[b], x=input_grid[b], f_y=x[b], key=str(geometry_id) + ":out")
+            out[b,:,geometry_mask,:] = self.gno(y=latent_grid, x=output_grid, f_y=x[b], key=str(geometry_id) + ":out")
         out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=D, h=H, w=W)
 
         return out

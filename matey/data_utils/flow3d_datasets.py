@@ -289,10 +289,20 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             data = data.transpose((0, -1, 3, 1, 2))
             cond_data = cond_data.transpose((0, -1, 3, 1, 2))
 
-            return data, cond_data
+            # Geometry mask in [(HWD)] order
+            geometry_mask = np.full((total_padded_cells), False)
+            geometry_mask[inside_idx] = True
+            for ft in features:
+                bcs = f['boundary-conditions'][ft]
+                for name, desc in bcs.items():
+                    if desc.attrs['type'] == 'fixed-value':
+                        boundary_idx = np.array(f['grid/boundaries'][name])
+                        geometry_mask[boundary_idx] = True
 
-        comb_x, cond_data = get_data(time_idx, time_idx + self.nsteps_input)
-        comb_y, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
+            return data, cond_data, geometry_mask
+
+        comb_x, cond_data, geometry_mask = get_data(time_idx, time_idx + self.nsteps_input)
+        comb_y, _, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
 
         # Make sure that the generated sample matches the cubsizes
         D, H, W = comb_x.shape[-3:]
@@ -300,7 +310,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "grid_coords": self.grid}
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "grid_coords": self.grid, "geometry_mask": torch.from_numpy(geometry_mask)}
 
     def _get_specific_bcs(self):
         # FIXME: not used for now
