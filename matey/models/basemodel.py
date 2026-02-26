@@ -193,7 +193,7 @@ class BaseModel(nn.Module):
             sys.exit(-1)
 
     def get_unified_preembedding(self, x, state_labels, op, tkhead_type='default'):
-        if tkhead_type == 'default':
+        if tkhead_type == 'default' or tkhead_type == 'gno':
             ## input tensor x: [t, b, c, d, h, w]; state_labels[b, c]
             # state_labels: variable index to consider varying datasets 
             # return [t, b, c_emb//4, d, h, w]
@@ -203,12 +203,6 @@ class BaseModel(nn.Module):
             x = rearrange(x, 't b d h w c -> t b c d h w')
             #self.debug_nan(x)
             return x
-        elif tkhead_type == 'gno':
-            x, geometry = x
-            x = rearrange(x, 't b c d h w -> t b d h w c')
-            x = op(x, state_labels)
-            x = rearrange(x, 't b d h w c -> t b c d h w')
-            return (x, geometry)
         elif tkhead_type == 'graph':
             #input: (node_features, batch, edge_index); output: (emb node_features, batch, edge_index)
             node_features, batch, edge_index = x 
@@ -446,7 +440,11 @@ class BaseModel(nn.Module):
         ########################################################
         #[T, B, C_emb//4, D, H, W]
         op = self.space_bag[ilevel] if not conditioning else self.space_bag_cond[ilevel]   
+        if tkhead_type == 'gno':
+            x, geometry = x
         x_pre = self.get_unified_preembedding(x, state_labels, op, tkhead_type)
+        if tkhead_type == 'gno':
+            x_pre = (x_pre, geometry)
         ##############tokenizie at the coarse scale##############
         # x in shape [T, B, C_emb, ntoken_z, ntoken_x, ntoken_y]
         tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
