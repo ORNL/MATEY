@@ -414,19 +414,13 @@ def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: fl
     if not sklearn_exist:
         raise RuntimeError("sklearn is required for constructing neighbors.")
 
-    start = time.time()
     kdtree = sklearn.neighbors.KDTree(data.cpu(), leaf_size=2)
-    construction_time = time.time() - start
 
-    start = time.time()
     if return_norm:
         indices, dists = kdtree.query_radius(queries.cpu(), r=radius, return_distance=True)
         weights = torch.from_numpy(np.concatenate(dists)).to(queries.device)
     else:
         indices = kdtree.query_radius(queries.cpu(), r=radius)
-    query_time = time.time() - start
-
-    #  print(f'neighbors: construction = {construction_time}, query = {query_time}', flush=True)
 
     sizes = np.array([arr.size for arr in indices])
     nbr_indices = torch.from_numpy(np.concatenate(indices)).to(queries.device)
