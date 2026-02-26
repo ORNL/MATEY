@@ -15,9 +15,6 @@ from torch_geometric.nn import GCNConv, GraphNorm
 from typing import List, Literal, Optional, Callable
 import time
 try:
-    from neuralop.layers.channel_mlp import LinearChannelMLP
-    from neuralop.layers.integral_transform import IntegralTransform
-    from neuralop.layers.embeddings import SinusoidalEmbedding
     from neuralop.layers.gno_block import GNOBlock
     neuralop_exist = True
 except ImportError:
@@ -444,11 +441,8 @@ def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: fl
 
     return nbr_dict
 
-class ModifiedGNOBlock(nn.Module):
-    """
-    The code is equivalent to the original GNOBlock in neuraloperator, except
-    for the use of custom neighbor search
-    """
+
+class ModifiedGNOBlock(GNOBlock):
     def __init__(self,
                  in_channels: int,
                  out_channels: int,
@@ -464,69 +458,14 @@ class ModifiedGNOBlock(nn.Module):
                  channel_mlp_non_linearity=F.gelu,
                  channel_mlp: nn.Module=None,
                  use_torch_scatter_reduce: bool=True):
-        super().__init__()
+        super().__init__(in_channels, out_channels, coord_dim, radius,
+                         transform_type, weighting_fn, reduction,
+                         pos_embedding_type, pos_embedding_channels,
+                         pos_embedding_max_positions, channel_mlp_layers,
+                         channel_mlp_non_linearity, channel_mlp,
+                         use_torch_scatter_reduce)
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.coord_dim = coord_dim
-
-        self.radius = radius
-
-        if not neuralop_exist:
-            raise RuntimeError("NeuralOp is required for running GNO module.")
-
-        # Apply sinusoidal positional embedding
-        self.pos_embedding_type = pos_embedding_type
-        if self.pos_embedding_type in ['nerf', 'transformer']:
-            self.pos_embedding = SinusoidalEmbedding(
-                in_channels=coord_dim,
-                num_frequencies=pos_embedding_channels,
-                embedding_type=pos_embedding_type,
-                max_positions=pos_embedding_max_positions
-            )
-        else:
-            self.pos_embedding = None
-
-        # Create in-to-out nb search module
         self.neighbor_search = CustomNeighborSearch(return_norm=weighting_fn is not None)
-
-        # create proper kernel input channel dim
-        if self.pos_embedding is None:
-            # x and y dim will be coordinate dim if no pos embedding is applied
-            kernel_in_dim = self.coord_dim * 2
-            kernel_in_dim_str = "dim(y) + dim(x)"
-        else:
-            # x and y dim will be embedding dim if pos embedding is applied
-            kernel_in_dim = self.pos_embedding.out_channels * 2
-            kernel_in_dim_str = "dim(y_embed) + dim(x_embed)"
-
-        if transform_type == "nonlinear" or transform_type == "nonlinear_kernelonly":
-            kernel_in_dim += self.in_channels
-            kernel_in_dim_str += " + dim(f_y)"
-
-        if channel_mlp is not None:
-            assert channel_mlp.in_channels == kernel_in_dim, f"Error: expected ChannelMLP to take\
-                  input with {kernel_in_dim} channels (feature channels={kernel_in_dim_str}),\
-                      got {channel_mlp.in_channels}."
-            assert channel_mlp.out_channels == out_channels, f"Error: expected ChannelMLP to have\
-                 {out_channels=} but got {channel_mlp.in_channels=}."
-            channel_mlp = channel_mlp
-
-        elif channel_mlp_layers is not None:
-            if channel_mlp_layers[0] != kernel_in_dim:
-                channel_mlp_layers = [kernel_in_dim] + channel_mlp_layers
-            if channel_mlp_layers[-1] != self.out_channels:
-                channel_mlp_layers.append(self.out_channels)
-            channel_mlp = LinearChannelMLP(layers=channel_mlp_layers, non_linearity=channel_mlp_non_linearity)
-
-        # Create integral transform module
-        self.integral_transform = IntegralTransform(
-            channel_mlp=channel_mlp,
-            transform_type=transform_type,
-            use_torch_scatter=use_torch_scatter_reduce,
-            weighting_fn=weighting_fn,
-            reduction=reduction
-        )
 
         self.neighbors_dict = {}
 
@@ -557,7 +496,6 @@ class ModifiedGNOBlock(nn.Module):
                                                f_y=f_y)
 
         return out_features
-
 
 class GNOhMLP_stem(nn.Module):
     """Geometry to patch embedding"""
