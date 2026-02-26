@@ -278,7 +278,7 @@ class TurbT(BaseModel):
         ######## Process ########
         #only send mask if mask_padding indicates padding tokens
         mask4attblk = None if (mask_padding is not None and mask_padding.all()) else mask_padding
-        local_att = (tkhead_type == 'default') and imod>imod_bottom 
+        local_att = (tkhead_type != 'graph') and imod>imod_bottom 
         if local_att:
             #each mode similar cost
             nfact=max(2**(2*(imod-imod_bottom))//blockdict["nproc_blocks"][-1], 1) if blockdict is not None else max(2**(2*(imod-imod_bottom)), 1)
@@ -291,7 +291,7 @@ class TurbT(BaseModel):
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
             if iblk==0:
                 b_mod=x.shape[0]
-                if tkhead_type == 'default' and leadtime is not None:
+                if tkhead_type != 'graph' and leadtime is not None:
                     leadtime = leadtime.repeat(b_mod // B, 1)
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:

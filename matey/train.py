@@ -518,7 +518,7 @@ class Trainer:
                     print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
                     print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
                     continue
-                if tkhead_type == 'default':
+                if tkhead_type != 'graph':
                     if self.params.pei_debug:
                         checking_data_pred_tar(tar, output, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, 
                                             self.device, self.params.debug_outdir, istep=steps, imod=-1)
@@ -686,7 +686,7 @@ class Trainer:
                     if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
                         tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                     update_loss_logs_inplace_eval(output, tar, graphdata if tkhead_type == 'graph' else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
-                    if tkhead_type == 'default' and getattr(self.params, "log_ssim", False):
+                    if tkhead_type != 'graph' and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
                             logs['valid_ssim'] += avg_ssim
             self.check_memory("validate-end")
