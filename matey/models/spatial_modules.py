@@ -522,8 +522,8 @@ class GNOhMLP_stem(nn.Module):
         ty = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
         tz = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
         X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
-        geometry = torch.stack((X, Y, Z), dim=-1)
-        self.latent_geom = torch.flatten(geometry, end_dim=-2)
+        grid = torch.stack((X, Y, Z), dim=-1)
+        self.latent_grid = torch.flatten(grid, end_dim=-2)
 
 
     def forward(self, data):
@@ -540,25 +540,25 @@ class GNOhMLP_stem(nn.Module):
         x = rearrange(x, 't b c d h w -> b t (h w d) c')
 
         # The challenge is that different samples in the same batch may correspond to different geometries
-        input_geom = [None] * B
-        latent_geom = [None] * B
+        input_grid = [None] * B
+        latent_grid = [None] * B
         out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_geom[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            input_grid[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
 
             # Rescale auxiliary grid
             bmin = [None] * 3
             bmax = [None] * 3
             for d in range(3):
-                bmin[d] = input_geom[b][:,d].min()
-                bmax[d] = input_geom[b][:,d].max()
-            latent_geom[b] = self.latent_geom.to(device=x.device)
+                bmin[d] = input_grid[b][:,d].min()
+                bmax[d] = input_grid[b][:,d].max()
+            latent_grid[b] = self.latent_grid.to(device=x.device)
             for d in range(3):
-                latent_geom[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_geom[b][:,d]
+                latent_grid[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[b][:,d]
 
             # Use T as batch
-            out[b] = self.gno(y=input_geom[b], x=latent_geom[b], f_y=x[b], key=str(geometry_id) + ":in")
+            out[b] = self.gno(y=input_grid[b], x=latent_grid[b], f_y=x[b], key=str(geometry_id) + ":in")
         out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=Dlat, h=Hlat, w=Wlat)
 
         return out
@@ -584,18 +584,12 @@ class GNOhMLP_output(nn.Module):
 
         self.res = params["resolution"]
 
-        bmin = [0, 0, 0]
-        bmax = [1, 1, 1]
-        self.latent_geom = self.generate_geometry(bmin, bmax, self.res)
-
-    def generate_geometry(self, bmin, bmax, res):
-        tx = np.linspace(bmin[0], bmax[0], res[0], dtype=np.float32)
-        ty = np.linspace(bmin[1], bmax[1], res[1], dtype=np.float32)
-        tz = np.linspace(bmin[2], bmax[2], res[2], dtype=np.float32)
-
-        geometry = torch.from_numpy(np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1))
-        return torch.flatten(geometry, end_dim=-2)
-
+        tx = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
+        ty = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
+        tz = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
+        grid = torch.stack((X, Y, Z), dim=-1)
+        self.latent_grid = torch.flatten(grid, end_dim=-2)
 
     def forward(self, data, space_dims):
         """
@@ -607,21 +601,21 @@ class GNOhMLP_output(nn.Module):
         D, H, W = space_dims
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
-        input_geom = [None] * B
-        latent_geom = [None] * B
+        input_grid = [None] * B
+        latent_grid = [None] * B
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_geom[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            input_grid[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
 
             # Rescale auxiliary grid
             bmin = [None] * 3
             bmax = [None] * 3
             for d in range(3):
-                bmin[d] = input_geom[b][:,d].min()
-                bmax[d] = input_geom[b][:,d].max()
-            latent_geom[b] = self.latent_geom.to(device=x.device)
+                bmin[d] = input_grid[b][:,d].min()
+                bmax[d] = input_grid[b][:,d].max()
+            latent_grid[b] = self.latent_grid.to(device=x.device)
             for d in range(3):
-                latent_geom[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_geom[b][:,d]
+                latent_grid[b][:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[b][:,d]
 
         x = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
 
@@ -629,7 +623,7 @@ class GNOhMLP_output(nn.Module):
         out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             # Use T as batch
-            out[b] = self.gno(y=latent_geom[b], x=input_geom[b], f_y=x[b], key=str(geometry_id) + ":out")
+            out[b] = self.gno(y=latent_grid[b], x=input_grid[b], f_y=x[b], key=str(geometry_id) + ":out")
         out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=D, h=H, w=W)
 
         return out

@@ -211,11 +211,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
         ty = torch.linspace(0, nx[1], res[1], dtype=torch.float32)
         tz = torch.linspace(0, nx[2], res[2], dtype=torch.float32)
         X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
-<<<<<<< HEAD
-        self.geometry = torch.stack((X, Y, Z), dim=-1)
-=======
         self.grid = torch.stack((X, Y, Z), dim=-1)
->>>>>>> e3f1608 (amend to flow3d update)
 
         return dictcase
 
