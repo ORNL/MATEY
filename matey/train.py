@@ -486,7 +486,7 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     tkhead_type = 'gno'
                     inp = (inp, geometry)
-                    imod_bottom = -1 # not used
+                    imod_bottom = imod
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     tkhead_type = 'default'
@@ -664,7 +664,7 @@ class Trainer:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         tkhead_type = 'gno'
                         inp = (inp, geometry)
-                        imod_bottom = -1 # not used
+                        imod_bottom = imod
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         tkhead_type = 'default'
