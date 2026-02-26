@@ -204,7 +204,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             else:
                 dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
 
-        # Store mesh coordinates in a [N, 3] tensor
+        # Store mesh coordinates in a [N, 3] tensor in H,W,D order
         nx = [self.cubsizes[2], self.cubsizes[0], self.cubsizes[1]]
         res = nx
         tx = torch.linspace(0, nx[0], res[0], dtype=torch.float32)

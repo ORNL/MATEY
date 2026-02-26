@@ -510,11 +510,12 @@ class GNOhMLP_stem(nn.Module):
 
         # FIXME: should there be a normalization layer here
 
-        self.res = params["resolution"]
+        self.res = params["resolution"] # z, x, y
 
-        tx = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
-        ty = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
-        tz = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        # Latent grid is [(HWD) x 3]
+        tx = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
+        ty = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        tz = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
         X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
         grid = torch.stack((X, Y, Z), dim=-1)
         self.latent_grid = torch.flatten(grid, end_dim=-2)
@@ -576,11 +577,12 @@ class GNOhMLP_output(nn.Module):
 
         # FIXME: should there be a normalization layer here
 
-        self.res = params["resolution"]
+        self.res = params["resolution"] # z, x, y
 
-        tx = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
-        ty = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
-        tz = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        # Latent grid is [(HWD) x 3]
+        tx = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
+        ty = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        tz = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
         X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
         grid = torch.stack((X, Y, Z), dim=-1)
         self.latent_grid = torch.flatten(grid, end_dim=-2)
