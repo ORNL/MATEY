@@ -205,12 +205,17 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
                 dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
 
         # Store mesh coordinates in a [N, 3] tensor
-        nx = [50, 194, 50]
+        nx = [self.cubsizes[2], self.cubsizes[0], self.cubsizes[1]]
         res = nx
-        tx = np.linspace(0, nx[0], res[0], dtype=np.float32)
-        ty = np.linspace(0, nx[1], res[1], dtype=np.float32)
-        tz = np.linspace(0, nx[2], res[2], dtype=np.float32)
-        self.geometry = np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1)
+        tx = torch.linspace(0, nx[0], res[0], dtype=torch.float32)
+        ty = torch.linspace(0, nx[1], res[1], dtype=torch.float32)
+        tz = torch.linspace(0, nx[2], res[2], dtype=torch.float32)
+        X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
+<<<<<<< HEAD
+        self.geometry = torch.stack((X, Y, Z), dim=-1)
+=======
+        self.grid = torch.stack((X, Y, Z), dim=-1)
+>>>>>>> e3f1608 (amend to flow3d update)
 
         return dictcase
 
@@ -299,7 +304,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "grid_coords": torch.from_numpy(self.geometry)}
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "grid_coords": self.grid}
 
     def _get_specific_bcs(self):
         # FIXME: not used for now

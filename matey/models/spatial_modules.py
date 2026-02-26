@@ -518,10 +518,11 @@ class GNOhMLP_stem(nn.Module):
 
         self.res = params["resolution"]
 
-        tx = np.linspace(0, 1, self.res[0], dtype=np.float32)
-        ty = np.linspace(0, 1, self.res[1], dtype=np.float32)
-        tz = np.linspace(0, 1, self.res[2], dtype=np.float32)
-        geometry = torch.from_numpy(np.stack(np.meshgrid(tx, ty, tz, indexing="ij"), axis=-1))
+        tx = torch.linspace(0, 1, self.res[0], dtype=torch.float32)
+        ty = torch.linspace(0, 1, self.res[1], dtype=torch.float32)
+        tz = torch.linspace(0, 1, self.res[2], dtype=torch.float32)
+        X, Y, Z = torch.meshgrid(tx, ty, tz, indexing="ij")
+        geometry = torch.stack((X, Y, Z), dim=-1)
         self.latent_geom = torch.flatten(geometry, end_dim=-2)
 
 
