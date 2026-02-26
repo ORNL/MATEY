@@ -606,7 +606,7 @@ class GNOhMLP_stem(nn.Module):
         out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_geom[b] = torch.flatten(geometry["geometry"][b], end_dim=-2)
+            input_geom[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
 
             # Rescale auxiliary grid
             bmin = [None] * 3
@@ -672,7 +672,7 @@ class GNOhMLP_output(nn.Module):
         latent_geom = [None] * B
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
-            input_geom[b] = torch.flatten(geometry["geometry"][b], end_dim=-2)
+            input_geom[b] = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
 
             # Rescale auxiliary grid
             bmin = [None] * 3

@@ -630,7 +630,7 @@ class Trainer:
 
             if "geometry" in data:
                 geometry = data["geometry"]
-                geometry["geometry"] = geometry["geometry"].to(self.device)
+                geometry["grid_coords"] = geometry["grid_coords"].to(self.device)
             else:
                 geometry = None
 

@@ -204,6 +204,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             else:
                 dictcase[datacasedir]["stats"] = self.compute_and_save_stats(f, json_path)
 
+        # Store mesh coordinates in a [N, 3] tensor
         nx = [50, 194, 50]
         res = nx
         tx = np.linspace(0, nx[0], res[0], dtype=np.float32)
@@ -298,7 +299,7 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "geometry": torch.from_numpy(self.geometry)}
+        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data), {"geometry_id": dictcase["geometry_id"], "grid_coords": torch.from_numpy(self.geometry)}
 
     def _get_specific_bcs(self):
         # FIXME: not used for now
