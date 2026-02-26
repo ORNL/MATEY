@@ -539,7 +539,7 @@ class GNOhMLP_stem(nn.Module):
             geometry_id = geometry["geometry_id"][b]
             geometry_mask = geometry["geometry_mask"][b]
 
-            input_grid = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            input_grid = geometry["grid_coords"][b]
             input_grid = input_grid[geometry_mask,:]
 
             xin = x[b,:,geometry_mask,:]
@@ -601,14 +601,13 @@ class GNOhMLP_output(nn.Module):
 
         out = torch.zeros(T, B, self.out_chans, D, H, W, device=x.device)
 
-        x = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
-
+        x   = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
         out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
             geometry_mask = geometry["geometry_mask"][b]
 
-            output_grid = torch.flatten(geometry["grid_coords"][b], end_dim=-2)
+            output_grid = geometry["grid_coords"][b]
             output_grid = output_grid[geometry_mask,:]
 
             # Rescale auxiliary grid
