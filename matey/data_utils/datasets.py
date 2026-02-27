@@ -22,6 +22,7 @@ from .flow3d_datasets import *
 import os
 from torch_geometric.data import Data as GraphData, Batch
 import warnings
+from collections import OrderedDict
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -44,10 +45,6 @@ DSET_NAME_TO_OBJECT = {
     #TaylorGreen
     "taylorgreen": TaylorGreen,
     ##BLASTNET
-    "h2vitairli": H2vitairliDataset,
-    "h2jetRe": H2jetDataset,
-    "pass-fhit": FHITsnapshots,
-    "hit-dns": HITDNSsnapshots,
     "SR": SR_Benchmark,
     ##thewell
     "acousticmaze": acoustic_scattering_maze,
@@ -72,13 +69,50 @@ DSET_NAME_TO_OBJECT = {
     "turbradlayer2D":turbulent_radiative_layer_2D,
     "turbradlayer3D":turbulent_radiative_layer_3D,
     "viscoelastic":viscoelastic_instability,
-    ##SST
-    "sstF4R32": sstF4R32Dataset,
     ##Flow3D
     "flow3d": Flow3D_Object,
     ##deepmindgraphnet
     "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
+    #FIXME: these datasets are not set up correctly yet:
+    ##SST
+    #"sstF4R32": sstF4R32Dataset,
+    #BLASTNET
+    #"h2vitairli": H2vitairliDataset,
+    #"h2jetRe": H2jetDataset,
+    #"pass-fhit": FHITsnapshots,
+    #"hit-dns": HITDNSsnapshots,
     }
+# dictionary mapping canonical field names to lists of possible aliases in datasets; 
+# used when tie_fields is True to assign fields with different names but same physical meaning to the same channel
+# NOTE:use lowercase for all keys!
+CANONICAL_FIELDS = OrderedDict([
+    # velocity field
+    ("velocity_x", ["u", "ux", "vx", "ux_ms-1","ux_ms-1_id",
+        "velocity0", "velocity_0","uwnd","velocityx"]),
+    ("velocity_y", ["v", "uy", "vy", "uy_ms-1","uy_ms-1_id",
+        "velocity1", "velocity_1", "vwnd","velocityy"]),
+    ("velocity_z", ["w", "uz", "vz", "vw", "uz_ms-1","uz_ms-1_id",
+        "velocity2", "velocity_2", "wwnd"]),
+    # magnetic field
+    ("magnetic_field_x", ["magnetic_field0","induced_magnetic_field_0"]),
+    ("magnetic_field_y", ["magnetic_field1","induced_magnetic_field_1"]),
+    ("magnetic_field_z", ["magnetic_field2","induced_magnetic_field_2"]),
+
+    # scalar fields
+    ("density", ["rho", "dens", "density", "r", "rho_kgm-3", "rho_kgm-3_id"]),
+    ("temperature", ["t_k", "temperature","potentialtemperature"]),
+    ("pressure", ["pressure", "p", "p_pa", "pressure_re"]),
+    ("height", ["h", "height"]),
+    ("energy", ["energy","internal_energy"]),
+    ("concentration", ["concentration", "tracer","y"]),
+    # reaction-diffusion fields
+    ("species_a", ["a", "activator"]),
+    ("species_b", ["b", "inhibitor"]),
+])
+# fields for conditioning
+# NOTE: empty for now since we don't have anything to share across datasets
+CANONICAL_COND_FIELDS = OrderedDict([
+])
 
 def get_data_loader(params, paths, distributed, split='train', global_rank=0, num_sp_groups=None, group_size=1, train_offset=0, multiepoch_loader=False):
     #global_rank: global_rank
@@ -187,7 +221,27 @@ class MixedDataset(Dataset):
 
     def get_state_names(self):
         name_list = []
-        if self.use_all_fields:
+        if self.tie_fields:
+            # get canonical names instead of dataset-specific field names where available
+            canonical_names = list(CANONICAL_FIELDS.keys())
+            subset_dict = self._build_subset_dict()
+            channel_names = {}
+            for dset_name, dset in DSET_NAME_TO_OBJECT.items():
+                field_names = dset.field_names
+                indices = subset_dict[dset_name]
+
+                for field, idx in zip(field_names, indices):
+
+                    if idx < len(canonical_names):
+                        channel_names[idx] = canonical_names[idx]
+                    else:
+                        # add any extra fields that are not in the canonical list
+                        if idx not in channel_names:
+                            channel_names[idx] = field.lower()
+
+            max_idx = max(channel_names.keys())
+            return [channel_names[i] for i in range(max_idx + 1)]
+        elif self.use_all_fields:
             for name, dset in DSET_NAME_TO_OBJECT.items():
                 field_names = dset.field_names
                 name_list += field_names
@@ -201,16 +255,41 @@ class MixedDataset(Dataset):
                         name_list.append(dset.field_names)
         return [f for fl in name_list for f in fl] # Flatten the names
 
+    def build_alias_lookup(self):
+        alias_lookup = {}
+
+        for idx, (canonical_name, aliases) in enumerate(CANONICAL_FIELDS.items()):
+            for alias in aliases:
+                alias_lookup[alias.lower()] = idx
+
+        return alias_lookup
+
     def _build_subset_dict(self):
         # Maps fields to subsets of variables
-        if self.tie_fields: # Hardcoded, but seems less effective anyway
-            subset_dict = {
-                        'swe': [3],
-                        'incompNS': [0, 1, 2],
-                        'compNS': [0, 1, 2, 3],
-                        'diffre2d': [4, 5],
-                        'thermalcollision2d':[0, 1, 2, 6],
-                        }
+        if self.tie_fields and CANONICAL_FIELDS:
+            alias_lookup = self.build_alias_lookup()
+            subset_dict = {}
+            next_free_id = len(CANONICAL_FIELDS)
+            shared_extra_fields = {}
+            for name, dset in DSET_NAME_TO_OBJECT.items():
+                indices = []
+                for var in dset.field_names:
+                    key = var.lower()
+                    if key in alias_lookup:
+                        idx = alias_lookup[key]
+                    else:
+                        if key not in shared_extra_fields:
+                            shared_extra_fields[key] = next_free_id
+                            next_free_id += 1
+                        idx = shared_extra_fields[key]
+
+                    indices.append(idx)
+
+                subset_dict[name] = indices
+
+            return subset_dict
+
+
         elif self.use_all_fields:
             cur_max = 0
             subset_dict = {}
@@ -230,8 +309,34 @@ class MixedDataset(Dataset):
 
     def _build_subset_cond_dict(self):
         # Maps conditional fields to subsets of conditional variables
-        if self.tie_fields: # Hardcoded, but seems less effective anyway
-            raise ValueError("tie_fields is not implemented for _build_subset_cond_dict; use use_all_fields")
+        if self.tie_fields and CANONICAL_COND_FIELDS:
+            alias_lookup = {}
+            for idx, (_, aliases) in enumerate(CANONICAL_COND_FIELDS.items()):
+                for alias in aliases:
+                    alias_lookup[alias.lower()] = idx
+            subset_dict = {}
+            next_free_id = len(CANONICAL_COND_FIELDS)
+            shared_extra_fields = {}
+            for name, dset in DSET_NAME_TO_OBJECT.items():
+                # skip if dataset doesn't have conditional fields
+                if not hasattr(dset, "cond_field_names"):
+                    continue
+                indices = []
+                for var in dset.cond_field_names:
+                    key = var.lower()
+                    if key in alias_lookup:
+                        idx = alias_lookup[key]
+                    else:
+                        if key not in shared_extra_fields:
+                            shared_extra_fields[key] = next_free_id
+                            next_free_id += 1
+                        idx = shared_extra_fields[key]
+
+                    indices.append(idx)
+
+                subset_dict[name] = indices
+
+            return subset_dict
         elif self.use_all_fields:
             cur_max = 0
             subset_dict = {}
