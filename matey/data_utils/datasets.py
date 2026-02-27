@@ -301,6 +301,9 @@ class MixedDataset(Dataset):
 
             if "cond_input" in variables:
                 datasamples["cond_input"] = variables["cond_input"]
+
+            if "geometry" in variables:
+                datasamples["geometry"] = variables["geometry"]
         
             return datasamples
 

@@ -147,6 +147,13 @@ class Inferencer:
             else:
                 cond_input = None
 
+            if "geometry" in data:
+                geometry = data["geometry"]
+                geometry["grid_coords"] = geometry["grid_coords"].to(self.device)
+            else:
+                geometry = None
+
+
             cond_dict = {}
             try:
                 cond_dict["labels"] = data["cond_field_labels"].to(self.device)
@@ -164,15 +171,20 @@ class Inferencer:
                 tar = tar.to(self.device)
                 imod = self.params.hierarchical["nlevels"]-1 if hasattr(self.params, "hierarchical") else 0
                 if "graph" in data:
-                    isgraph = True
+                    tkhead_type = 'graph'
                     inp = graphdata
                     imod_bottom = imod
+                elif "geometry" in data:
+                    inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
+                    tkhead_type = 'gno'
+                    inp = (inp, geometry)
+                    imod_bottom = -1 # not used
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
-                    isgraph = False
+                    tkhead_type = 'default'
                     imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
                 seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
-                print(f"Rank {self.global_rank} input shape {inp.shape if not isgraph else inp}, dset_type {dset_type}", flush=True)
+                print(f"Rank {self.global_rank} input shape {inp.shape if tkhead_type == 'default' else inp[0].shape if tkhead_type == 'gno' else inp}, dset_type {dset_type}", flush=True)
                 opts = ForwardOptionsBase(
                 imod=imod, 
                 imod_bottom=imod_bottom,
@@ -182,7 +194,7 @@ class Inferencer:
                 blockdict=copy.deepcopy(blockdict),
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
-                isgraph=isgraph,
+                tkhead_type=tkhead_type,
                 field_labels_out= field_labels_out
                 )
                 output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
@@ -190,8 +202,8 @@ class Inferencer:
                     if rollout_steps is None:
                         rollout_steps = leadtime.view(-1).long()
                     tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
-                update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
-                if not isgraph and getattr(self.params, "log_ssim", False):
+                update_loss_logs_inplace_eval(output, tar, graphdata if tkhead_type == 'graph' else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
+                if tkhead_type == 'default' and getattr(self.params, "log_ssim", False):
                         avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
                         logs['valid_ssim'] += avg_ssim
         self.single_print('DONE VALIDATING - NOW SYNCING')
