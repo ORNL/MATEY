@@ -89,7 +89,7 @@ class TheWellDataset(Dataset):
         self.group_size=group_size
 
         if len(self.cubsizes)==3:
-                H, W, D = self.cubsizes #x,y,z
+            D, H, W = self.cubsizes #z,x,y
         else:
             H, W= self.cubsizes #x,y
             D=1    
