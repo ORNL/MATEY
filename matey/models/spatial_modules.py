@@ -464,10 +464,6 @@ class ModifiedGNOBlock(GNOBlock):
         self.neighbors_dict = {}
 
     def forward(self, y, x, f_y, key):
-        if f_y is not None:
-            if f_y.ndim == 3 and f_y.shape[0] == -1:
-                f_y = f_y.squeeze(0)
-
         key = f'{key}:{self.radius}:{y.shape}:{x.shape}'
         if not key in self.neighbors_dict:
             #  print(f'{key}: building new neighbors')
