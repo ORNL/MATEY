@@ -101,13 +101,7 @@ CANONICAL_FIELDS = OrderedDict([
     # scalar fields
     ("density", ["rho", "dens", "density", "r", "rho_kgm-3", "rho_kgm-3_id"]),
     ("temperature", ["t_k", "temperature","potentialtemperature"]),
-    ("pressure", ["pressure", "p", "p_pa", "pressure_re"]),
-    ("height", ["h", "height"]),
-    ("energy", ["energy","internal_energy"]),
-    ("concentration", ["concentration", "tracer","y"]),
-    # reaction-diffusion fields
-    ("species_a", ["a", "activator"]),
-    ("species_b", ["b", "inhibitor"]),
+    ("pressure", ["pressure", "p", "p_pa"]),
 ])
 # fields for conditioning
 # NOTE: empty for now since we don't have anything to share across datasets

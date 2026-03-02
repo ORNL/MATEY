@@ -16,7 +16,7 @@ from collections import OrderedDict
 import gc, psutil
 from torchinfo import summary
 from collections import defaultdict
-from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT
+from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT, CANONICAL_FIELDS, CANONICAL_COND_FIELDS
 from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
@@ -264,10 +264,11 @@ class Trainer:
             if self.global_rank == 0:
                 if self.scheduler is not None:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
-                                'optimizer_state_dict': self.optimizer.state_dict(),'scheduler_state_dict': self.scheduler.state_dict()}, checkpoint_path)
+                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS,
+                                'scheduler_state_dict': self.scheduler.state_dict()}, checkpoint_path)
                 else:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
-                                'optimizer_state_dict': self.optimizer.state_dict()}, checkpoint_path)
+                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS}, checkpoint_path)
 
     def restore_checkpoint_dcp(self, checkpoint_path):
         
