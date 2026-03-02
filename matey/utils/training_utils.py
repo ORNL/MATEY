@@ -9,6 +9,7 @@ from .forward_options import ForwardOptionsBase, TrainOptionsBase
 from contextlib import nullcontext
 from torch_geometric.nn import global_mean_pool
 from .visualization_utils import checking_data_pred_tar
+import copy
 
 def preprocess_target(leadtime, ramping_warmup = False):
     """
@@ -70,10 +71,14 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     cond_input = opts.cond_input.clone() if opts.cond_input is not None else None
     with ctx:
         for t in range(rollout_steps - 1):
+            blockdict=copy.deepcopy(opts.blockdict)
+            imod=opts.imod
             cond_input_t = cond_input[:, t:n_steps + t + 1] if cond_input is not None else None
             opts.cond_input = cond_input_t
             opts.leadtime = opts.leadtime * 0 + 1 #set leadtime to 1 for autoregressive training
             output_t = model(x_t, field_labels, bcs, opts)
+            opts.blockdict = blockdict
+            opts.imod = imod
             x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
 
     cond_input_t = cond_input[:, rollout_steps-1:n_steps+rollout_steps] if cond_input is not None else None
