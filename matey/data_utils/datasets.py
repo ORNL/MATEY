@@ -108,7 +108,8 @@ CANONICAL_FIELDS = OrderedDict([
 CANONICAL_COND_FIELDS = OrderedDict([
 ])
 
-def get_data_loader(params, paths, distributed, split='train', global_rank=0, num_sp_groups=None, group_size=1, train_offset=0, multiepoch_loader=False):
+def get_data_loader(params, paths, distributed, split='train', global_rank=0, num_sp_groups=None, group_size=1, train_offset=0, multiepoch_loader=False,
+                    canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS):
     #global_rank: global_rank
     #num_sp_groups: number of SP groups
     #group_size: number of ranks in each group
@@ -127,7 +128,8 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                             leadtime_max=max(leadtime_max, 0),
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
-                            global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]))
+                            global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]),
+                            canonical_fields=canonical_fields, canonical_cond_fields=canonical_cond_fields)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
         base_sampler = DistributedSampler
@@ -161,10 +163,13 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
-                  global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"]):
+                  global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"],
+                  canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
+        self.canonical_fields = canonical_fields
+        self.canonical_cond_fields = canonical_cond_fields
         try:
             self.path_list, self.type_list, self.include_string = zip(*path_list)
             self.tkhead_name=[tokenizer_heads[0]["head_name"] for _ in self.path_list]
@@ -217,7 +222,7 @@ class MixedDataset(Dataset):
         name_list = []
         if self.tie_fields:
             # get canonical names instead of dataset-specific field names where available
-            canonical_names = list(CANONICAL_FIELDS.keys())
+            canonical_names = list(self.canonical_fields.keys())
             subset_dict = self._build_subset_dict()
             channel_names = {}
             for dset_name, dset in DSET_NAME_TO_OBJECT.items():
@@ -260,10 +265,10 @@ class MixedDataset(Dataset):
 
     def _build_subset_dict(self):
         # Maps fields to subsets of variables
-        if self.tie_fields and CANONICAL_FIELDS:
+        if self.tie_fields and self.canonical_fields:
             alias_lookup = self.build_alias_lookup()
             subset_dict = {}
-            next_free_id = len(CANONICAL_FIELDS)
+            next_free_id = len(self.canonical_fields)
             shared_extra_fields = {}
             for name, dset in DSET_NAME_TO_OBJECT.items():
                 indices = []
@@ -303,13 +308,13 @@ class MixedDataset(Dataset):
 
     def _build_subset_cond_dict(self):
         # Maps conditional fields to subsets of conditional variables
-        if self.tie_fields and CANONICAL_COND_FIELDS:
+        if self.tie_fields and self.canonical_cond_fields:
             alias_lookup = {}
-            for idx, (_, aliases) in enumerate(CANONICAL_COND_FIELDS.items()):
+            for idx, (_, aliases) in enumerate(self.canonical_cond_fields.items()):
                 for alias in aliases:
                     alias_lookup[alias.lower()] = idx
             subset_dict = {}
-            next_free_id = len(CANONICAL_COND_FIELDS)
+            next_free_id = len(self.canonical_cond_fields)
             shared_extra_fields = {}
             for name, dset in DSET_NAME_TO_OBJECT.items():
                 # skip if dataset doesn't have conditional fields
@@ -331,7 +336,9 @@ class MixedDataset(Dataset):
                 subset_dict[name] = indices
 
             return subset_dict
-        elif self.use_all_fields:
+        elif self.use_all_fields or not self.canonical_cond_fields:
+            if not self.canonical_cond_fields and not self.use_all_fields:
+                warnings.warn("Warning: Use_all_fields is False but no canonical conditional fields defined. Defaulting to using all conditional fields without tying.")
             cur_max = 0
             subset_dict = {}
             for name, dset in DSET_NAME_TO_OBJECT.items():

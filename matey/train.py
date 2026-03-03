@@ -61,6 +61,7 @@ class Trainer:
         self.group_size = dist.get_world_size(self.current_group)
 
         self.iters = 0
+        self.set_field_dictionary() #
         self.initialize_data()
         #print(f"Initializing model on rank {self.global_rank}")
         self.refine_resol=None
@@ -157,10 +158,10 @@ class Trainer:
             print(f"Initializing data on rank {self.global_rank}; total {self.num_sequence_parallel_groups} SP groups with {self.group_size} ranks each", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
                           dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups, canonical_fields=self.canonical_fields, canonical_cond_fields=self.canonical_cond_fields)
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
                           dist.is_initialized(), split='val',
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups, canonical_fields=self.canonical_fields, canonical_cond_fields=self.canonical_cond_fields)
         
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
@@ -395,6 +396,47 @@ class Trainer:
                 self.model.unfreeze()
 
         self.model = self.model.to(self.device)
+    
+    def set_field_dictionary(self):
+        if self.params.resuming:
+            checkpoint = torch.load(self.params.checkpoint_path, map_location='cuda:{}'.format(self.local_rank) if torch.cuda.is_available() else torch.device('cpu'), weights_only=False)
+            ckpt_fields = checkpoint.get('canonical_fields', CANONICAL_FIELDS)
+            ckpt_cond_fields = checkpoint.get('canonical_cond_fields', CANONICAL_COND_FIELDS)
+
+            current_set = set(CANONICAL_FIELDS)
+            ckpt_set = set(ckpt_fields)
+
+            if ckpt_set == current_set:
+                self.canonical_fields = ckpt_fields
+                
+            elif ckpt_set.issubset(current_set):
+                # new_fields = current_set - ckpt_set
+                # print(f"New canonical fields introduced: {sorted(new_fields)}")
+                self.canonical_fields = CANONICAL_FIELDS
+            else:
+                missing_in_current = ckpt_set - current_set
+                raise ValueError(
+                    "Inconsistent canonical fields between checkpoint and current model.\n"
+                    f"Fields present in checkpoint but missing in current model: {sorted(missing_in_current)}"
+                )
+            current_cond_set = set(CANONICAL_COND_FIELDS)
+            ckpt_cond_set = set(ckpt_cond_fields)
+
+            if ckpt_cond_set == current_cond_set:
+                self.canonical_cond_fields = ckpt_cond_fields
+            elif ckpt_cond_set.issubset(current_cond_set):
+                # new_cond_fields = current_cond_set - ckpt_cond_set
+                # print(f"New conditional fields introduced: {sorted(new_cond_fields)}")
+                self.canonical_cond_fields = CANONICAL_COND_FIELDS
+            else:
+                missing_in_current = ckpt_cond_set - current_cond_set
+                raise ValueError(
+                    "Inconsistent canonical conditional fields between checkpoint and current model.\n"
+                    f"Conditional fields present in checkpoint but missing in current model: {sorted(missing_in_current)}"
+                )
+        else:
+            self.canonical_fields = CANONICAL_FIELDS
+            self.canonical_cond_fields = CANONICAL_COND_FIELDS
 
     def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
