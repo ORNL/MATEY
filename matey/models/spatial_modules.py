@@ -418,17 +418,20 @@ def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: fl
 
     if return_norm:
         indices, dists = kdtree.query_radius(queries.cpu(), r=radius, return_distance=True)
-        weights = torch.from_numpy(np.concatenate(dists)).to(queries.device)
+        weights = torch.from_numpy(np.concatenate(dists))
     else:
         indices = kdtree.query_radius(queries.cpu(), r=radius)
 
     sizes = np.array([arr.size for arr in indices])
-    nbr_indices = torch.from_numpy(np.concatenate(indices)).to(queries.device)
-    nbrhd_sizes = torch.cumsum(torch.from_numpy(sizes).to(queries.device), dim=0)
-    splits = torch.cat((torch.tensor([0.]).to(queries.device), nbrhd_sizes))
+    nbr_indices = torch.from_numpy(np.concatenate(indices))
+    nbrhd_sizes = torch.cumsum(torch.from_numpy(sizes), dim=0)
+    splits = torch.cat((torch.tensor([0.]), nbrhd_sizes))
+
+    #  print(f'nbr_indices: {nbr_indices.shape[0]}', flush=True)
+    #  print(f'max nbrhd size: {np.max(sizes)}, avg nbhrd size: {float(nbr_indices.shape[0])/len(sizes)}', flush=True)
 
     nbr_dict = {}
-    nbr_dict['neighbors_index'] = nbr_indices.long().to(queries.device)
+    nbr_dict['neighbors_index'] = nbr_indices.long()
     nbr_dict['neighbors_row_splits'] = splits.long()
     if return_norm:
         nbr_dict['weights'] = weights**2
@@ -480,9 +483,12 @@ class ModifiedGNOBlock(GNOBlock):
             y_embed = y
             x_embed = x
 
+        neighbors = self.neighbors_dict[key]
+        for item in neighbors:
+            neighbors[item] = neighbors[item].to(f_y.device)
         out_features = self.integral_transform(y=y_embed,
                                                x=x_embed,
-                                               neighbors=self.neighbors_dict[key],
+                                               neighbors=neighbors,
                                                f_y=f_y)
 
         return out_features
@@ -501,7 +507,10 @@ class GNOhMLP_stem(nn.Module):
             out_channels=out_chans,
             coord_dim=3,
             radius=self.radius,
-            transform_type='nonlinear_kernelonly'
+            transform_type='nonlinear_kernelonly',
+            pos_embedding_type='none',
+            channel_mlp_layers=[128]
+            #  transform_type='linear_kernelonly'
         )
 
         # FIXME: should there be a normalization layer here
@@ -523,7 +532,8 @@ class GNOhMLP_stem(nn.Module):
         """
         x, geometry = data
 
-        T, B, _, _, _, _ = x.shape
+
+        T, B, _, D, H, W = x.shape
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
         out = torch.zeros(T, B, self.out_chans, Dlat, Hlat, Wlat, device=x.device)
@@ -558,19 +568,27 @@ class GNOhMLP_stem(nn.Module):
 
 class GNOhMLP_output(nn.Module):
     """Patch to geometry de-bedding"""
-    def __init__(self, params, in_chans, out_chans):
+    def __init__(self, params, in_chans, mid_chans, out_chans):
         super().__init__()
 
         self.in_chans = in_chans
         self.out_chans = out_chans
         self.radius = params["radius_out"]
 
+        # Add MLP to reduce the number of channels.
+        # This is to reduce the amount of memory used by IntegralTransform
+        self.mlp = nn.Linear(in_chans, mid_chans)
+        self.act = nn.GELU()
+
         self.gno = ModifiedGNOBlock(
-            in_channels=in_chans,
+            in_channels=mid_chans,
             out_channels=out_chans,
             coord_dim=3,
             radius=self.radius,
-            transform_type='nonlinear_kernelonly'
+            transform_type='nonlinear_kernelonly',
+            pos_embedding_type='none',
+            channel_mlp_layers=[64]
+            #  transform_type='linear_kernelonly'
         )
 
         # FIXME: should there be a normalization layer here
@@ -590,6 +608,10 @@ class GNOhMLP_output(nn.Module):
         data:  (x, geometry)
         """
         x, geometry = data
+
+        x = rearrange(x, 't b c n -> t b n c')
+        x = self.act(self.mlp(x))
+        x = rearrange(x, 't b n c -> t b c n')
 
         T, B, C, _ = x.shape
         D, H, W = space_dims

@@ -78,7 +78,7 @@ class BaseModel(nn.Module):
                             embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                     elif "gno" in head_name:
                         embed_ensemble.append(GNOhMLP_stem(tk, in_chans=embed_dim//4, out_chans=embed_dim))
-                        debed_ensemble.append(GNOhMLP_output(tk, in_chans=embed_dim, out_chans=n_states_out))
+                        debed_ensemble.append(GNOhMLP_output(tk, in_chans=embed_dim, mid_chans=embed_dim//16, out_chans=n_states_out))
                         if self.conditioning:
                             embed_ensemble_cond.append(GNOhMLP_stem(tk, in_chans=embed_dim//4, embed_dim=embed_dim))
                     else:
