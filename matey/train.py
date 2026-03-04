@@ -396,44 +396,42 @@ class Trainer:
                 self.model.unfreeze()
 
         self.model = self.model.to(self.device)
-    
+    def alias_to_key_mapping(self, d):
+        alias_to_key = {}
+        for key, aliases in d.items():
+            for alias in aliases:
+                if alias in alias_to_key:
+                    raise ValueError(f"invalid field dictionary: alias '{alias}' appears under multiple canonical fields.")
+                alias_to_key[alias] = key
+        return alias_to_key
+    def check_field_dictionary_consistency(self, ckpt_fields, canon_fields):
+            current_set = set(canon_fields)
+            ckpt_set = set(ckpt_fields)
+            ckpt_alias_map = self.alias_to_key_mapping(ckpt_fields)
+            current_alias_map = self.alias_to_key_mapping(canon_fields)
+            for alias, old_key in ckpt_alias_map.items():
+                if alias in current_alias_map:
+                    new_key = current_alias_map[alias]
+                    if old_key != new_key:
+                        raise ValueError(f"alias ownership changed! Alias '{alias}' was mapped to '{old_key}' in checkpoint, but now maps to '{new_key}'.\n")
+            if ckpt_set == current_set:
+                return ckpt_fields
+            
+            elif ckpt_set.issubset(current_set):
+                new_fields = current_set - ckpt_set
+                raise ValueError(f"New fields in current canonical fields compared to checkpoint: {sorted(new_fields)}! This changes model n_states and needs partial model loading, not implemented yet. ")
+                # return canon_fields
+            else:
+                # missing_in_current = ckpt_set - current_set
+                # print(f"Fields missing in current canonical fields compared to checkpoint: {sorted(missing_in_current)}")
+                return ckpt_fields
     def set_field_dictionary(self):
         if self.params.resuming:
             checkpoint = torch.load(self.params.checkpoint_path, map_location='cuda:{}'.format(self.local_rank) if torch.cuda.is_available() else torch.device('cpu'), weights_only=False)
             ckpt_fields = checkpoint.get('canonical_fields', CANONICAL_FIELDS)
-            ckpt_cond_fields = checkpoint.get('canonical_cond_fields', CANONICAL_COND_FIELDS)
-
-            current_set = set(CANONICAL_FIELDS)
-            ckpt_set = set(ckpt_fields)
-
-            if ckpt_set == current_set:
-                self.canonical_fields = ckpt_fields
-                
-            elif ckpt_set.issubset(current_set):
-                # new_fields = current_set - ckpt_set
-                # print(f"New canonical fields introduced: {sorted(new_fields)}")
-                self.canonical_fields = CANONICAL_FIELDS
-            else:
-                missing_in_current = ckpt_set - current_set
-                raise ValueError(
-                    "Inconsistent canonical fields between checkpoint and current model.\n"
-                    f"Fields present in checkpoint but missing in current model: {sorted(missing_in_current)}"
-                )
-            current_cond_set = set(CANONICAL_COND_FIELDS)
-            ckpt_cond_set = set(ckpt_cond_fields)
-
-            if ckpt_cond_set == current_cond_set:
-                self.canonical_cond_fields = ckpt_cond_fields
-            elif ckpt_cond_set.issubset(current_cond_set):
-                # new_cond_fields = current_cond_set - ckpt_cond_set
-                # print(f"New conditional fields introduced: {sorted(new_cond_fields)}")
-                self.canonical_cond_fields = CANONICAL_COND_FIELDS
-            else:
-                missing_in_current = ckpt_cond_set - current_cond_set
-                raise ValueError(
-                    "Inconsistent canonical conditional fields between checkpoint and current model.\n"
-                    f"Conditional fields present in checkpoint but missing in current model: {sorted(missing_in_current)}"
-                )
+            ckpt_cond_fields = checkpoint.get('canonical_cond_fields', CANONICAL_COND_FIELDS)        
+            self.canonical_fields = self.check_field_dictionary_consistency(ckpt_fields, CANONICAL_FIELDS)
+            self.canonical_cond_fields= self.check_field_dictionary_consistency(ckpt_cond_fields, CANONICAL_COND_FIELDS)
         else:
             self.canonical_fields = CANONICAL_FIELDS
             self.canonical_cond_fields = CANONICAL_COND_FIELDS

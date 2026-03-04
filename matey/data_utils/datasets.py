@@ -84,7 +84,7 @@ DSET_NAME_TO_OBJECT = {
     }
 # dictionary mapping canonical field names to lists of possible aliases in datasets; 
 # used when tie_fields is True to assign fields with different names but same physical meaning to the same channel
-# NOTE:use lowercase for all keys!
+# NOTE:use lowercase for all keys! Don't change the order if resuming or finetuning.
 CANONICAL_FIELDS = OrderedDict([
     # velocity field
     ("velocity_x", ["u", "ux", "vx", "ux_ms-1","ux_ms-1_id",
@@ -257,7 +257,7 @@ class MixedDataset(Dataset):
     def build_alias_lookup(self):
         alias_lookup = {}
 
-        for idx, (canonical_name, aliases) in enumerate(CANONICAL_FIELDS.items()):
+        for idx, (canonical_name, aliases) in enumerate(self.canonical_fields.items()):
             for alias in aliases:
                 alias_lookup[alias.lower()] = idx
 
