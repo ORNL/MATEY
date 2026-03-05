@@ -10,6 +10,7 @@ from contextlib import nullcontext
 from torch_geometric.nn import global_mean_pool
 from .visualization_utils import checking_data_pred_tar
 import copy
+from torch_geometric.data import Data
 
 def preprocess_target(leadtime, ramping_warmup = False):
     """
@@ -67,28 +68,45 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
         raise ValueError(f"Not expecting unequal leadtime across samples, {rollout_steps, opts.leadtime, is_constant}")
     
     x_t = inp
+    ctx = torch.no_grad() if pushforward else nullcontext()
     if opts.isgraph:
-        n_steps = x_t.x.shape[1] #[nnodes, T, C]
-        #FIXME: I realize it takes more to make this function work for graphs and will open a seperate PR on this
-        raise ValueError("Autoregressive rollout is not supported yet for graphs")
+        graphdata = Data(**x_t.to_dict()).to(inp.x.device)
+        assert opts.cond_input is None, f"cond_input is not supported yet, but got {opts.cond_dict}"
+        with ctx:
+            src_labels = field_labels[0]           # [C]
+            out_labels = opts.field_labels_out[0]  # [C_out]
+            matches = (src_labels.unsqueeze(0) == out_labels.unsqueeze(1))   # [C_out, C]
+            if (matches.sum(dim=1) != 1).any():
+                raise ValueError("Each output label must appear exactly once in field_labels[0]")
+            output_inds = matches.float().argmax(dim=1)  # [C_out]
+            opts.leadtime = opts.leadtime * 0 + 1 #set leadtime to 1 for autoregressive training
+            x_hist = graphdata.x  # [nnodes, T, C]
+            for t in range(rollout_steps - 1):
+                graphdata.x = x_hist
+                output_t = model(graphdata, field_labels, bcs, opts) #[nnodes, C_out]
+                #print("graphdata.x.shape", graphdata.x.shape, output_t.shape, output_inds, flush=True)
+                next_frame = x_hist[:, 0, :].clone()
+                next_frame[:,output_inds]= output_t
+                x_hist = torch.cat((x_hist[:, 1:, :], next_frame.unsqueeze(1)), dim=1) #[nnodes, T, C]
+            graphdata.x = x_hist
+            x_t = graphdata
     else:
         n_steps = inp.shape[0]
-    ctx = torch.no_grad() if pushforward else nullcontext()
-    cond_input = opts.cond_input.clone() if opts.cond_input is not None else None
-    with ctx:
-        for t in range(rollout_steps - 1):
-            blockdict=copy.deepcopy(opts.blockdict)
-            imod=opts.imod
-            cond_input_t = cond_input[:, t:n_steps + t + 1] if cond_input is not None else None
-            opts.cond_input = cond_input_t
+        cond_input = opts.cond_input.clone() if opts.cond_input is not None else None
+        with ctx:
             opts.leadtime = opts.leadtime * 0 + 1 #set leadtime to 1 for autoregressive training
-            output_t = model(x_t, field_labels, bcs, opts)
-            opts.blockdict = blockdict
-            opts.imod = imod
-            x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
+            for t in range(rollout_steps - 1):
+                blockdict=copy.deepcopy(opts.blockdict)
+                imod=opts.imod
+                cond_input_t = cond_input[:, t:n_steps + t + 1] if cond_input is not None else None
+                opts.cond_input = cond_input_t
+                output_t = model(x_t, field_labels, bcs, opts)
+                opts.blockdict = blockdict
+                opts.imod = imod
+                x_t = torch.cat([x_t[1:], output_t.unsqueeze(0)], dim=0)
 
-    cond_input_t = cond_input[:, rollout_steps-1:n_steps+rollout_steps] if cond_input is not None else None
-    opts.cond_input = cond_input_t
+        cond_input_t = cond_input[:, rollout_steps-1:n_steps+rollout_steps] if cond_input is not None else None
+        opts.cond_input = cond_input_t
     output = model(x_t, field_labels, bcs, opts)# B,C,D,H,W
 
     return output, rollout_steps

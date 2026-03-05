@@ -572,9 +572,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             leadtime = 1
             #FIXME: (1) need to move AR for graph to the main repo; (2) leadtime>1 is supported
             if self.leadtime_fixed:
-                #TODO move commits on leadtime>1 from other branch here
-                leadtime = 1
-                #leadtime = self.leadtime_max #max(self.leadtime_max//2, 1)])
+                leadtime = self.leadtime_max #max(self.leadtime_max//2, 1)])
             #else:
             #    raise ValueError(f"Fix leadtime for now but got {self.leadtime_fixed}")
         else:
