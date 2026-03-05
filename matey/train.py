@@ -16,7 +16,7 @@ from collections import OrderedDict
 import gc, psutil
 from torchinfo import summary
 from collections import defaultdict
-from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT
+from .data_utils.datasets import get_data_loader, DSET_NAME_TO_OBJECT, CANONICAL_FIELDS, CANONICAL_COND_FIELDS
 from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
@@ -61,6 +61,7 @@ class Trainer:
         self.group_size = dist.get_world_size(self.current_group)
 
         self.iters = 0
+        self.set_field_dictionary() #
         self.initialize_data()
         #print(f"Initializing model on rank {self.global_rank}")
         self.refine_resol=None
@@ -157,10 +158,10 @@ class Trainer:
             print(f"Initializing data on rank {self.global_rank}; total {self.num_sequence_parallel_groups} SP groups with {self.group_size} ranks each", flush=True)
         self.train_data_loader, self.train_dataset, self.train_sampler = get_data_loader(self.params, self.params.train_data_paths,
                           dist.is_initialized(), split='train', train_offset=self.params.embedding_offset,
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups, canonical_fields=self.canonical_fields, canonical_cond_fields=self.canonical_cond_fields)
         self.valid_data_loader, self.valid_dataset, self.val_sampler = get_data_loader(self.params, self.params.valid_data_paths,
                           dist.is_initialized(), split='val',
-                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups)
+                          group_size= self.group_size, global_rank= self.global_rank, num_sp_groups=self.num_sequence_parallel_groups, canonical_fields=self.canonical_fields, canonical_cond_fields=self.canonical_cond_fields)
         
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         if dist.is_initialized():
@@ -264,10 +265,11 @@ class Trainer:
             if self.global_rank == 0:
                 if self.scheduler is not None:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
-                                'optimizer_state_dict': self.optimizer.state_dict(),'scheduler_state_dict': self.scheduler.state_dict()}, checkpoint_path)
+                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS,
+                                'scheduler_state_dict': self.scheduler.state_dict()}, checkpoint_path)
                 else:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
-                                'optimizer_state_dict': self.optimizer.state_dict()}, checkpoint_path)
+                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS}, checkpoint_path)
 
     def restore_checkpoint_dcp(self, checkpoint_path):
         
@@ -394,6 +396,45 @@ class Trainer:
                 self.model.unfreeze()
 
         self.model = self.model.to(self.device)
+    def alias_to_key_mapping(self, d):
+        alias_to_key = {}
+        for key, aliases in d.items():
+            for alias in aliases:
+                if alias in alias_to_key:
+                    raise ValueError(f"invalid field dictionary: alias '{alias}' appears under multiple canonical fields.")
+                alias_to_key[alias] = key
+        return alias_to_key
+    def check_field_dictionary_consistency(self, ckpt_fields, canon_fields):
+            current_set = set(canon_fields)
+            ckpt_set = set(ckpt_fields)
+            ckpt_alias_map = self.alias_to_key_mapping(ckpt_fields)
+            current_alias_map = self.alias_to_key_mapping(canon_fields)
+            for alias, old_key in ckpt_alias_map.items():
+                if alias in current_alias_map:
+                    new_key = current_alias_map[alias]
+                    if old_key != new_key:
+                        raise ValueError(f"alias ownership changed! Alias '{alias}' was mapped to '{old_key}' in checkpoint, but now maps to '{new_key}'.\n")
+            if ckpt_set == current_set:
+                return ckpt_fields
+            
+            elif ckpt_set.issubset(current_set):
+                new_fields = current_set - ckpt_set
+                raise ValueError(f"New fields in current canonical fields compared to checkpoint: {sorted(new_fields)}! This changes model n_states and needs partial model loading, not implemented yet. ")
+                # return canon_fields
+            else:
+                # missing_in_current = ckpt_set - current_set
+                # print(f"Fields missing in current canonical fields compared to checkpoint: {sorted(missing_in_current)}")
+                return ckpt_fields
+    def set_field_dictionary(self):
+        if self.params.resuming:
+            checkpoint = torch.load(self.params.checkpoint_path, map_location='cuda:{}'.format(self.local_rank) if torch.cuda.is_available() else torch.device('cpu'), weights_only=False)
+            ckpt_fields = checkpoint.get('canonical_fields', CANONICAL_FIELDS)
+            ckpt_cond_fields = checkpoint.get('canonical_cond_fields', CANONICAL_COND_FIELDS)        
+            self.canonical_fields = self.check_field_dictionary_consistency(ckpt_fields, CANONICAL_FIELDS)
+            self.canonical_cond_fields= self.check_field_dictionary_consistency(ckpt_cond_fields, CANONICAL_COND_FIELDS)
+        else:
+            self.canonical_fields = CANONICAL_FIELDS
+            self.canonical_cond_fields = CANONICAL_COND_FIELDS
 
     def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
