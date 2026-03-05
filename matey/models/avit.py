@@ -156,16 +156,16 @@ class AViT(BaseModel):
         #unpack arguments
         imod = opts.imod
         tkhead_name = opts.tkhead_name
+        tkhead_type = opts.tkhead_type
         sequence_parallel_group = opts.sequence_parallel_group
         leadtime = opts.leadtime
         blockdict = opts.blockdict
         cond_dict = opts.cond_dict
         refine_ratio = opts.refine_ratio
         cond_input = opts.cond_input
-        isgraph = opts.isgraph
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
-        assert not isgraph, "graph is not supported in AViT"
+        assert tkhead_type == 'default', "graph or gno are not supported in AViT"
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
         if self.tokenizer_heads_gammaref[tkhead_name] is None and refine_ratio is None:
