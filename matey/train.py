@@ -63,6 +63,8 @@ class Trainer:
         self.iters = 0
         self.set_field_dictionary() #
         self.initialize_data()
+        if self.params.pretrained:
+            self.ckpt_n_states = self.set_n_states_from_checkpoint(self.params.pretrained_ckpt_path)
         #print(f"Initializing model on rank {self.global_rank}")
         self.refine_resol=None
         if self.params.resuming == False and hasattr(self.params, "startfrom_path"):
@@ -79,11 +81,17 @@ class Trainer:
             if self.params.sts_model:
                 self.params.sts_model=False
         #checking input_states value
+        self.new_embedding = getattr(self.params, "new_embedding", False)
         labels_total=[self.train_dataset.subset_dict[dset] for dset in self.train_dataset.subset_dict]
         labels_total = [item  for sublist in labels_total for item in sublist]
         if self.params.n_states<max(labels_total)+1:
-            print(f"Warning, reserved n_states {self.params.n_states} is too small for datasets, set it to {max(labels_total)+1} instead")
-            self.params.n_states = max(labels_total)+1
+            use_ckpt = self.params.pretrained and hasattr(self, 'ckpt_n_states') and not self.new_embedding
+            new_n_states = self.ckpt_n_states if use_ckpt else max(labels_total) + 1
+            msg_suffix = (
+                f"using checkpoint value {self.ckpt_n_states}" if use_ckpt else
+                f"expanding to {new_n_states}" + (" (fully new embedding)" if self.new_embedding else ""))
+            print(f"Warning: reserved n_states {self.params.n_states} too small — {msg_suffix}.")
+            self.params.n_states = new_n_states
 
         self.initialize_model()
         self.initialize_optimizer()
@@ -95,7 +103,8 @@ class Trainer:
                     #model construction (same with pretrained) --> load pretrained weights --> expand input&output based on append_datasets --> freeze --> update optimizer
                 #elif resume from finetuning:
                     #model construction  (same with pretrained) --> expand input and output (same with expanded) and freeeze --> load saved finetuned weights
-                self.expand_model_pretraining()
+                if not self.new_embedding:
+                    self.expand_model_pretraining()
                 self.freeze_model_pretraining()
                 self.initialize_optimizer()
                 self.initialize_scheduler()
@@ -117,7 +126,8 @@ class Trainer:
                 pass
             else:
                 raise ValueError("%s not found" %self.params.pretrained_ckpt_path)
-            self.expand_model_pretraining()
+            if not self.new_embedding:
+                self.expand_model_pretraining()
             self.freeze_model_pretraining()
             self.iters = 0
             self.startEpoch = 0
@@ -266,10 +276,11 @@ class Trainer:
                 if self.scheduler is not None:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
                                 'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS,
-                                'scheduler_state_dict': self.scheduler.state_dict()}, checkpoint_path)
+                                'scheduler_state_dict': self.scheduler.state_dict(), 'n_states_actual': self.params.n_states}, checkpoint_path)
                 else:
                     torch.save({'iters': self.epoch*self.params.epoch_size, 'epoch': self.epoch, 'model_state': model.state_dict(),
-                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS}, checkpoint_path)
+                                'optimizer_state_dict': self.optimizer.state_dict(), 'canonical_fields': CANONICAL_FIELDS, 'canonical_cond_fields': CANONICAL_COND_FIELDS, 
+                                'n_states_actual': self.params.n_states}, checkpoint_path)
 
     def restore_checkpoint_dcp(self, checkpoint_path):
         
@@ -374,16 +385,55 @@ class Trainer:
         print(f"epoch:{self.epoch}")
         print("after", self.optimizer.param_groups[0]['lr'])
 
+    def set_n_states_from_checkpoint(self, checkpoint_path):
+        """Load n_states_actual from checkpoint before full model loading, so that we can initialize the model with correct n_states and avoid unnecessary expansion."""
+        n_states = None
+        if self.global_rank == 0:
+            ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            if 'n_states_actual' in ckpt:
+                n_states = ckpt['n_states_actual']
+                # print(f"Overriding n_states from checkpoint to {n_states}")
+        if dist.is_initialized():
+            result = [n_states]
+            dist.broadcast_object_list(result, src=0)
+            n_states = result[0]
+        return n_states
+    
+    def _get_non_canonical_fields(self, dataset_fields):
+        """Return fields that don't match any canonical field or its aliases."""
+        all_known_aliases = set()
+        for canonical_name, aliases in CANONICAL_FIELDS.items():
+            all_known_aliases.add(canonical_name)       # e.g. "velocity_x"
+            all_known_aliases.update(aliases)            # e.g. "u", "ux", "velx", ...
+
+        return [f for f in dataset_fields if f not in all_known_aliases]
+
     def expand_model_pretraining(self):
         # See how much we need to expand the projections
         exp_proj = 0
         # Iterate through the appended datasets and add on enough embeddings for all of them.
         for add_on in self.params.append_datasets:
-            exp_proj += len(DSET_NAME_TO_OBJECT[add_on]._specifics()[2])
-        try:
-            self.model.module.expand_projections(exp_proj)
-        except:
-            self.model.expand_projections(exp_proj)
+            all_fields = DSET_NAME_TO_OBJECT[add_on]._specifics()[2] #FIXME: this is not necessarily always index 2! Need a more robust way to determine this
+            if self.params.tie_fields:
+                novel_fields = self._get_non_canonical_fields(all_fields)
+                print('All fields in ',add_on, 'dataset:', all_fields, 'out of which novel fields:', novel_fields)
+                exp_proj += len(novel_fields)
+                print('Expanding model for dataset:', add_on, 'by', len(novel_fields), 'total expand so far:', exp_proj)
+            else:
+                exp_proj += len(all_fields)
+                print('Expanding model for dataset:', add_on, 'by', len(all_fields), 'total expand so far:', exp_proj)
+            
+        if exp_proj > 0:
+            self.single_print('Expanding model projections by', exp_proj)
+            model = self.model.module if hasattr(self.model, "module") else self.model
+
+            model.expand_projections(exp_proj)
+            self.params.n_states += exp_proj
+            self.single_print('Model expanded successfully')
+            if self.params.pei_debug:
+                old_model = copy.deepcopy(model)
+                self.single_print('Old model:', old_model)
+                self.single_print('New model:', self.model.module)
 
         expand_leadtime=False
         if hasattr(self.params, 'leadtime_max_finetuning') and self.params.leadtime_max_finetuning>1:
