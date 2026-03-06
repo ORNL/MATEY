@@ -309,17 +309,57 @@ class Trainer:
                 model_state = checkpoint['model_state']
             else:
                 model_state = checkpoint
-            try: 
-                self.model.load_state_dict(model_state)
-            except: 
-                if hasattr(self.model, 'module'):
-                    self.model.module.load_state_dict(model_state)
-                else:
-                    new_state_dict = OrderedDict()
-                    for key, val in model_state.items():
-                        name = key[7:]
-                        new_state_dict[name] = val
-                    self.model.load_state_dict(new_state_dict)
+            target_model = self.model.module if hasattr(self.model, 'module') else self.model
+            new_state = target_model.state_dict()
+
+            matched_state = OrderedDict()
+            for key, val in model_state.items():
+                # strip module prefix if present
+                if key.startswith("module."):
+                    key = key[len("module."):]
+                if key in new_state:
+                    if val.shape == new_state[key].shape:
+                        matched_state[key] = val
+            # load
+            target_model.load_state_dict(matched_state, strict=False)
+            # print summary if not resuming
+            if self.global_rank == 0 and not self.params.resuming:
+                missing_keys = []
+                extra_keys = []
+                shape_mismatch_keys = []
+
+                for k, v in model_state.items():
+                    stripped_key = k[len("module."):] if k.startswith("module.") else k
+                    # extra keys that are in checkpoint but not in model
+                    if stripped_key not in new_state:
+                        extra_keys.append(k)
+                    # mismatched shape keys
+                    elif v.shape != new_state[stripped_key].shape:
+                        shape_mismatch_keys.append(
+                            (k, v.shape, new_state[stripped_key].shape)
+                        )
+
+                # new keys that never appeared in checkpoint
+                ckpt_keys_stripped = {k[len("module."):] if k.startswith("module.") else k for k in model_state}
+                for mk in new_state:
+                    if mk not in ckpt_keys_stripped:
+                        missing_keys.append(mk)
+
+                print("\nModel load summary:")
+                print(f"New model parameters  : {len(new_state)}")
+                print(f"Checkpoint parameters : {len(model_state)}")
+                print(f"Matched & loaded      : {len(matched_state)}")
+                print(f"Missing keys (new model only): {len(missing_keys)}")
+                if missing_keys:
+                    for k in missing_keys:
+                        print("  ", k)
+                print(f"Extra keys (checkpoint only): {len(extra_keys)}")
+                if extra_keys:
+                    for k in extra_keys:
+                        print("  ", k)
+                print(f"Weight shape mismatches (not loaded): {len(shape_mismatch_keys)}")
+                for i, (k, ck_shape, m_shape) in enumerate(shape_mismatch_keys):
+                    print(f"  {k}: checkpoint {ck_shape} vs model {m_shape}")
             if self.params.resuming:  #restore checkpoint is used for finetuning as well as resuming. If finetuning (i.e., not resuming), restore checkpoint does not load optimizer state, instead uses config specified lr.
                 self.iters = checkpoint['iters']
                 #note the order for sequentialLR: lr -> optimizer, see https://github.com/pytorch/pytorch/issues/119168
