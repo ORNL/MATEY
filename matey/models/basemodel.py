@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
-from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output
+from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output, UpsampleinSpace, UpsampleConv3d 
 from .time_modules import leadtimeMLP
 from .input_modules import input_control_MLP
 from .positionbias_modules import positionbias_mod
@@ -120,23 +120,102 @@ class BaseModel(nn.Module):
         if expansion_amount==0:
             return
         with torch.no_grad():
-            # Expand input projections
-            temp_space_bag = SubsampledLinear(dim_in = self.space_bag.dim_in + expansion_amount, dim_out=self.space_bag.dim_out)
-            temp_space_bag.weight[:, :self.space_bag.dim_in] = self.space_bag.weight
-            temp_space_bag.bias = self.space_bag.bias
-            self.space_bag = temp_space_bag
-            # expand output projections
-            for ilevel in range(self.token_level):
-                out_head = nn.ConvTranspose3d(self.debed_ensemble[ilevel].embed_dim//4, self.debed_ensemble[ilevel].out_chans+expansion_amount,
-                                            kernel_size=(self.debed_ensemble[ilevel].kz[0],self.debed_ensemble[ilevel].ks[0],self.debed_ensemble[ilevel].ks[0]),
-                                            stride=(self.debed_ensemble[ilevel].kz[0],self.debed_ensemble[ilevel].ks[0],self.debed_ensemble[ilevel].ks[0]))
+            # Expand space_bag
+            new_space_bag = nn.ModuleList()
+            for i, old_layer in enumerate(self.space_bag):
 
-                temp_out_kernel = out_head.weight
-                temp_out_bias = out_head.bias
-                temp_out_kernel[:, :self.debed_ensemble[ilevel].out_chans, :, :] = self.debed_ensemble[ilevel].out_kernel
-                temp_out_bias[:self.debed_ensemble[ilevel].out_chans] = self.debed_ensemble[ilevel].out_bias
-                self.debed_ensemble[ilevel].out_kernel = nn.Parameter(temp_out_kernel)
-                self.debed_ensemble[ilevel].out_bias = nn.Parameter(temp_out_bias)
+                new_layer = SubsampledLinear(
+                    dim_in=old_layer.dim_in + expansion_amount,
+                    dim_out=old_layer.dim_out,
+                )
+
+                # Copy existing weights
+                new_layer.weight[:, :old_layer.dim_in] = old_layer.weight
+                new_layer.bias.copy_(old_layer.bias)
+                new_space_bag.append(new_layer)
+
+            self.space_bag = new_space_bag
+            # Expand debed layers
+            for level_dict in self.tokenizer_ensemble_heads:
+                for head_name, head_modules in level_dict.items():
+                    debed_ensemble = head_modules["debed"]
+
+                    new_debed_ensemble = nn.ModuleList()
+
+                    for old_debed in debed_ensemble:
+                        old_out = old_debed.out_chans
+                        new_out = old_out + expansion_amount
+
+                        # Rebuild hMLP_output
+                        new_debed = hMLP_output(
+                            patch_size=old_debed.patch_size,
+                            embed_dim=old_debed.embed_dim,
+                            out_chans=new_out,
+                            notransposed=old_debed.notransposed,
+                            smooth=old_debed.smooth,
+                        )
+
+                        old_head = old_debed.out_head
+                        new_head = new_debed.out_head
+                        # Copy weights
+                        new_head.weight[:, :old_out, ...].copy_(
+                            old_head.weight
+                        )
+                        new_head.bias[:old_out].copy_(
+                            old_head.bias
+                        )
+
+                        if isinstance(old_debed.smooth, nn.Conv3d):
+                            old_smooth = old_debed.smooth
+                            new_smooth = new_debed.smooth
+
+                            new_smooth.weight[:old_out, ...].copy_(old_smooth.weight)
+                            if old_smooth.bias is not None:
+                                new_smooth.bias[:old_out].copy_(old_smooth.bias)
+
+                        new_debed_ensemble.append(new_debed)
+
+                    head_modules["debed"] = new_debed_ensemble
+            # Expand UpsampleinSpace modules (only in turbt)
+            for module_dict in [getattr(self, 'module_upscale_space', None), getattr(self, 'module_upscale_space2D', None)]:
+                if module_dict is None:
+                    continue
+                for mod in module_dict.values():
+                    if not hasattr(mod, "_base_channels"):
+                        mod._base_channels = mod.channels
+                for key, old_mod in module_dict.items():
+                    old_c = old_mod._base_channels
+                    new_c = old_c + expansion_amount
+
+                    # Rebuild module
+                    new_mod = UpsampleinSpace(
+                        patch_size=old_mod.patch_size,
+                        channels=new_c,
+                        nconv=old_mod.nconv,
+                        notransposed=old_mod.notransposed,
+                    )
+
+                    # Copy weights
+                    for old_layer, new_layer in zip(old_mod.out_proj, new_mod.out_proj):
+                        # UpsampleConv3d
+                        if isinstance(old_layer, UpsampleConv3d):
+                            old_conv = old_layer.upsample[1]
+                            new_conv = new_layer.upsample[1]
+                            # Conv3d weight: (out_c, in_c, kD, kH, kW)
+                            new_conv.weight[:old_c, :old_c, ...].copy_(old_conv.weight[:old_c, :old_c, ...])
+
+                            if old_conv.bias is not None:
+                                new_conv.bias[:old_c].copy_(old_conv.bias[:old_c])
+
+                        #InstanceNorm3d
+                        elif isinstance(old_layer, nn.InstanceNorm3d):
+                            new_layer.weight[:old_c].copy_(old_layer.weight[:old_c])
+
+                        # GELU: no weights to copy
+                        else:
+                            pass
+                    new_mod._base_channels = old_c
+                    module_dict[key] = new_mod    
     
     def expand_leadtime(self, expand_leadtime, embed_dim):
         if not expand_leadtime:
