@@ -413,7 +413,7 @@ class Trainer:
         exp_proj = 0
         # Iterate through the appended datasets and add on enough embeddings for all of them.
         for add_on in self.params.append_datasets:
-            all_fields = DSET_NAME_TO_OBJECT[add_on]._specifics()[2] #FIXME: this is not necessarily always index 2! Need a more robust way to determine this
+            all_fields = DSET_NAME_TO_OBJECT[add_on].field_names
             if self.params.tie_fields:
                 novel_fields = self._get_non_canonical_fields(all_fields)
                 print('All fields in ',add_on, 'dataset:', all_fields, 'out of which novel fields:', novel_fields)

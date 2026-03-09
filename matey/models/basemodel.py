@@ -146,32 +146,63 @@ class BaseModel(nn.Module):
                         old_out = old_debed.out_chans
                         new_out = old_out + expansion_amount
 
-                        # Rebuild hMLP_output
-                        new_debed = hMLP_output(
-                            patch_size=old_debed.patch_size,
-                            embed_dim=old_debed.embed_dim,
-                            out_chans=new_out,
-                            notransposed=old_debed.notransposed,
-                            smooth=old_debed.smooth,
-                        )
+                        if isinstance(old_debed, hMLP_output):
+                            # Rebuild hMLP_output
+                            new_debed = hMLP_output(
+                                patch_size=old_debed.patch_size,
+                                embed_dim=old_debed.embed_dim,
+                                out_chans=new_out,
+                                notransposed=old_debed.notransposed,
+                                smooth=old_debed.smooth,
+                            )
 
-                        old_head = old_debed.out_head
-                        new_head = new_debed.out_head
-                        # Copy weights
-                        new_head.weight[:, :old_out, ...].copy_(
-                            old_head.weight
-                        )
-                        new_head.bias[:old_out].copy_(
-                            old_head.bias
-                        )
+                            old_head = old_debed.out_head
+                            new_head = new_debed.out_head
+                            # Copy weights
+                            new_head.weight[:, :old_out, ...].copy_(
+                                old_head.weight
+                            )
+                            new_head.bias[:old_out].copy_(
+                                old_head.bias
+                            )
 
-                        if isinstance(old_debed.smooth, nn.Conv3d):
-                            old_smooth = old_debed.smooth
-                            new_smooth = new_debed.smooth
+                            if isinstance(old_debed.smooth, nn.Conv3d):
+                                old_smooth = old_debed.smooth
+                                new_smooth = new_debed.smooth
 
-                            new_smooth.weight[:old_out, ...].copy_(old_smooth.weight)
-                            if old_smooth.bias is not None:
-                                new_smooth.bias[:old_out].copy_(old_smooth.bias)
+                                new_smooth.weight[:old_out, ...].copy_(old_smooth.weight)
+                                if old_smooth.bias is not None:
+                                    new_smooth.bias[:old_out].copy_(old_smooth.bias)
+                        elif isinstance(old_debed, GraphhMLP_output):
+                            # Rebuild GraphhMLP_output
+                            new_debed = GraphhMLP_output(
+                                patch_size=old_debed.patch_size,
+                                embed_dim=old_debed.embed_dim,
+                                out_chans=new_out,
+                                nconv=old_debed.nconv,
+                                smooth=old_debed.smooth_flag,
+                            )
+                            for old_conv, new_conv in zip(old_debed.convs, new_debed.convs):
+                                new_conv.lin.weight.copy_(old_conv.lin.weight)
+                                if old_conv.lin.bias is not None:
+                                    new_conv.lin.bias.copy_(old_conv.lin.bias)
+                            for old_norm, new_norm in zip(old_debed.norms, new_debed.norms):
+                                new_norm.weight.copy_(old_norm.weight)
+                                new_norm.bias.copy_(old_norm.bias)
+
+                            # out_head[0]- Linear(in_head, in_head) — copy
+                            new_debed.out_head[0].weight.copy_(old_debed.out_head[0].weight)
+                            new_debed.out_head[0].bias.copy_(old_debed.out_head[0].bias)
+                            # out_head[1]- GELU: no weights to copy
+                            # out_head[2]- Linear(in_head, out_chans) — output dim expands
+                            new_debed.out_head[2].weight[:old_out, :].copy_(old_debed.out_head[2].weight)
+                            new_debed.out_head[2].bias[:old_out].copy_(old_debed.out_head[2].bias)
+                            # smooth GCNConv: both in and out are out_chans, so both dims expand
+                            if old_debed.smooth is not None:
+                                new_debed.smooth.lin.weight[:old_out, :old_out].copy_(old_debed.smooth.lin.weight)
+                                if old_debed.smooth.lin.bias is not None:
+                                    new_debed.smooth.lin.bias[:old_out].copy_(old_debed.smooth.lin.bias)
+
 
                         new_debed_ensemble.append(new_debed)
 
@@ -181,6 +212,10 @@ class BaseModel(nn.Module):
                 if module_dict is None:
                     continue
                 for mod in module_dict.values():
+                    if not isinstance(mod, UpsampleinSpace):
+                        raise RuntimeError(
+                            f"Only UpsampleinSpace is supported for expansion (not fixedupsample or linearupsample mode)."
+                        )
                     if not hasattr(mod, "_base_channels"):
                         mod._base_channels = mod.channels
                 for key, old_mod in module_dict.items():
