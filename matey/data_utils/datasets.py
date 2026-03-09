@@ -73,6 +73,10 @@ DSET_NAME_TO_OBJECT = {
     "flow3d": Flow3D_Object,
     ##deepmindgraphnet
     "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
+    ##BubbleML
+    'poolboiling': PoolBoilingDataset,
+    ##ChannelLES - portUrb
+    'channelLES': ChannelLESDataset,
     #FIXME: these datasets are not set up correctly yet:
     ##SST
     #"sstF4R32": sstF4R32Dataset,
@@ -88,11 +92,11 @@ DSET_NAME_TO_OBJECT = {
 CANONICAL_FIELDS = OrderedDict([
     # velocity field
     ("velocity_x", ["u", "ux", "vx", "ux_ms-1","ux_ms-1_id",
-        "velocity0", "velocity_0","uwnd","velocityx"]),
+        "velocity0", "velocity_0","uwnd","velocityx","velx","uvel"]),
     ("velocity_y", ["v", "uy", "vy", "uy_ms-1","uy_ms-1_id",
-        "velocity1", "velocity_1", "vwnd","velocityy"]),
+        "velocity1", "velocity_1", "vwnd","velocityy", "vely","vvel"]),
     ("velocity_z", ["w", "uz", "vz", "vw", "uz_ms-1","uz_ms-1_id",
-        "velocity2", "velocity_2", "wwnd"]),
+        "velocity2", "velocity_2", "wwnd","wvel"]),
     # magnetic field
     ("magnetic_field_x", ["magnetic_field0","induced_magnetic_field_0"]),
     ("magnetic_field_y", ["magnetic_field1","induced_magnetic_field_1"]),

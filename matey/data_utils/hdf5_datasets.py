@@ -688,7 +688,52 @@ class DiffSorb1DDataset(BaseHDF5DirectoryDataset):
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
         return comb, leadtime.to(torch.float32)
+    
+class PoolBoilingDataset(BaseHDF5DirectoryDataset):
+    @staticmethod
+    def _specifics():
+        time_index = 0
+        sample_index = None
+        field_names = ['velx', 'vely', 'temperature', 'pressure', 'dfun']
+        type = 'poolboiling'
+        split_level = 'file'
+        cubsizes=[512, 512]
+        return time_index, sample_index, field_names, type, split_level, cubsizes
+    field_names = _specifics()[2] #class attributes
 
+    def _get_specific_stats(self, f):
+        samples = 1
+        steps = f['velx'].shape[0]# Per dset
+        return samples, steps
+
+    def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
+
+        if leadtime is None:
+            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+            leadtime = torch.randint(1, min(self.leadtime_max+1, file['velx'].shape[0]-time_idx+1), (1,))
+        else:
+            leadtime = min(leadtime, file['velx'].shape[0]-time_idx)
+
+        vx = file['velx'][time_idx-n_steps*self.dt:time_idx]
+        vy = file['vely'][time_idx-n_steps*self.dt:time_idx]
+        temp = file['temperature'][time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][time_idx-n_steps*self.dt:time_idx]
+        dist_field = file['dfun'][time_idx-n_steps*self.dt:time_idx]
+        comb_x =  np.stack([vx, vy, temp, p, dist_field], 1)
+
+        vx = file['velx'][time_idx+leadtime-1:time_idx+leadtime]
+        vy = file['vely'][time_idx+leadtime-1:time_idx+leadtime]
+        temp = file['temperature'][time_idx+leadtime-1:time_idx+leadtime]
+        p = file['pressure'][time_idx+leadtime-1:time_idx+leadtime]
+        dist_field = file['dfun'][time_idx+leadtime-1:time_idx+leadtime]
+        comb_y =  np.stack([vx, vy, temp, p, dist_field], 1)
+
+        comb = np.concatenate((comb_x, comb_y), axis=0)
+
+        return comb, leadtime.to(torch.float32)
+
+    def _get_specific_bcs(self, f):
+        return [0, 0] # Not Periodic
 
 
 
