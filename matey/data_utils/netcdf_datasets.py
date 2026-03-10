@@ -55,7 +55,7 @@ class BasenetCDFDirectoryDataset(Dataset):
         self.group_size=group_size
 
         if len(self.cubsizes)==3:
-            H, W, D = self.cubsizes #x,y,z
+            D, H, W = self.cubsizes #x,y,z
         else:
             H, W= self.cubsizes #x,y
             D=1   
@@ -195,8 +195,11 @@ class BasenetCDFDirectoryDataset(Dataset):
         #print("Pei debugging", trajectory.shape, index, flush=True)
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
-        trajectory=np.expand_dims(trajectory, axis=2)
-        assert list(trajectory.shape[-2:])==self.cubsizes, f"shape mismatch, {trajectory.shape[-2:], self.cubsizes}"
+        if len(self.cubsizes)==2:
+            trajectory=np.expand_dims(trajectory, axis=2)
+            assert list(trajectory.shape[-2:])==self.cubsizes, f"shape mismatch, {trajectory.shape[-2:], self.cubsizes}"
+        else: #3D
+            assert list(trajectory.shape[-3:])==self.cubsizes, f"shape mismatch, {trajectory.shape[-3:], self.cubsizes}"
 
         #start index and end size of local split for current
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
@@ -381,3 +384,145 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
             return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), in_actu.astype(np.float32)
         else:
             return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), None
+
+class  ChannelLESDataset(BasenetCDFDirectoryDataset):
+    @staticmethod
+    def _specifics():
+        time_index = 0
+        sample_index = None
+        field_names = ['uvel', 'vvel', 'wvel']
+        type = 'channelLES'
+        cubsizes=[128, 384, 768] # z,y,x
+        split_level = None
+        return time_index, sample_index, field_names, type, split_level, cubsizes
+    field_names = _specifics()[2] #class attributes
+
+    def get_min_max(self):
+        #based on u0-0.100000_ustar-0.002000
+        self.uminmax = [0.023344, 0.112253]
+        self.vminmax = [-0.033866, 0.031357]
+        self.wminmax = [-0.027963, 0.036650]
+
+
+    def _get_norm_data(self, data):
+        self.get_min_max()
+        data[:,:,:,0] = (data[:,:,:,0] - self.uminmax[0])/(self.uminmax[1] - self.uminmax[0])
+        data[:,:,:,1] = (data[:,:,:,1] - self.vminmax[0])  /(self.vminmax[1]   - self.vminmax[0])
+        data[:,:,:,2] = (data[:,:,:,2] - self.wminmax[0])   /(self.wminmax[1]    - self.wminmax[0])
+
+        return data
+
+    def _get_specific_bcs(self, dat):
+        return [0, 0]
+
+    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps):
+        frames_x = []
+        for i in range(time_idx - n_steps, time_idx):
+            if self.data_files[dat[i]] is None:
+                self._open_file(dat[i])
+            u = np.ma.getdata(self.data_files[dat[i]].variables["uvel"][:])
+            v = np.ma.getdata(self.data_files[dat[i]].variables["vvel"][:])
+            w = np.ma.getdata(self.data_files[dat[i]].variables["wvel"][:])
+            frames_x.append(np.stack([u, v, w], axis=-1))
+        comb_x = np.stack(frames_x, axis=0)  # n_steps, D, H, W, C
+
+        target_idx = time_idx - 1 + int(leadtime)
+        if self.data_files[dat[target_idx]] is None:
+            self._open_file(dat[target_idx])
+        u_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["uvel"][:])
+        v_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["vvel"][:])
+        w_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["wvel"][:])
+        comb_y = np.stack([u_y, v_y, w_y], axis=-1)[np.newaxis]
+
+        comb = np.concatenate([comb_x, comb_y], axis=0)
+        comb_norm = self._get_norm_data(comb)
+        return comb_norm.transpose(0, 4, 1, 2, 3).astype(np.float32), leadtime.to(torch.float32), None
+    
+    def _get_directory_stats(self, path):
+        """
+        ChannelLES: each subdirectory is one trajectory,
+        each .nc file within it is only one timestep.
+        """
+        subfolders = sorted([
+            os.path.join(path, d)
+            for d in os.listdir(path)
+            if os.path.isdir(os.path.join(path, d))
+            and d.startswith("u0-")  
+        ])
+
+        self.files_paths = subfolders 
+        self.n_files = len(self.files_paths)
+
+        self.file_lens    = []   # total timesteps per folder
+        self.file_nsteps  = []   # history length (same for all, = self.n_steps)
+        self.file_steps   = []   # number of valid starting indices per folder
+        self.file_samples = []   # number of independent trajectories per folder (always 1)
+        self.offsets      = [0]
+
+        self.folder_file_lists = []
+
+        for folder in subfolders:
+            nc_files = glob.glob(os.path.join(folder, "*.nc"))
+            if not nc_files:
+                continue
+
+            nc_files_sorted = sorted(
+                nc_files,
+                key=lambda f: int(os.path.splitext(os.path.basename(f))[0].split('_')[-1])
+            )
+
+            steps = len(nc_files_sorted) 
+
+            if steps - self.n_steps - (self.dt - 1) < 1:
+                raise ValueError(f"Folder {folder} has {steps} timesteps, but n_steps/history is {self.n_steps}.")
+
+            file_nsteps = self.n_steps
+            valid_starts = steps - file_nsteps - (self.dt - 1)  # number of valid time indices
+
+            self.folder_file_lists.append(nc_files_sorted)
+            self.file_lens.append(steps)
+            self.file_nsteps.append(file_nsteps)
+            self.file_steps.append(valid_starts)
+            self.file_samples.append(1)   # one trajectory per folder
+            self.offsets.append(self.offsets[-1] + valid_starts * 1)
+
+        self.offsets[0] = -1
+        self.datasets = [None for _ in self.files_paths]
+        self.len = self.offsets[-1]
+        self.data_files = {}
+
+        for nc_files in self.folder_file_lists:
+            for f in nc_files:
+                self.data_files[f] = None
+        # train/val/test split
+        if self.train_val_test is None:
+            print("WARNING: No train/val/test split specified. Using all data.")
+            self.split_offset = 0
+            self.len = self.offsets[-1]
+        else:
+            print(f"Using train/val/test split: {self.train_val_test}")
+            total_samples = sum(self.file_samples)
+            ideal_split_offsets = [
+                int(self.train_val_test[i] * total_samples) for i in range(3)
+            ]
+            end_ind = 0
+            for i in range(self.partition + 1):
+                run_sum  = 0
+                start_ind = end_ind
+                for samples, steps in zip(self.file_samples, self.file_steps):
+                    run_sum += samples
+                    if run_sum <= ideal_split_offsets[i]:
+                        end_ind += samples * steps
+                        if run_sum == ideal_split_offsets[i]:
+                            break
+                    else:
+                        end_ind += abs((run_sum - samples) - ideal_split_offsets[i]) * steps
+                        break
+            self.split_offset = start_ind
+            self.len = end_ind - start_ind
+
+    def _loaddata_file(self, file_ind):
+        self.datasets[file_ind] = self.folder_file_lists[file_ind]
+    
+    def _open_file(self, filepath):
+        self.data_files[filepath] = netCDF4.Dataset(filepath, 'r')
