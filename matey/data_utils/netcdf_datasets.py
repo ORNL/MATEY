@@ -436,8 +436,6 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
 
         comb = np.concatenate([comb_x, comb_y], axis=0)
         comb_norm = self._get_norm_data(comb)
-        D, H, W = self.cubsizes
-        comb_norm = comb_norm[:, :D, :H, :W, :]
         return comb_norm.transpose(0, 4, 1, 2, 3).astype(np.float32), leadtime.to(torch.float32), None
     
     def _get_directory_stats(self, path):
