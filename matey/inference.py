@@ -187,8 +187,6 @@ class Inferencer:
                 )
                 output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                 if tar.ndim == 6: #B,T,C,D,H,W
-                    if rollout_steps is None:
-                        rollout_steps = leadtime.view(-1).long()
                     tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
                 update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
                 if not isgraph and getattr(self.params, "log_ssim", False):
