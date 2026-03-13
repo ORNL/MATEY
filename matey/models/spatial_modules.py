@@ -16,6 +16,7 @@ from typing import List, Literal, Optional, Callable
 import time
 try:
     from neuralop.layers.gno_block import GNOBlock
+    from neuralop.layers.channel_mlp import ChannelMLP
     neuralop_exist = True
 except ImportError:
     neuralop_exist = False
@@ -504,13 +505,19 @@ class GNOhMLP_stem(nn.Module):
 
         self.gno = ModifiedGNOBlock(
             in_channels=in_chans,
-            out_channels=out_chans,
+            out_channels=in_chans,
             coord_dim=3,
             radius=self.radius,
-            transform_type='nonlinear_kernelonly',
-            pos_embedding_type='none',
-            channel_mlp_layers=[128]
-            #  transform_type='linear_kernelonly'
+            channel_mlp_layers=[16,16],
+        )
+
+        fno_lifting_channel_ratio = 4
+        fno_hidden_channels = 16
+        self.lifting = ChannelMLP(
+            in_channels=in_chans,
+            hidden_channels=fno_lifting_channel_ratio * fno_hidden_channels,
+            out_channels=out_chans,
+            n_layers=2,
         )
 
         # FIXME: should there be a normalization layer here
@@ -532,15 +539,12 @@ class GNOhMLP_stem(nn.Module):
         """
         x, geometry = data
 
-
         T, B, _, D, H, W = x.shape
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
         out = torch.zeros(T, B, self.out_chans, Dlat, Hlat, Wlat, device=x.device)
 
         # The challenge is that different samples in the same batch may correspond to different geometries
-        x   = rearrange(x,   't b c d h w -> b t (h w d) c')
-        out = rearrange(out, 't b c d h w -> b t (h w d) c')
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
             geometry_mask = geometry["geometry_mask"][b]
@@ -548,7 +552,8 @@ class GNOhMLP_stem(nn.Module):
             input_grid = geometry["grid_coords"][b]
             input_grid = input_grid[geometry_mask,:]
 
-            xin = x[b,:,geometry_mask,:]
+            xin = x[:,b,:]
+            xin = rearrange(xin, 't c d h w -> t (h w d) c')
 
             # Rescale auxiliary grid
             bmin = [None] * 3
@@ -561,8 +566,11 @@ class GNOhMLP_stem(nn.Module):
                 latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
 
             # Use T as batch
-            out[b] = self.gno(y=input_grid, x=latent_grid, f_y=xin, key=str(geometry_id) + ":in")
-        out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=Dlat, h=Hlat, w=Wlat)
+            aux = self.gno(y=input_grid, x=latent_grid, f_y=xin, key=str(geometry_id) + ":in")
+            aux = rearrange(aux, 't (hwd) c -> t c (hwd)')
+            aux = self.lifting(aux)
+            aux = rearrange(aux, 't c (h w d) -> t c d h w', d=Dlat, h=Hlat, w=Wlat)
+            out[:,b,:] = aux
 
         return out
 
@@ -575,23 +583,22 @@ class GNOhMLP_output(nn.Module):
         self.out_chans = out_chans
         self.radius = params["radius_out"]
 
-        # Add MLP to reduce the number of channels.
-        # This is to reduce the amount of memory used by IntegralTransform
-        self.mlp = nn.Linear(in_chans, mid_chans)
-        self.act = nn.GELU()
-
         self.gno = ModifiedGNOBlock(
-            in_channels=mid_chans,
-            out_channels=out_chans,
+            in_channels=in_chans,
+            out_channels=in_chans,
             coord_dim=3,
             radius=self.radius,
-            transform_type='nonlinear_kernelonly',
-            pos_embedding_type='none',
-            channel_mlp_layers=[64]
-            #  transform_type='linear_kernelonly'
+            channel_mlp_layers=[16,16],
         )
 
-        # FIXME: should there be a normalization layer here
+        projection_channel_ratio = 4
+        fno_hidden_channels = 16
+        self.projection = ChannelMLP(
+            in_channels=in_chans,
+            hidden_channels=projection_channel_ratio * fno_hidden_channels,
+            out_channels=out_chans,
+            n_layers=2,
+        )
 
         self.res = params["resolution"] # z, x, y
 
@@ -609,24 +616,19 @@ class GNOhMLP_output(nn.Module):
         """
         x, geometry = data
 
-        x = rearrange(x, 't b c n -> t b n c')
-        x = self.act(self.mlp(x))
-        x = rearrange(x, 't b n c -> t b c n')
-
         T, B, C, _ = x.shape
         D, H, W = space_dims
         Dlat, Hlat, Wlat = self.res[0], self.res[1], self.res[2]
 
         out = torch.zeros(T, B, self.out_chans, D, H, W, device=x.device)
 
-        x   = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
-        out = rearrange(out, 't b c d h w -> b t (h w d) c')
+        x = rearrange(x, 't b c (d h w) -> b t (h w d) c', d=Dlat, h=Hlat, w=Wlat)
         for b in range(B):
             geometry_id = geometry["geometry_id"][b]
             geometry_mask = geometry["geometry_mask"][b]
 
             output_grid = geometry["grid_coords"][b]
-            output_grid = output_grid[geometry_mask,:]
+            #  output_grid = output_grid[geometry_mask,:]
 
             # Rescale auxiliary grid
             bmin = [None] * 3
@@ -639,7 +641,11 @@ class GNOhMLP_output(nn.Module):
                 latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
 
             # Use T as batch
-            out[b,:,geometry_mask,:] = self.gno(y=latent_grid, x=output_grid, f_y=x[b], key=str(geometry_id) + ":out")
-        out = rearrange(out, 'b t (h w d) c -> t b c d h w', d=D, h=H, w=W)
+            # FIXME: can we use masked output_grid here
+            aux = self.gno(y=latent_grid, x=output_grid, f_y=x[b], key=str(geometry_id) + ":out")
+            aux = rearrange(aux, 't (hwd) c -> t c (hwd)')
+            aux = self.projection(aux)
+            aux = rearrange(aux, 't c (h w d) -> t c d h w', d=D, h=H, w=W)
+            out[:,b,:] = aux
 
         return out
