@@ -555,14 +555,9 @@ class GNOhMLP_stem(nn.Module):
             xin = xin[:,geometry_mask,:]
 
             # Rescale auxiliary grid
-            bmin = [None] * 3
-            bmax = [None] * 3
-            for d in range(3):
-                bmin[d] = input_grid[:,d].min()
-                bmax[d] = input_grid[:,d].max()
-            latent_grid = self.latent_grid.to(device=x.device)
-            for d in range(3):
-                latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
+            bmin = input_grid.min(dim=0).values
+            bmax = input_grid.max(dim=0).values
+            latent_grid = bmin + (bmax - bmin) * self.latent_grid.to(device=x.device)
 
             # Use T as batch
             aux = self.gno(y=input_grid, x=latent_grid, f_y=xin, key=str(geometry_id) + ":in")
@@ -630,14 +625,9 @@ class GNOhMLP_output(nn.Module):
             #  output_grid = output_grid[geometry_mask,:]
 
             # Rescale auxiliary grid
-            bmin = [None] * 3
-            bmax = [None] * 3
-            for d in range(3):
-                bmin[d] = output_grid[:,d].min()
-                bmax[d] = output_grid[:,d].max()
-            latent_grid = self.latent_grid.to(device=x.device)
-            for d in range(3):
-                latent_grid[:,d] = bmin[d] + (bmax[d] - bmin[d]) * latent_grid[:,d]
+            bmin = output_grid.min(dim=0).values
+            bmax = output_grid.max(dim=0).values
+            latent_grid = bmin + (bmax - bmin) * self.latent_grid.to(device=x.device)
 
             # Use T as batch
             # FIXME: can we use masked output_grid here
