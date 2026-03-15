@@ -429,7 +429,7 @@ def custom_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: fl
     splits = torch.cat((torch.tensor([0.]), nbrhd_sizes))
 
     #  print(f'nbr_indices: {nbr_indices.shape[0]}', flush=True)
-    #  print(f'max nbrhd size: {np.max(sizes)}, avg nbhrd size: {float(nbr_indices.shape[0])/len(sizes)}', flush=True)
+    #  print(f'max nbrhd size: {np.max(sizes)}, min nbrhd size: {np.min(sizes)}, avg nbhrd size: {float(nbr_indices.shape[0])/len(sizes)}', flush=True)
 
     nbr_dict = {}
     nbr_dict['neighbors_index'] = nbr_indices.long()
@@ -520,8 +520,6 @@ class GNOhMLP_stem(nn.Module):
             n_layers=2,
         )
 
-        # FIXME: should there be a normalization layer here
-
         self.res = params["resolution"] # z, x, y
 
         # Latent grid is [(HWD) x 3]
@@ -554,6 +552,7 @@ class GNOhMLP_stem(nn.Module):
 
             xin = x[:,b,:]
             xin = rearrange(xin, 't c d h w -> t (h w d) c')
+            xin = xin[:,geometry_mask,:]
 
             # Rescale auxiliary grid
             bmin = [None] * 3
@@ -645,6 +644,7 @@ class GNOhMLP_output(nn.Module):
             aux = self.gno(y=latent_grid, x=output_grid, f_y=x[b], key=str(geometry_id) + ":out")
             aux = rearrange(aux, 't (hwd) c -> t c (hwd)')
             aux = self.projection(aux)
+            aux[:,:,~geometry_mask] = 0
             aux = rearrange(aux, 't c (h w d) -> t c d h w', d=D, h=H, w=W)
             out[:,b,:] = aux
 
