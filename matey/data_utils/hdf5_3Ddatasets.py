@@ -10,7 +10,8 @@ from torch.utils.data import Dataset
 import h5py
 import glob
 from ..utils import getblocksplitstat
-from einops import rearrange
+from .utils import unwrap_leadtime_config
+from  pathlib import Path
 
 class BaseHDF53DDataset(Dataset):
     """
@@ -26,7 +27,7 @@ class BaseHDF53DDataset(Dataset):
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
 
@@ -39,7 +40,8 @@ class BaseHDF53DDataset(Dataset):
         self.extra_specific = extra_specific # Whether to use parameters in name
         
         self.dt = 1
-        self.leadtime_max = leadtime_max
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.nsteps_input = n_steps
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
@@ -87,7 +89,7 @@ class BaseHDF53DDataset(Dataset):
 
         # for a given set of len(timesteps) solutions and input length of self.nsteps_input, 
         # the number of segments for (input, next-step prediction) is
-        self.ntimesegs = len(self.timesteps)-self.nsteps_input
+        self.ntimesegs = len(self.timesteps) - self.nsteps_input -self.leadtime_max + 1
         if self.ntimesegs < 1:
             raise RuntimeError('Error: Path {} has {} steps, but nsteps_input is {}. Please set file steps = max allowable.'.format(path, len(self.timesteps), self.nsteps_input))
 
@@ -213,7 +215,7 @@ class BaseHDF53DDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -229,22 +231,31 @@ class BaseHDF53DDataset(Dataset):
         icy       = self.sample_info[sample_idx]["ycube"]
         icz       = self.sample_info[sample_idx]["zcube"]
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, len(self.timesteps)-time_idx-self.nsteps_input+1), (1,))
+            if self.leadtime_max==0:
+                leadtime = 0
+            else:
+                if self.leadtime_fixed:
+                    leadtime = self.leadtime_max
+                else:
+                    #generate a random leadtime uniformly sampled from [1, self.leadtime_max] 
+                    leadtime = torch.randint(1, min(self.leadtime_max+1, len(self.timesteps)-time_idx-self.nsteps_input+1), (1,)).item()
         else:
             leadtime = min(leadtime, len(self.timesteps)-time_idx-self.nsteps_input)
         
         assert time_idx + self.nsteps_input + leadtime <= len(self.timesteps)
 
         #open image files
-        file_pointers=[self._open_files(filepath, time_idx.item(), leadtime.item()) for filepath in filepaths]
-        #print("Pei debugging", filepaths, file_pointers, sample_idx, leadtime, self.sample_info[sample_idx], flush=True)
+        file_pointers=[self._open_files(filepath, time_idx.item(), leadtime) for filepath in filepaths]
+        #print("Pei debugging", filepaths, file_pointers, sample_idx, leadtime, self.sample_info[sample_idx], ix, iy, iz, flush=True)
         ########################################
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, icx, icy, icz, leadtime)
         bcs = self._get_specific_bcs()
         #########################################
-        #print("hdf5_3Ddatasets:", self.path, trajectory.min(), trajectory.max(), ix, iy, iz, icx, icy, icz, leadtime, flush=True)
-        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
+        
+        assert trajectory.shape[0]==self.nsteps_input+leadtime if self.leadtime_returnfull else self.nsteps_input+1, f"Check HDF53D data shape {trajectory.shape, self.nsteps_input, leadtime}"
+        return {"x":trajectory[:self.nsteps_input], "bcs": torch.as_tensor(bcs), 
+                "y": trajectory[-leadtime:] if self.leadtime_returnfull else trajectory[-1:], 
+                "leadtime":torch.tensor([leadtime]).to(torch.float32)}
 
     def __len__(self):
         return self.len
@@ -334,11 +345,13 @@ class isotropic1024Dataset(BaseHDF53DDataset):
             if self.data_files[filepath] is None:
                 self._open_file(filepath)
             file_pointers.append(self.data_files[filepath])
-        it=self.nsteps_input+leadtime-1
-        filepath=filename_0.replace(f"_t_{time_idx+self.time_start}_{time_idx+self.time_start}_",f"_t_{time_idx+self.time_start+it}_{time_idx+self.time_start+it}_")
-        if self.data_files[filepath] is None:
-            self._open_file(filepath)
-        file_pointers.append(self.data_files[filepath])
+        
+        output_list = range(self.nsteps_input, self.nsteps_input+leadtime) if self.leadtime_returnfull else [self.nsteps_input+leadtime-1 ]
+        for it in output_list:
+            filepath=filename_0.replace(f"_t_{time_idx+self.time_start}_{time_idx+self.time_start}_",f"_t_{time_idx+self.time_start+it}_{time_idx+self.time_start+it}_")
+            if self.data_files[filepath] is None:
+                self._open_file(filepath)
+            file_pointers.append(self.data_files[filepath])
         return file_pointers
     
     def _reconstruct_sample(self, file_pointerslist, time_idx, blk_ixs, blk_iys, blk_izs, icxs, icys, iczs, leadtime):
@@ -355,7 +368,7 @@ class isotropic1024Dataset(BaseHDF53DDataset):
         iblockstart = [isz0, isy0, isx0 ]
         iblockend = [isz0+cbszz, isy0+cbszy, isx0+cbszx] 
         comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, H, W, C
-        #get input history
+        #get input and label history
         time_idx = time_idx+self.time_start
         for file_pointers, blk_ix, blk_iy, blk_iz, icx, icy, icz in zip(file_pointerslist,blk_ixs, blk_iys, blk_izs, icxs, icys, iczs):
             output_index, datafile_index=self._getoverlapblocks(icz, icy, icx, iblockstart, iblockend)
@@ -364,7 +377,7 @@ class isotropic1024Dataset(BaseHDF53DDataset):
             else:
                 rz0, rz1, ry0, ry1, rx0, rx1 = output_index
                 bz0, bz1, by0, by1, bx0, bx1 = datafile_index
-            for it, file in enumerate(file_pointers[:-1]):
+            for it, file in enumerate(file_pointers[:self.nsteps_input]):
                 #x=file["xcoor"] #nx
                 #y=file["ycoor"] #ny
                 #z=file["zcoor"] #nz
@@ -374,19 +387,22 @@ class isotropic1024Dataset(BaseHDF53DDataset):
                 uvec = file["Velocity_%04d"%(time_idx+it)][blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1],:]
                 comb_xy[it, rz0:rz1, ry0:ry1, rx0:rx1, 0:3] = uvec[bz0:bz1, by0:by1, bx0:bx1,:]
                 comb_xy[it, rz0:rz1, ry0:ry1, rx0:rx1, 3:4] = p   [bz0:bz1, by0:by1, bx0:bx1,:]
-
-            #get label at leadtime
-            it = len(file_pointerslist[0][:-1])+leadtime.item()-1
-            file=file_pointers[-1]
-
-            p    = file["Pressure_%04d"%(time_idx+it)][blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1],:]
-            uvec = file["Velocity_%04d"%(time_idx+it)][blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1],:]
-            comb_xy[-1, rz0:rz1, ry0:ry1, rx0:rx1, 0:3] = uvec[bz0:bz1, by0:by1, bx0:bx1,:]
-            comb_xy[-1, rz0:rz1, ry0:ry1, rx0:rx1, 3:4] = p   [bz0:bz1, by0:by1, bx0:bx1,:]
+            #labels
+            for it, file in enumerate(file_pointers[self.nsteps_input:]):
+                #x=file["xcoor"] #nx
+                #y=file["ycoor"] #ny
+                #z=file["zcoor"] #nz
+                #p=file["Pressure_%04d"%(time_idx+it)] #in shape [nz, ny, nx, 1]
+                #uvec =file["Velocity_%04d"%(time_idx+it)]#in shape [nz, ny, nx, 3]
+                it_shift = self.nsteps_input+it if self.leadtime_returnfull else self.nsteps_input+leadtime-1
+                p    = file["Pressure_%04d"%(time_idx+it_shift)][blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1],:]
+                uvec = file["Velocity_%04d"%(time_idx+it_shift)][blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1],:]
+                comb_xy[self.nsteps_input+it, rz0:rz1, ry0:ry1, rx0:rx1, 0:3] = uvec[bz0:bz1, by0:by1, bx0:bx1,:]
+                comb_xy[self.nsteps_input+it, rz0:rz1, ry0:ry1, rx0:rx1, 3:4] = p   [bz0:bz1, by0:by1, bx0:bx1,:]
 
         #return: T,C,D,H,W
         #NOTE: cautious or not transpose spatial dimensions with parallel loading/splitting
-        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime.to(torch.float32)
+        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic
 
@@ -431,17 +447,19 @@ class TaylorGreen(BaseHDF53DDataset):
     def _open_files(self, filename_0, time_idx, leadtime):
         #return a list of file points where the first nsteps_input are for input files and the last one for label/output/target
         file_pointers=[]
-        for it in range(self.nsteps_input):
+        for it in range(self.nsteps_input):    
             ####ruvw_nt260.h5
             filepath=filename_0.replace(f"_nt{(time_idx+self.time_start)*20}.h5",f"_nt{(time_idx+self.time_start+it)*20}.h5")
             if self.data_files[filepath] is None:
                 self._open_file(filepath)
             file_pointers.append(self.data_files[filepath])
-        it=self.nsteps_input+leadtime-1
-        filepath=filename_0.replace(f"_nt{(time_idx+self.time_start)*20}.h5",f"_nt{(time_idx+self.time_start+it)*20}.h5")
-        if self.data_files[filepath] is None:
-            self._open_file(filepath)
-        file_pointers.append(self.data_files[filepath])
+        
+        output_list = range(self.nsteps_input, self.nsteps_input+leadtime) if self.leadtime_returnfull else [self.nsteps_input+leadtime-1]
+        for it in output_list:
+            filepath=filename_0.replace(f"_nt{(time_idx+self.time_start)*20}.h5",f"_nt{(time_idx+self.time_start+it)*20}.h5")
+            if self.data_files[filepath] is None:
+                self._open_file(filepath)
+            file_pointers.append(self.data_files[filepath])
         return file_pointers
     
     def _reconstruct_sample(self, file_pointerslist, time_idx, blk_ixs, blk_iys, blk_izs, icxs, icys, iczs, leadtime):
@@ -459,7 +477,7 @@ class TaylorGreen(BaseHDF53DDataset):
         iblockend = [isz0+cbszz, isy0+cbszy, isx0+cbszx] 
 
         comb_xy = np.empty((len(file_pointerslist[0]), cbszz, cbszy, cbszx, 4), dtype='float32') # T, D, H, W, C
-        #get input history
+        #get input and label history
         time_idx = time_idx+self.time_start
         for file_pointers, blk_ix, blk_iy, blk_iz, icx, icy, icz in zip(file_pointerslist,blk_ixs, blk_iys, blk_izs, icxs, icys, iczs):
             output_index, datafile_index=self._getoverlapblocks(icz, icy, icx, iblockstart, iblockend)
@@ -468,22 +486,15 @@ class TaylorGreen(BaseHDF53DDataset):
             else:
                 rz0, rz1, ry0, ry1, rx0, rx1 = output_index
                 bz0, bz1, by0, by1, bx0, bx1 = datafile_index
-            for it, file in enumerate(file_pointers[:-1]):
+            for it, file in enumerate(file_pointers):
                 for ivar, var in enumerate(self.field_names):
                     datavar = file[var][:,:,:] # in shape: nz, ny, nx
                     varcomp = datavar[blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1]]
                     comb_xy[it,rz0:rz1, ry0:ry1, rx0:rx1,ivar] = varcomp[bz0:bz1, by0:by1, bx0:bx1]
-
-            #get label at leadtime
-            file=file_pointers[-1]
-            for ivar, var in enumerate(self.field_names):
-                datavar = file[var][:,:,:] # in shape: nz, ny, nx
-                varcomp = datavar[blk_iz[0]:blk_iz[1],blk_iy[0]:blk_iy[1],blk_ix[0]:blk_ix[1]]
-                comb_xy[-1,rz0:rz1, ry0:ry1, rx0:rx1,ivar] = varcomp[bz0:bz1, by0:by1, bx0:bx1]
         #return: T,C,D,H,W
         #print("reconstruct:", comb_xy.min(), comb_xy.max(),  blk_ixs, blk_iys, blk_izs, icxs, icys, iczs, time_idx, file_pointerslist, flush=True)
         #NOTE: cautious or not transpose spatial dimensions with parallel loading/splitting
-        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime.to(torch.float32)
+        return comb_xy.transpose((0, 4, 1, 2, 3)), leadtime
     
     def _get_specific_bcs(self):
         return [0, 0] # Non-periodic

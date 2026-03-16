@@ -12,6 +12,7 @@ import glob
 import json
 import csv
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 class BaseBLASTNET3DDataset(Dataset):
     """
@@ -31,7 +32,7 @@ class BaseBLASTNET3DDataset(Dataset):
         SR_ratio: superresolution ratio, used when input and output are at different resolutions, 
         currently only support this case: https://www.kaggle.com/datasets/waitongchung/blastnet-momentum-3d-sr-dataset/data
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -47,7 +48,8 @@ class BaseBLASTNET3DDataset(Dataset):
         self.group_size = group_size
         
         self.dt = 1
-        self.leadtime_max = leadtime_max 
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.nsteps_input = n_steps
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
@@ -123,7 +125,7 @@ class BaseBLASTNET3DDataset(Dataset):
                 # for a given solution with `dictcase["ntimes"]` steps and input length of self.nsteps_input, 
                 # the number of time segments/samples for (input, next-step prediction) is 
                 # when leadtime_max==0: self-supervised and hence number of samples equal to ntimes
-                nsample_case=dictcase["ntimes"]-self.nsteps_input if self.leadtime_max>0 else dictcase["ntimes"]
+                nsample_case=dictcase["ntimes"]-self.nsteps_input-self.leadtime_max+1 if self.leadtime_max>0 else dictcase["ntimes"]
                 if nsample_case < self.leadtime_max:
                     raise RuntimeError('Error: Path {} has {} steps, but nsteps_input is {}. Please set file steps = max allowable.'.format(path, dictcase["ntimes"], self.nsteps_input))
                 self.offset.append(nsample_case)
@@ -145,7 +147,7 @@ class BaseBLASTNET3DDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -157,10 +159,14 @@ class BaseBLASTNET3DDataset(Dataset):
             nsteps = self.file_nsteps[case_idx] # Number of time steps per given file
 
             if leadtime is None:
-                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-                leadtime = torch.tensor([0])
+                leadtime = 0 
                 if self.leadtime_max>0:
-                    leadtime = torch.randint(1, min(self.leadtime_max+1, nsteps-time_idx-self.nsteps_input+1), (1,))
+                    assert self.leadtime_max < nsteps-time_idx-self.nsteps_input, f"{self.leadtime_max, nsteps-time_idx, self.nsteps_input, index, self.len}"
+                    if self.leadtime_fixed:
+                        leadtime = self.leadtime_max 
+                    else:
+                        #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                        leadtime = torch.randint(1, min(self.leadtime_max+1, nsteps-time_idx-self.nsteps_input+1), (1,)).item()
             else:
                 leadtime = min(leadtime, nsteps-time_idx-self.nsteps_input)
 
@@ -172,7 +178,7 @@ class BaseBLASTNET3DDataset(Dataset):
             variables = self._reconstruct_sample(dictcase, time_idx.item(), leadtime)
         elif self.split_level=="snapshot":
             case_idx = self.casesids_split[index]
-            leadtime = torch.tensor([0])
+            leadtime = 0 
             if self.type != "SR":
                 dictcase = self.case_dict["solutions"][case_idx]
                 nxyz = self.case_dict["Nxyz"][case_idx]
@@ -191,22 +197,22 @@ class BaseBLASTNET3DDataset(Dataset):
             inp, tar, inp_up, dzdxdy = self._reconstruct_sample(case_idx)
             #inp = inp[:,:,isz0//self.SR_ratio[0]:(isz0+cbszz)//self.SR_ratio[0],isx0//self.SR_ratio[1]:(isx0+cbszx)//self.SR_ratio[1], isy0//self.SR_ratio[2]:(isy0+cbszy)//self.SR_ratio[2]]#T,C,Dloc,Hloc,Wloc
             inp = inp_up[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]                  # interpolated LR to HR grid
-            tar = np.squeeze(tar[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy], axis=0) # C,D,H,W
+            tar = tar[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy] # T,C,D,H,W
 
         else:
             assert len(variables) in (2, 3)
             trajectory, leadtime = variables[:2]
 
             trajectory = trajectory[:, :, isz0:isz0+cbszz, isx0:isx0+cbszx, isy0:isy0+cbszy]
-            inp = trajectory[:-1] if self.leadtime_max > 0 else trajectory
-            tar = trajectory[-1]
+            inp = trajectory[:self.nsteps_input] if self.leadtime_max > 0 else trajectory
+            tar = trajectory[-leadtime:] if self.leadtime_returnfull else trajectory[-1:]
 
             if len(variables) == 3:
                 ret_dict["cond_fields"] = variables[2]
 
         ret_dict["x"] = inp
         ret_dict["y"] = tar
-        ret_dict["leadtime"] = leadtime
+        ret_dict["leadtime"] = torch.tensor([leadtime]).to(torch.float32)
 
         return ret_dict
 
@@ -275,14 +281,14 @@ class H2vitairliDataset(BaseBLASTNET3DDataset):
                 sol_fields[:,:,:,ivar,isol] = np.fromfile(varfile,dtype='<f4').reshape(nx,ny,nz)[:nx_end:skipx,:ny_end:skipy,:nz_end:skipz] 
         #get the label
         if self.leadtime_max>0:
-            time_idx = time_idx+self.nsteps_input+leadtime.item()-1
+            time_idx = time_idx+self.nsteps_input+leadtime-1
             sol = solutions[time_idx]
             #assert time_idx==sol['id']
             for ivar, var in enumerate(self.field_names):
                 varfile=os.path.join(datacasedir, sol[var+" filename"])
                 sol_fields[:,:,:,ivar,-1] = np.fromfile(varfile,dtype='<f4').reshape(nx,ny,nz)[:nx_end:skipx,:ny_end:skipy,:nz_end:skipz] 
         #return: T,C,D,H,W
-        return sol_fields.transpose((4, 3, 2, 0, 1)), leadtime.to(torch.float32)
+        return sol_fields.transpose((4, 3, 2, 0, 1)), leadtime
 
     def _get_specific_bcs(self):
         #FIXME: not used for now
@@ -357,14 +363,14 @@ class H2jetDataset(BaseBLASTNET3DDataset):
                 sol_fields[:,:,:,ivar,isol] = np.fromfile(varfile,dtype='<f4').reshape(nx,ny,nz)[:nx_end:skipx,:ny_end:skipy,:nz_end:skipz] 
         #get the label
         if self.leadtime_max>0:
-            time_idx = time_idx+self.nsteps_input+leadtime.item()-1
+            time_idx = time_idx+self.nsteps_input+leadtime-1
             sol = solutions[time_idx]
             #assert time_idx==sol['id']
             for ivar, var in enumerate(self.field_names):
                 varfile=os.path.join(datacasedir, sol[var+" filename"])
                 sol_fields[:,:,:,ivar,-1] = np.fromfile(varfile,dtype='<f4').reshape(nx,ny,nz)[:nx_end:skipx,:ny_end:skipy,:nz_end:skipz] 
         #return: T,C,D,H,W
-        return sol_fields.transpose((4, 3, 2, 0, 1)), leadtime.to(torch.float32)
+        return sol_fields.transpose((4, 3, 2, 0, 1)), leadtime
 
     def _get_specific_bcs(self):
         #FIXME: not used for now
@@ -546,7 +552,10 @@ class SR_Benchmark(BaseBLASTNET3DDataset):
             assert self.type=="SR", "only support SR, while got %s"%self.type
             self.datadict = self._getpathfromcsv(path)
         assert self.split_level=="snapshot"
-        assert self.leadtime_max==0 and self.nsteps_input==1
+        if not (self.leadtime_max==0 and self.nsteps_input==1):
+            print(f"WARNING: Got leadtime_max and nsteps_input in SR {self.leadtime_max==0, self.nsteps_input} but forced them to be: self.leadtime_max==0 and self.nsteps_input=1")
+            self.leadtime_max=0
+            self.nsteps_input=1
         #split into train/val/test at snapshot level
         self.total_cases = len(self.datadict['hash'])
         self.casesids_split = self._split_cases()

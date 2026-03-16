@@ -627,8 +627,8 @@ class Trainer:
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
-                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
-                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
+                    if not isgraph:
+                        tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
                 #compute loss and update (in-place) logging dicts.
                 loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
@@ -791,8 +791,8 @@ class Trainer:
                     field_labels_out= field_labels_out
                     )
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
-                    if tar.ndim == 6:# B,T,C,D,H,W; For autoregressive, update the target with the returned actual rollout_steps
-                        tar = tar[:, rollout_steps-1, :] # B,C,D,H,W
+                    if not isgraph:
+                        tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
                     update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
                     if not isgraph and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)

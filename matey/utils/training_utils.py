@@ -59,7 +59,13 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     # output: Model output after the final autoregressive step ([B, C, D, H, W])
     #  rollout_steps: Number of autoregressive steps performed.
     """
-    rollout_steps = preprocess_target(opts.leadtime) 
+    is_constant = torch.all(opts.leadtime == opts.leadtime[0, 0])
+    if is_constant:
+        rollout_steps = int(opts.leadtime[0,0].item())
+    else:
+        rollout_steps = preprocess_target(opts.leadtime) 
+        raise ValueError(f"Not expecting unequal leadtime across samples, {rollout_steps, opts.leadtime, is_constant}")
+    
     x_t = inp
     if opts.isgraph:
         n_steps = x_t.x.shape[1] #[nnodes, T, C]

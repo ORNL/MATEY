@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 import netCDF4
 import glob
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 class BasenetCDFDirectoryDataset(Dataset):
     """
@@ -26,7 +27,7 @@ class BasenetCDFDirectoryDataset(Dataset):
         train_val_test (tuple): Percent of data to use for train/val/test
         subname (str): Name to use for dataset
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train',
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train',
                  train_val_test=None, subname=None, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -37,14 +38,16 @@ class BasenetCDFDirectoryDataset(Dataset):
         else:
             self.subname = subname
         self.dt = dt
-        self.leadtime_max = leadtime_max
-        self.input_control_act = (isinstance(supportdata, list)
-            and any("input_control_act" in d and d["input_control_act"] for d in supportdata))
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.n_steps = n_steps #history length
         self.include_string = include_string
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
         self.time_index, self.sample_index, self.field_names, self.type, self.split_level, self.cubsizes = self._specifics()
+        self.input_control_act = (isinstance(supportdata, list) and any("input_control_act" in d and d["input_control_act"] for d in supportdata)) \
+                                or "SOLPS" in self.type #input_control_act is always True for SOLPS cases
+        
         self._get_directory_stats(path)
         self.title = self.type
         self.tokenizer_heads = tokenizer_heads
@@ -117,9 +120,9 @@ class BasenetCDFDirectoryDataset(Dataset):
                 file_nsteps = self.n_steps
                 self.file_lens.append(steps)
                 self.file_nsteps.append(file_nsteps)
-                self.file_steps.append(steps-file_nsteps-(self.dt-1))
+                self.file_steps.append(steps-file_nsteps-self.leadtime_max+1)
                 self.file_samples.append(samples)
-                self.offsets.append(self.offsets[-1]+(steps-file_nsteps-(self.dt-1))*samples)
+                self.offsets.append(self.offsets[-1]+(steps-file_nsteps-self.leadtime_max+1)*samples)
         self.offsets[0] = -1
         self.datasets = [None for _ in self.files_paths]
         self.len = self.offsets[-1]
@@ -154,7 +157,7 @@ class BasenetCDFDirectoryDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -179,10 +182,16 @@ class BasenetCDFDirectoryDataset(Dataset):
         # FIXME:this should depend on autoregressive nature, not on the input_control_act flag
         # For autoregressive cases the rollout length is decided at runtime
         if leadtime is None and not self.input_control_act:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,)).item()
         elif self.input_control_act:
-            leadtime = torch.tensor([min(self.leadtime_max, self.file_lens[file_idx]-time_idx)])
+            if leadtime is None:
+                leadtime = min(self.leadtime_max, self.file_lens[file_idx]-time_idx)
+            else:
+                leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
 
@@ -206,21 +215,18 @@ class BasenetCDFDirectoryDataset(Dataset):
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
+        #note that for this class, we always construct all leadtime snapshots, as the data is small and convenient, and only return the necessary ones
+        assert trajectory.shape[0]==self.n_steps+leadtime, f"Check netcdf data shape {trajectory.shape, self.n_steps, leadtime}"
+        data_obj={"x": trajectory[:self.n_steps], "bcs": torch.as_tensor(bcs),
+                  "y": trajectory[-leadtime:] if self.leadtime_returnfull else trajectory[-1:],
+                  "leadtime": torch.tensor([leadtime]).to(torch.float32)
+                  }
         if self.input_control_act:
-            traj_out = trajectory[self.n_steps:]
-            # pad trajectory so it's always the same size
-            # sometimes leadtime can be smaller due to end of data
-            if traj_out.shape[0] < self.leadtime_max:
-                pad_len = self.leadtime_max - traj_out.shape[0]
-                pad_shape = [pad_len] + list(traj_out.shape[1:])
-                pad_tensor = np.zeros(pad_shape)
-                traj_out = np.concatenate([traj_out, pad_tensor], axis=0)
-                pad_tensor_control = np.zeros(pad_len).astype(np.float32)
-                input_control=np.concatenate([input_control, pad_tensor_control],axis=0)
-
-            return {"x": trajectory[:self.n_steps], "bcs": torch.as_tensor(bcs), "y": traj_out.astype(np.float32), "leadtime": leadtime, "cond_input": input_control.astype(np.float32)}
-        else:
-            return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1].astype(np.float32), "leadtime": leadtime}
+            assert self.leadtime_fixed, f"When input_control_act is on, we expect leadtime_fixed True but got {self.leadtime_fixed}"
+            assert len(input_control) == self.n_steps + leadtime
+            data_obj["cond_input"]=input_control.astype(np.float32)
+        
+        return data_obj
 
     def __len__(self):
         return self.len
@@ -271,12 +277,12 @@ class  CollisionDataset(BasenetCDFDirectoryDataset):
         temp     = (pressure/rho_full/R_d)
         return temp, pressure
 
-    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps):
-        #get history of length n_steps
-        rho_pert   = np.ma.getdata(dat.variables["dens" ][time_idx-n_steps:time_idx,:,:]) #nt, nz, nx
-        uvel       = np.ma.getdata(dat.variables["uwnd" ][time_idx-n_steps:time_idx,:,:])
-        wvel       = np.ma.getdata(dat.variables["wwnd" ][time_idx-n_steps:time_idx,:,:])
-        theta_pert = np.ma.getdata(dat.variables["theta"][time_idx-n_steps:time_idx,:,:])
+    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps, case=None):
+        #get history of length n_steps + output of length leadtime [for AR]
+        rho_pert   = np.ma.getdata(dat.variables["dens" ][time_idx-n_steps:time_idx+leadtime,:,:]) #nt+leadtime, nz, nx
+        uvel       = np.ma.getdata(dat.variables["uwnd" ][time_idx-n_steps:time_idx+leadtime,:,:])
+        wvel       = np.ma.getdata(dat.variables["wwnd" ][time_idx-n_steps:time_idx+leadtime,:,:])
+        theta_pert = np.ma.getdata(dat.variables["theta"][time_idx-n_steps:time_idx+leadtime,:,:])
         hy_rho     = np.ma.getdata(dat.variables["hy_dens" ][:])
         hy_theta   = np.ma.getdata(dat.variables["hy_theta"][:])
 
@@ -285,21 +291,11 @@ class  CollisionDataset(BasenetCDFDirectoryDataset):
 
         rho_full   = rho_pert   + hy_rho
         theta_full = theta_pert + hy_theta
-        comb_x =  np.stack([rho_full, theta_full,  uvel, wvel], -1) #, dtype="float32")
+        comb_xy =  np.stack([rho_full, theta_full,  uvel, wvel], -1) #, dtype="float32")
 
-        #get label at time_idx-1+leadtime
-        rho_pert_y   = np.ma.getdata(dat.variables["dens" ][time_idx-1+leadtime,:,:]) #nt, nz, nx
-        uvel_y       = np.ma.getdata(dat.variables["uwnd" ][time_idx-1+leadtime,:,:])
-        wvel_y       = np.ma.getdata(dat.variables["wwnd" ][time_idx-1+leadtime,:,:])
-        theta_pert_y = np.ma.getdata(dat.variables["theta"][time_idx-1+leadtime,:,:])
-        rho_full_y   = rho_pert_y   + hy_rho
-        theta_full_y = theta_pert_y + hy_theta
-        comb_y =  np.stack([rho_full_y, theta_full_y,  uvel_y, wvel_y], -1) #, dtype="float32")
+        comb_norm =self._get_norm_data(comb_xy)
 
-        comb = np.concatenate((comb_x, comb_y), axis=0)
-        comb_norm =self._get_norm_data(comb)
-
-        return comb_norm.transpose(0, 3, 1, 2).astype(np.float32), leadtime.to(torch.float32), None
+        return comb_norm.transpose(0, 3, 1, 2).astype(np.float32), leadtime, None
 
 class  SOLPSDataset(BasenetCDFDirectoryDataset):
     @staticmethod
@@ -356,16 +352,16 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
             double timestep(nt) ;
         }
         """
+        assert self.input_control_act
         dt = dat.dimensions["dt"].size
         #get history of length n_steps
         rho     = dat.variables["density" ][time_idx-n_steps:time_idx,:,:] #nt, ny, nx
         temp    = dat.variables["temperature" ][time_idx-n_steps:time_idx,:,:] 
-        if self.input_control_act == True:
-            in_actu = dat.variables["input actuator" ][time_idx-n_steps:time_idx+leadtime] 
 
-            # normalize input actuator
-            self.get_min_max()
-            in_actu = (in_actu - self.in_actuminmax[0])   /(self.in_actuminmax[1]    - self.in_actuminmax[0])
+        in_actu = dat.variables["input actuator" ][time_idx-n_steps:time_idx+leadtime] 
+        # normalize input actuator
+        self.get_min_max()
+        in_actu = (in_actu - self.in_actuminmax[0])   /(self.in_actuminmax[1]    - self.in_actuminmax[0])
 
         rad_pow = dat.variables["radiated power" ][time_idx-n_steps:time_idx] 
  
@@ -380,10 +376,8 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
         comb_norm =self._get_norm_data(comb)
-        if self.input_control_act == True:
-            return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), in_actu.astype(np.float32)
-        else:
-            return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32), None
+        return comb_norm.transpose(0, 3, 1, 2), leadtime, in_actu.astype(np.float32)
+        
 
 class  ChannelLESDataset(BasenetCDFDirectoryDataset):
     @staticmethod
@@ -425,14 +419,16 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
             w = np.ma.getdata(self.data_files[dat[i]].variables["wvel"][:])
             frames_x.append(np.stack([u, v, w], axis=-1))
         comb_x = np.stack(frames_x, axis=0)  # n_steps, D, H, W, C
-
-        target_idx = time_idx - 1 + int(leadtime)
-        if self.data_files[dat[target_idx]] is None:
-            self._open_file(dat[target_idx])
-        u_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["uvel"][:])
-        v_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["vvel"][:])
-        w_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["wvel"][:])
-        comb_y = np.stack([u_y, v_y, w_y], axis=-1)[np.newaxis]
+        
+        frames_y = []
+        for target_idx  in range(time_idx, leadtime):
+            if self.data_files[dat[target_idx]] is None:
+                self._open_file(dat[target_idx])
+            u_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["uvel"][:])
+            v_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["vvel"][:])
+            w_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["wvel"][:])
+            frames_y.append(np.stack([u_y, v_y, w_y], axis=-1))
+        comb_y = np.stack(frames_y, axis=0)  # n_steps, D, H, W, C
 
         comb = np.concatenate([comb_x, comb_y], axis=0)
         comb_norm = self._get_norm_data(comb)

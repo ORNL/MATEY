@@ -14,6 +14,7 @@ import h5py
 import glob
 import re
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 np.random.seed(2024) 
 
@@ -32,16 +33,17 @@ class BaseBinary3DSSTDataset(Dataset):
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
+        raise RuntimeError("Need to check if the BaseBinary3DSSTDataset class is up to date before use [Pei, March 2026]")
         self.path = path
         self.split = split
         self.extra_specific = extra_specific # Whether to use parameters in name
         self.subname = path.split('/')[-1]
-        
-        self.leadtime_max = leadtime_max
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.nsteps_input = n_steps
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
@@ -198,8 +200,8 @@ class BaseBinary3DSSTDataset(Dataset):
         self.time_start = self.timesteps[0]
 
         # for a given set of len(timesteps) solutions and input length of self.nsteps_input, 
-        # the number of segments for (input, next-step prediction) is
-        self.ntimesegs = len(self.timesteps)-self.nsteps_input
+        # the number of segments for (input, next-step prediction or with leadtime_max) is
+        self.ntimesegs = len(self.timesteps)-self.nsteps_input-self.leadtime_max+1
         if self.ntimesegs < 1:
             raise RuntimeError('Error: Path {} has {} steps, but nsteps_input is {}. Please set file steps = max allowable.'.format(path, len(self.timesteps), self.nsteps_input))
 
@@ -377,7 +379,7 @@ class BaseBinary3DSSTDataset(Dataset):
         
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -391,18 +393,21 @@ class BaseBinary3DSSTDataset(Dataset):
         iz       = self.sample_info[sample_idx]["zblock"]
         # print(f"getting data for filepath: {filepath}")
 
-        if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.tensor([0]) # self-reconstruction case
+        if leadtime is None:   
+            leadtime = 0 # self-reconstruction case
             if self.leadtime_max>0: # not self-reconstruction case
-                leadtime = torch.randint(1, min(self.leadtime_max+1, len(self.timesteps)-time_idx-self.nsteps_input+1), (1,))
+                if self.leadtime_fixed:
+                    leadtime =self.leadtime_max
+                else:
+                    #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                    leadtime = torch.randint(1, min(self.leadtime_max+1, len(self.timesteps)-time_idx-self.nsteps_input+1), (1,)).item()
         else:
             leadtime = min(leadtime, len(self.timesteps)-time_idx-self.nsteps_input)
    
         assert time_idx + self.nsteps_input + leadtime <= len(self.timesteps)
 
         #open image files
-        file_pointers = self._open_files(filepath, time_idx.item(), leadtime.item())
+        file_pointers = self._open_files(filepath, time_idx.item(), leadtime)
 
         ########################################
         trajectory, leadtime = self._reconstruct_sample(file_pointers, time_idx.item(), ix, iy, iz, leadtime)
@@ -413,7 +418,7 @@ class BaseBinary3DSSTDataset(Dataset):
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
-        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
+        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": torch.tensor([leadtime]).to(torch.float32)}
 
     def __len__(self):
         return self.len

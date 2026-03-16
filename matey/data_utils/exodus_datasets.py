@@ -12,6 +12,7 @@ from .shared_utils import get_top_variance_patchids, plot_checking, plot_refined
 import exodusii
 from scipy.interpolate import LinearNDInterpolator
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 class BaseExodusDirectoryDataset(Dataset):
     """
@@ -27,7 +28,7 @@ class BaseExodusDirectoryDataset(Dataset):
         train_val_test (tuple): Percent of data to use for train/val/test
         subname (str): Name to use for dataset
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=None, supportdata=None, split='train',
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train',
                  train_val_test=None, subname=None, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -38,7 +39,8 @@ class BaseExodusDirectoryDataset(Dataset):
         else:
             self.subname = subname
         self.dt = dt
-        self.leadtime_max = leadtime_max
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.n_steps = n_steps #history length
         self.include_string = include_string
         self.train_val_test = train_val_test
@@ -58,9 +60,6 @@ class BaseExodusDirectoryDataset(Dataset):
             H, W= self.cubsizes #x,y
             D=1
         self.blockdict =  getblocksplitstat(self.group_rank, self.group_size, D, H, W)
-
-        if self.leadtime_max is None:
-            self.leadtime_max=1
 
     def get_name(self, full_name=False):
         if full_name:
@@ -123,7 +122,7 @@ class BaseExodusDirectoryDataset(Dataset):
                     self.file_nsteps.append(file_nsteps)
                     self.file_steps.append(steps-file_nsteps-(self.dt-1))
                     self.file_samples.append(samples)
-                    self.offsets.append(self.offsets[-1]+(steps-file_nsteps-(self.dt-1))*samples)
+                    self.offsets.append(self.offsets[-1]+(steps-file_nsteps-self.leadtime_max+1)*samples)
                 except:
                     print('WARNING: Failed to open file {}. Continuing without it.'.format(file))
                     raise RuntimeError('Failed to open file {}'.format(file))
@@ -174,7 +173,7 @@ class BaseExodusDirectoryDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -198,26 +197,31 @@ class BaseExodusDirectoryDataset(Dataset):
         time_idx += nsteps
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
 
         try:
-            trajectory, leadtime = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps)
+            trajectory_x, trajectory_y, leadtime = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps)
             bcs = self._get_specific_bcs(self.datasets[file_idx])
         except:
             raise RuntimeError(f'Failed to reconstruct sample for file {self.files_paths[file_idx]} time {time_idx}')
 
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
-        trajectory=np.expand_dims(trajectory, axis=2)
+        trajectory_x=np.expand_dims(trajectory_x, axis=2)
+        trajectory_y=np.expand_dims(trajectory_y, axis=2)
 
         #start index and end size of local split for current
         isz0, isx0, isy0    = self.blockdict["Ind_start"] # [idz, idx, idy]
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
-        trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+        trajectory_x = trajectory_x[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
+        trajectory_y = trajectory_y[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#1 or leadtime,C,Dloc,Hloc,Wloc
 
-        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
+        return {"x": trajectory_x, "bcs": torch.as_tensor(bcs), "y": trajectory_y, "leadtime": torch.tensor([leadtime]).to(torch.float32)}
 
     def __len__(self):
         return self.len
@@ -280,11 +284,14 @@ class  MHDDataset(BaseExodusDirectoryDataset):
         t0_skip=1 #skip the 1st step as they're not compatible with BCs and cause training diverging
         comb_x=dat[time_idx+t0_skip-n_steps:time_idx+t0_skip,:,:,:]
 
-        t = time_idx-1+leadtime
-        comb_y = dat[t+t0_skip:t+t0_skip+1] # 1, nz, nx, nc
+        t = time_idx+t0_skip
+        if self.leadtime_returnfull:
+            comb_y = dat[t:t+leadtime] # leadtime, nz, nx, nc
+        else:
+            comb_y = dat[t+leadtime-1:t+leadtime] # 1, nz, nx, nc
 
-        comb = np.concatenate((comb_x, comb_y), axis=0) # nt+1, nz, nx, nc
-        comb_norm =self._get_norm_data(comb)
+        combx_norm =self._get_norm_data(comb_x) #T, nz, nx, nc
+        comby_norm =self._get_norm_data(comb_y) #1 or leadtime, nz, nx, nc
 
-        return comb_norm.transpose(0, 3, 1, 2), leadtime.to(torch.float32)
+        return combx_norm.transpose(0, 3, 1, 2), comby_norm.transpose(0, 3, 1, 2), leadtime
 
