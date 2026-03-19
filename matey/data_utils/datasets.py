@@ -138,7 +138,9 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                             leadtime_config=leadtime_config,
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
-                            global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]),
+                            global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups, 
+                            DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]),
+                            mixed_dset_opt=getattr(params, "mixed_dset_opt", False),
                             canonical_fields=canonical_fields, canonical_cond_fields=canonical_cond_fields)
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
@@ -146,8 +148,8 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
     else:
         base_sampler = RandomSampler
     sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size,
-                               distributed=distributed, max_samples=params.epoch_size,
-                               global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups, ordered_sampling=getattr(params, "ordered_sampling", True))
+                               distributed=distributed, max_samples=params.epoch_size, 
+                               ordered_sampling=getattr(params, "ordered_sampling", True))
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
         if split != 'train':
@@ -173,13 +175,16 @@ class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_config={}, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
-                  global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"],
-                  canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS):
+                  global_rank=0, group_size=1, num_sp_groups=None, DP_dsets=["isotropic1024fine", "taylorgreen"],
+                  canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS, mixed_dset_opt=False):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
         self.canonical_fields = canonical_fields
         self.canonical_cond_fields = canonical_cond_fields
+        #if True: allow mixed datasets sampled in one distributed minibatch (and henc for one optimization step)
+        #Default: False
+        self.mixed_dset_opt=mixed_dset_opt
         try:
             self.path_list, self.type_list, self.include_string = zip(*path_list)
             self.tkhead_name=[tokenizer_heads[0]["head_name"] for _ in self.path_list]
@@ -195,22 +200,39 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
-        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if "graph" not in subset] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
+        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if ("graph" not in subset) and ("SOLPS" not in subset)] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
         if len(self.DP_dsets)==0 and group_size>1:
             warnings.warn(
                 "SP group is set, but no DP_dsets is defined. As a result, no SP will be used."
                 "Please verify if this is intentional."
             )
-        for dset, path, include_string, tkhead_name in zip(self.type_list, self.path_list, self.include_string, self.tkhead_name):
-            if dset in self.DP_dsets:
+        self.dsets_spconfig={}
+        #used to decide which datasets can be grouped-sampling together
+        groupkey_types={}
+        for iset, (dset, path, include_string, tkhead_name) in enumerate(zip(self.type_list, self.path_list, self.include_string, self.tkhead_name)):
+            is_dp = dset in self.DP_dsets
+            if is_dp:
                 #For every group with group_size ranks, they read the subparts from the same sample
                 group_id=global_rank//group_size #id of each group, e.g., 0,1,2,3 for 4 sp groups
                 data_rank=global_rank%group_size #local rank inside each SP group, e.g., 0,1,2,...,7 if group_size=8 (assigning 8 GPUs to load the same sample)
                 datagroupsize=group_size
+                num_groups=num_sp_groups
+                groupkey=tkhead_name+"-DP"
             else:
                 group_id=global_rank
                 data_rank=0
                 datagroupsize=1
+                num_groups=None #or equivalently world_size
+                groupkey=tkhead_name
+            #used to control which dset to sample in mixed sampler later
+            #by default, dset share the tkhead and DP can be sampled together
+            groupkey_types.setdefault(groupkey, []).append(iset)
+            self.dsets_spconfig[iset]={
+                #rank in sampler later - all ranks in the same SP group (with the same group_id) share the same sample rank
+                "sampler_rank": group_id, 
+                #num_replicas in sampler later 
+                "sampler_num_replicas": num_groups, 
+               }
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps, dt=dt,
                                                 leadtime_config = leadtime_config, supportdata = supportdata, train_val_test=train_val_test, split=split,
                                                 tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
@@ -226,6 +248,15 @@ class MixedDataset(Dataset):
 
         self.subset_dict = self._build_subset_dict()
         self.subset_cond_dict = self._build_subset_cond_dict()
+        self.setgroup2rankgroup={}
+        #dsets group by tkhead+DP {setgroupID: [iset ...]}
+        dsets_groupbytk = {}
+        for samplegroup_idx, isetlist in enumerate(groupkey_types.values()):
+            dsets_groupbytk[samplegroup_idx]=isetlist
+            for iset in isetlist:
+                sampler_rank = self.dsets_spconfig[iset]["sampler_rank"]
+                assert self.setgroup2rankgroup.setdefault(samplegroup_idx, sampler_rank) == sampler_rank, f"{sampler_rank, samplegroup_idx, iset, self.setgroup2rankgroup, groupkey_types}"
+        self.dsets_groupbytk = {k:torch.tensor(vallist) for k, vallist in dsets_groupbytk.items()}
 
     def get_state_names(self):
         name_list = []

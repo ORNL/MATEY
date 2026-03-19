@@ -311,6 +311,10 @@ def determine_turt_levels(ps, DHW, nlevels_more, cutoff=20):
         imod_bottom=max(0, nlevels_more-ips)
     else:
         imod_bottom=max(min(nlevels_more, nlevels_more-log2int+4),0)
+    factor=2**(nlevels_more-imod_bottom)*ps[-1]
+    for dim in DHW:
+        if dim>1 and dim%factor>0:
+            return nlevels_more
     return imod_bottom
 
 def assemble_samples(tar, pred, blockdict, global_rank, current_group, group_rank, group_size, device):

@@ -6,43 +6,49 @@ from typing import  Iterator
 import torch
 from torch.utils.data import Sampler, BatchSampler, Dataset
 import functools, operator, math
+from collections import defaultdict
 
 class MultisetBatchSampler(BatchSampler):
     r"""Batch Sampler that samples from multiple datasets with samples inside each mini-batch from a specific dataset.
     """
     def __init__(self, dataset: Dataset, base_sampler:Sampler, batch_size: int, shuffle: bool = True,
                  seed: int = 0, drop_last: bool = True, max_samples=10, ordered_sampling=True, nbatchs_loc=5,
-                 global_rank=0, group_size=1, distributed=True, num_sp_groups=None):
+                 distributed=True):
         self.batch_size_base = batch_size
         self.sub_dsets = dataset.sub_dsets
         self.ordered_sampling=ordered_sampling
+        self.mixed_dset_opt=dataset.mixed_dset_opt
+        #dsets group by tkhead {groupID: [iset ...]}
+        self.dsets_groupbytk = dataset.dsets_groupbytk
+        self.setgroup2rankgroup=dataset.setgroup2rankgroup
         if distributed:
             """
             supporting varying batch sizes across dataset & multiple ranks coordinate together to load the same sample
 
             For world_size ranks, split them into "group_size" X "num_sp_groups" 2D ranks;
             For every group with group_size ranks, they read the subparts from the same sample, seeded by group_id
-            All num_sp_groups read from the same dataset, seeded by a constant 0 (FIXME: this can/should be related to multiple datasets later)
-            So the actual batch size is: "self.batch_size" X "num_sp_groups"
+            if self.mixed_dset_opt is False:
+                All num_sp_groups read from the same dataset, seeded by a constant 0 
+                So the actual batch size is: "self.batch_size" X "num_sp_groups"
+            else:
+                allow different SP groups to sample from a mixture of datasets in two steps
+                1. all SP groups randomly sample a datasetgroup id with the same seed --> so all the same datasetgroup
+                2. From the datasetgroup id, each SP group randomly pick a dataset in the same group from 
+                    self.setgroup2rankgroup[datasetgroup id], seeded with group_id --> all ranks in the same group read the same sample 
 
             when "ordered_sampling" is True: sampling across subset squentially following a deterministic order for every "nbatchs_loc" batchs
             """
             self.sub_samplers = []
             self.batch_size = []
-            for subset in self.sub_dsets:
+            for iset, subset in enumerate(self.sub_dsets):
                 if subset.type in dataset.DP_dsets:
                     batch_size_subset = self._determine_batchsize_(subset)
-                    group_id=global_rank//group_size #rank of current group within num_sp_groups
-                    num_replicas=num_sp_groups
-                    dset_rank=0 #all num_sp_groups groups read from the same datset
-                    ##dset_rank=group_id #allow each group read from different dataset: not work as different model parts (FIXME)
                 else:
                     batch_size_subset = self.batch_size_base
-                    group_id=global_rank
-                    num_replicas=None
-                    dset_rank=0
+                sampler_rank = dataset.dsets_spconfig[iset]["sampler_rank"]
+                sampler_num_replicas = dataset.dsets_spconfig[iset]["sampler_num_replicas"]
                 self.batch_size.append(batch_size_subset)
-                self.sub_samplers.append(base_sampler(subset, drop_last=drop_last, num_replicas=num_replicas, rank=group_id, shuffle=shuffle))
+                self.sub_samplers.append(base_sampler(subset, drop_last=drop_last, num_replicas=sampler_num_replicas, rank=sampler_rank, shuffle=shuffle))
         else:
             self.sub_samplers = [base_sampler(subset) for subset in self.sub_dsets]
             self.batch_size = [batch_size for _ in self.sub_dsets]
@@ -50,20 +56,21 @@ class MultisetBatchSampler(BatchSampler):
         self.epoch = 0
         self.seed = seed
         self.max_samples = max_samples
-        self.global_rank = global_rank
-        self.group_size = group_size
-        self.rank = dset_rank
+        #dset_seed when constant (0) across groups, all num_sp_groups groups read from the same datset
+        #when different, allow each group read from different dataset, but all ranks from the same group must read the same data sample
+        self.dset_seed = self.setgroup2rankgroup if self.mixed_dset_opt else 0
         self.batches_perset = [len(sampler)//batchsize for sampler, batchsize in zip(self.sub_samplers, self.batch_size)]
         #acutal total minibatches
         self.len_batchsamplers = sum(self.batches_perset)
         self.iset_choices = torch.tensor([iset for iset, n in enumerate(self.batches_perset) for _ in range(n)], dtype=torch.long)
         min_batches = min(self.batches_perset)
-        if min_batches<nbatchs_loc:
-            nbatchs_loc = min_batches
+        self.nbatchs_loc=nbatchs_loc
+        if min_batches<self.nbatchs_loc:
+            self.nbatchs_loc = min_batches
         self.iset_choices_ordered_truc = []
-        for _ in range(min_batches//nbatchs_loc):
+        for _ in range(min_batches//self.nbatchs_loc):
             for iset in range(len(self.batches_perset)):
-                for _ in range(nbatchs_loc):
+                for _ in range(self.nbatchs_loc):
                     self.iset_choices_ordered_truc.append(iset)
         self.iset_choices_ordered_truc = torch.tensor(self.iset_choices_ordered_truc, dtype=torch.long)
         if not self.ordered_sampling and len(self.iset_choices)<self.max_samples:
@@ -99,9 +106,34 @@ class MultisetBatchSampler(BatchSampler):
         #batch sampler
         samplers = [iter(sampler) for sampler in self.sub_samplers]
         if self.ordered_sampling:
-            choices_t = self.iset_choices_ordered_truc[:self.max_samples]
+            base = self.iset_choices_ordered_truc.view(-1, len(self.batches_perset), self.nbatchs_loc)
+            out = []
+            if self.mixed_dset_opt:
+                #same group id sampler for all gpus so that they always sample from datasets in same group
+                generator_group = torch.Generator().manual_seed(5000*self.epoch + 100*self.seed) 
+                groupids = list(self.dsets_groupbytk.keys())    
+                generator = [torch.Generator().manual_seed(5000*self.epoch + 100*self.seed + self.dset_seed[groupid]) for groupid in groupids]
+                for cycle in base:
+                    out_oneround=[]
+                    permgp = torch.randperm(len(groupids), generator=generator_group)
+                    groupids_perm = [groupids[i] for i in permgp]
+                    for igroup in groupids_perm:
+                        subsets=self.dsets_groupbytk[igroup]
+                        #perm order of datasets with nbatchs_loc as a unit
+                        perm = torch.randperm(len(subsets), generator=generator[igroup])
+                        out_oneround.append(cycle[subsets[perm]])
+                    out_oneround = torch.cat(out_oneround, dim=0)
+                    out.append(out_oneround)
+            else:
+                generator = torch.Generator().manual_seed(5000*self.epoch + 100*self.seed + self.dset_seed)
+                for cycle in base:
+                    #perm order of datasets with nbatchs_loc as a unit
+                    perm = torch.randperm(cycle.shape[0], generator=generator)
+                    out.append(cycle[perm])
+            choices_t = torch.cat(out, dim=0).flatten()[:self.max_samples]
+            #choices_t = self.iset_choices_ordered_truc[:self.max_samples]
         else:
-            generator = torch.Generator().manual_seed(5000*self.epoch+100*self.seed+self.rank)
+            generator = torch.Generator().manual_seed(5000*self.epoch+100*self.seed+self.dset_seed)
             perm      = torch.randperm(len(self.iset_choices), generator=generator)
             choices_t = self.iset_choices[perm][:self.max_samples]
         
