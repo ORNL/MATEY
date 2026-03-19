@@ -116,7 +116,7 @@ class BasenetCDFDirectoryDataset(Dataset):
                 nc = netCDF4.Dataset(file, 'r')
                 samples, steps = self._get_specific_stats(nc)
                 if steps-self.n_steps-self.leadtime_max+1 < 1:
-                    raise ValueError('WARNING: File {} has {} steps, but n_steps/history is set to be {}.'.format(file, steps, self.n_steps, self.leadtime_max))
+                    raise ValueError(f'WARNING: File {file} has {steps} steps, but n_steps/history and leadtime_max are set to be {self.n_steps} and {self.leadtime_max}!')
                 file_nsteps = self.n_steps
                 self.file_lens.append(steps)
                 self.file_nsteps.append(file_nsteps)
