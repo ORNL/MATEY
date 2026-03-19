@@ -115,8 +115,8 @@ class BasenetCDFDirectoryDataset(Dataset):
             else:
                 nc = netCDF4.Dataset(file, 'r')
                 samples, steps = self._get_specific_stats(nc)
-                if steps-self.n_steps-(self.dt-1) < 1:
-                    raise ValueError('WARNING: File {} has {} steps, but n_steps/history is set to be {}.'.format(file, steps, self.n_steps))
+                if steps-self.n_steps-self.leadtime_max+1 < 1:
+                    raise ValueError('WARNING: File {} has {} steps, but n_steps/history is set to be {}.'.format(file, steps, self.n_steps, self.leadtime_max))
                 file_nsteps = self.n_steps
                 self.file_lens.append(steps)
                 self.file_nsteps.append(file_nsteps)
@@ -179,8 +179,6 @@ class BasenetCDFDirectoryDataset(Dataset):
             self._loaddata_file(file_idx)
 
         time_idx += nsteps
-        # FIXME:this should depend on autoregressive nature, not on the input_control_act flag
-        # For autoregressive cases the rollout length is decided at runtime
         if leadtime is None and not self.input_control_act:
             if self.leadtime_fixed:
                 leadtime = self.leadtime_max
@@ -222,7 +220,7 @@ class BasenetCDFDirectoryDataset(Dataset):
                   "leadtime": torch.tensor([leadtime]).to(torch.float32)
                   }
         if self.input_control_act:
-            assert self.leadtime_fixed, f"When input_control_act is on, we expect leadtime_fixed True but got {self.leadtime_fixed}"
+            assert self.leadtime_fixed, f"When input_control_act is on, we expect leadtime_fixed True but got {self.leadtime_fixed}; check autoregressive in your yaml config"
             assert len(input_control) == self.n_steps + leadtime
             data_obj["cond_input"]=input_control.astype(np.float32)
         
@@ -421,7 +419,7 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
         comb_x = np.stack(frames_x, axis=0)  # n_steps, D, H, W, C
         
         frames_y = []
-        for target_idx  in range(time_idx, leadtime):
+        for target_idx  in range(time_idx, time_idx + leadtime):
             if self.data_files[dat[target_idx]] is None:
                 self._open_file(dat[target_idx])
             u_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["uvel"][:])
@@ -432,7 +430,7 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
 
         comb = np.concatenate([comb_x, comb_y], axis=0)
         comb_norm = self._get_norm_data(comb)
-        return comb_norm.transpose(0, 4, 1, 2, 3).astype(np.float32), leadtime.to(torch.float32), None
+        return comb_norm.transpose(0, 4, 1, 2, 3).astype(np.float32), leadtime, None
     
     def _get_directory_stats(self, path):
         """

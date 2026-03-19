@@ -750,18 +750,18 @@ class PoolBoilingDataset(BaseHDF5DirectoryDataset):
         else:
             leadtime = min(leadtime, file['velx'].shape[0]-time_idx)
 
-        vx = file['velx'][time_idx-n_steps*self.dt:time_idx]
-        vy = file['vely'][time_idx-n_steps*self.dt:time_idx]
+        vx          = file['velx'][time_idx-n_steps*self.dt:time_idx]
+        vy          = file['vely'][time_idx-n_steps*self.dt:time_idx]
         temp = file['temperature'][time_idx-n_steps*self.dt:time_idx]
-        p = file['pressure'][time_idx-n_steps*self.dt:time_idx]
-        dist_field = file['dfun'][time_idx-n_steps*self.dt:time_idx]
+        p       = file['pressure'][time_idx-n_steps*self.dt:time_idx]
+        dist_field  = file['dfun'][time_idx-n_steps*self.dt:time_idx]
         comb_x =  np.stack([vx, vy, temp, p, dist_field], 1)
 
-        vx = file['velx'][time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['vely'][time_idx+leadtime-1:time_idx+leadtime]
-        temp = file['temperature'][time_idx+leadtime-1:time_idx+leadtime]
-        p = file['pressure'][time_idx+leadtime-1:time_idx+leadtime]
-        dist_field = file['dfun'][time_idx+leadtime-1:time_idx+leadtime]
+        vx          = file['velx'][time_idx:time_idx+leadtime]
+        vy          = file['vely'][time_idx:time_idx+leadtime]
+        temp = file['temperature'][time_idx:time_idx+leadtime]
+        p       = file['pressure'][time_idx:time_idx+leadtime]
+        dist_field  = file['dfun'][time_idx:time_idx+leadtime]
         comb_y =  np.stack([vx, vy, temp, p, dist_field], 1)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)

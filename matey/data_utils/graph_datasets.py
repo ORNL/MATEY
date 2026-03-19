@@ -423,6 +423,8 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         inp_endt=inp_startt+n_in #exclusive
         
         if leadtime is None:
+            leadtime = 1
+            #FIXME: (1) need to move AR for graph to the main repo; (2) leadtime>1 is supported
             if self.leadtime_fixed:
                 leadtime = 1 #max(self.leadtime_max//2, 1)])
             else:
