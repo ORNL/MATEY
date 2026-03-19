@@ -119,17 +119,23 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
     #group_size: number of ranks in each group
     #paths, types, include_string = zip(*paths)
 
-    leadtime_max=-1 #finetuning higher priority
+    leadtime_max=1 #finetuning higher priority
     if hasattr(params, 'leadtime_max_finetuning'):
         leadtime_max = params.leadtime_max_finetuning
     elif hasattr(params, 'leadtime_max'):
         leadtime_max = params.leadtime_max
 
+    leadtime_config={
+        "leadtime_max":leadtime_max,
+        "leadtime_fixed": getattr(params, "autoregressive", False),
+        "leadtime_returnfull": getattr(params, "leadtime_returnfull", False),
+    }
+
     dataset = MixedDataset(paths, n_steps=params.n_steps, train_val_test=getattr(params, 'train_val_test', None), split=split,
                             tie_fields=params.tie_fields, use_all_fields=params.use_all_fields, enforce_max_steps=params.enforce_max_steps,
                             train_offset=train_offset, tokenizer_heads=params.tokenizer_heads,
                             dt = getattr(params,'dt', 1),
-                            leadtime_max=max(leadtime_max, 0),
+                            leadtime_config=leadtime_config,
                             SR_ratio=getattr(params, 'SR_ratio', None),
                             supportdata= getattr(params, "supportdata", None),
                             global_rank=global_rank, group_size=group_size, DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]),
@@ -164,7 +170,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
 
 
 class MixedDataset(Dataset):
-    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_max=0, supportdata=None, train_val_test=(.8, .1, .1),
+    def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_config={}, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   global_rank=0, group_size=1, DP_dsets=["isotropic1024fine", "taylorgreen"],
@@ -205,11 +211,10 @@ class MixedDataset(Dataset):
                 group_id=global_rank
                 data_rank=0
                 datagroupsize=1
-
-            subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps,
-                                                 dt=dt, leadtime_max = leadtime_max, supportdata = supportdata, train_val_test=train_val_test, split=split,
-                                                 tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
-                                                 group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
+            subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps, dt=dt,
+                                                leadtime_config = leadtime_config, supportdata = supportdata, train_val_test=train_val_test, split=split,
+                                                tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
+                                                group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
             # Check to make sure our dataset actually exists with these settings
             try:
                 len(subdset)
@@ -403,6 +408,16 @@ class MixedDataset(Dataset):
             datasamples["label"] = variables["y"]
             datasamples["bcs"] = variables["bcs"]
             datasamples["leadtime"] = variables["leadtime"]
+
+            n_t = datasamples["input"].shape[0]
+            expected_steps = getattr(self.sub_dsets[dset_idx], "n_steps", getattr(self.sub_dsets[dset_idx], "nsteps_input", None))
+
+            assert expected_steps is not None, f"{self.sub_dsets[dset_idx].type} has neither n_steps nor nsteps_input"
+            assert n_t in [1, expected_steps], f"Unexpected input time steps: {(self.sub_dsets[dset_idx].type, datasamples['input'].shape, expected_steps)}"
+            
+            assert datasamples["label"].shape[0]==int(datasamples["leadtime"].item()) if self.sub_dsets[dset_idx].leadtime_returnfull else 1, \
+            f"Unexpected label time steps: {self.sub_dsets[dset_idx].type, datasamples['label'].shape, datasamples['leadtime'], self.sub_dsets[dset_idx].leadtime_returnfull}"
+
 
             if "cond_fields" in variables:
                 assert hasattr(self.sub_dsets[dset_idx], "cond_field_names")

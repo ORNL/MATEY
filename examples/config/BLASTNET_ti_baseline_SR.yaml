@@ -16,7 +16,7 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 64  
+  batch_size: 8 #64  
   max_epochs: 20 #100
   scheduler_epochs: -1
   epoch_size: 20 
@@ -55,6 +55,7 @@ basic_config: &basic_config
   notransposed: !!bool False # when True, do not use conv_transposed due to checkerboard artifacts; Default, False
   SR_ratio: [8, 8, 8]
   sp_groupsize: 8 #sequence_parallel_groupsize
+  DP_dsets: "ALL"
   sts_model: !!bool False
   sts_train: !!bool False  #when True, we use loss function with two parts: l_coarse/base + l_total, so that the coarse ViT approximates true solutions directly
   #gammaref: 0.2 #pick all tokens that with variances larger than gammaref*max_variance to refine

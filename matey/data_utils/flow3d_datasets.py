@@ -293,11 +293,14 @@ class Flow3D_Object(BaseBLASTNET3DDataset):
             return data, cond_data
 
         comb_x, cond_data = get_data(time_idx, time_idx + self.nsteps_input)
-        comb_y, _ = get_data(time_idx + self.nsteps_input + leadtime - 1, time_idx + self.nsteps_input + leadtime)
+        if self.leadtime_returnfull:
+            comb_y, _ = get_data(time_idx + self.nsteps_input, time_idx + self.nsteps_input + leadtime)
+        else:
+            comb_y, _ = get_data(time_idx + self.nsteps_input + leadtime -1, time_idx + self.nsteps_input + leadtime)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return torch.from_numpy(comb), leadtime.to(torch.float32), torch.from_numpy(cond_data)
+        return torch.from_numpy(comb), leadtime, torch.from_numpy(cond_data)
 
     def _get_specific_bcs(self):
         # FIXME: not used for now

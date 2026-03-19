@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 import h5py
 import glob
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 broken_paths = ['']
 
@@ -38,7 +39,7 @@ class BaseHDF5DirectoryDataset(Dataset):
         split_level (str): 'sample' or 'file' - whether to split by samples within a file
                         (useful for data segmented by parameters) or file (mostly INS right now)
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train',
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train',
                  train_val_test=None, subname=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -50,7 +51,8 @@ class BaseHDF5DirectoryDataset(Dataset):
         else:
             self.subname = subname
         self.dt = 1
-        self.leadtime_max = leadtime_max
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.n_steps = n_steps
         self.include_string = include_string
         # self.time_index, self.sample_index = self._set_specifics()
@@ -138,13 +140,10 @@ class BaseHDF5DirectoryDataset(Dataset):
                 try:
                     with h5py.File(file, 'r') as _f:
                         samples, steps = self._get_specific_stats(_f)
-                        if steps-self.n_steps-(self.dt-1) < 1:
-                            print('WARNING: File {} has {} steps, but n_steps is {}. Setting file steps = max allowable.'.format(file, steps, self.n_steps))
-                            file_nsteps = steps - self.dt
-                        else:
-                            file_nsteps = self.n_steps
+                        assert steps-self.n_steps-(self.dt-1) >=1, ('ERROR: File {} has {} steps, but n_steps is {}. Setting file steps = max allowable.'.format(file, steps, self.n_steps))
+                        file_nsteps = self.n_steps
                         self.file_nsteps.append(file_nsteps)
-                        self.file_steps.append(steps-file_nsteps-(self.dt-1))
+                        self.file_steps.append(steps-file_nsteps-self.leadtime_max+1)
                         if self.split_level == 'sample':
                             # Compute which are in the given partition
                             partition = self.partition
@@ -158,7 +157,8 @@ class BaseHDF5DirectoryDataset(Dataset):
                         else:
                             split_samples = samples
                         self.file_samples.append(split_samples)
-                        self.offsets.append(self.offsets[-1]+(steps-file_nsteps-(self.dt-1))*split_samples)
+                        self.offsets.append(self.offsets[-1]+(steps-file_nsteps-self.leadtime_max+1)*split_samples)
+
                 except Exception as e:
                     print('WARNING: Failed to open file {}. Continuing without it.'.format(file))
                     print(f"Error message: {e}")
@@ -204,7 +204,7 @@ class BaseHDF5DirectoryDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -214,7 +214,7 @@ class BaseHDF5DirectoryDataset(Dataset):
 
         file_idx = int(np.searchsorted(self.offsets, index, side='right')-1) #which file we are on
         # print('sample from:', self.files_paths[file_idx])
-        nsteps = self.file_nsteps[file_idx] # Number of steps per sample in given file
+        nsteps = self.file_nsteps[file_idx] # Number of input steps in given file
         local_idx = index - max(self.offsets[file_idx], 0) # First offset is -1
         if self.split_level == 'sample':
             sample_idx = (local_idx + self.split_offsets[file_idx]) // self.file_steps[file_idx]
@@ -226,8 +226,10 @@ class BaseHDF5DirectoryDataset(Dataset):
         if self.files[file_idx] is None:
             self._open_file(file_idx)
 
-        #if we are on the last image in a file shift backward. Double counting until I bother fixing this.
-        time_idx = time_idx - self.dt if time_idx >= self.file_steps[file_idx] else time_idx
+        #if we are on the last image in a file shift backward
+        #file_steps contain the index of last starting index + 1, so time_idx+1<=self.file_steps[file_idx]
+        if time_idx > self.file_steps[file_idx]-1:
+            time_idx = self.file_steps[file_idx]-1
         time_idx += nsteps
         try:
             # print(self.files[file_idx], sample_idx, time_idx, index)
@@ -244,7 +246,11 @@ class BaseHDF5DirectoryDataset(Dataset):
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
         trajectory = trajectory[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy]#T,C,Dloc,Hloc,Wloc
 
-        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
+        #note that for this class, we always construct all leadtime snapshots, as the data is small and convenient, and only return the necessary ones
+        assert trajectory.shape[0]==self.n_steps+leadtime, f"Check HDF5 data shape {trajectory.shape, self.n_steps, leadtime}"
+        return {"x": trajectory[:self.n_steps], "bcs": torch.as_tensor(bcs), 
+                "y": trajectory[-leadtime:] if self.leadtime_returnfull else trajectory[-1:], 
+                "leadtime": torch.tensor([leadtime]).to(torch.float32)}
 
     def __len__(self):
         return self.len
@@ -273,18 +279,21 @@ class SWEDataset(BaseHDF5DirectoryDataset):
         samples = list(file.keys())
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file[samples[sample_idx]]['data'].shape[0]-time_idx)
 
         #get history of length n_steps
         comb_x = file[samples[sample_idx]]['data'][time_idx-n_steps*self.dt:time_idx].transpose(0, 3, 1, 2)
-        #get label at time_idx-1+leadtime
-        comb_y =  file[samples[sample_idx]]['data'][time_idx+leadtime-1:time_idx+leadtime].transpose(0, 3, 1, 2)
+        #get label at time_idx:time_idx+leadtime
+        comb_y =  file[samples[sample_idx]]['data'][time_idx:time_idx+leadtime].transpose(0, 3, 1, 2)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
 class DiffRe2DDataset(BaseHDF5DirectoryDataset):
     @staticmethod
@@ -310,19 +319,22 @@ class DiffRe2DDataset(BaseHDF5DirectoryDataset):
         samples = list(file.keys())
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file[samples[sample_idx]]['data'].shape[0]-time_idx)
 
         #get history of length n_steps
         comb_x = file[samples[sample_idx]]['data'][time_idx-n_steps*self.dt:time_idx].transpose(0, 3, 1, 2)
-        #get label at time_idx-1+leadtime
-        comb_y =  file[samples[sample_idx]]['data'][time_idx+leadtime-1:time_idx+leadtime].transpose(0, 3, 1, 2)
+        #get label at time_idx:time_idx+leadtime
+        comb_y =  file[samples[sample_idx]]['data'][time_idx:time_idx+leadtime].transpose(0, 3, 1, 2)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
 class IncompNSDataset(BaseHDF5DirectoryDataset):
     """
@@ -347,8 +359,11 @@ class IncompNSDataset(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['velocity'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['velocity'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['velocity'].shape[1]-time_idx)
 
@@ -358,12 +373,12 @@ class IncompNSDataset(BaseHDF5DirectoryDataset):
         comb_x =  np.concatenate([velocity, particles], -1)
 
         #get label at time_idx-1+leadtime
-        velocity = file['velocity'][sample_idx,   time_idx+leadtime-1:time_idx+leadtime]
-        particles = file['particles'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
+        velocity = file['velocity'][sample_idx,   time_idx:time_idx+leadtime]
+        particles = file['particles'][sample_idx, time_idx:time_idx+leadtime]
         comb_y =  np.concatenate([velocity, particles], -1)
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb.transpose((0, 3, 1, 2)), leadtime.to(torch.float32)
+        return comb.transpose((0, 3, 1, 2)), leadtime
 
     def _get_specific_bcs(self, f):
         return [0, 0] # Non-periodic
@@ -400,8 +415,11 @@ class PDEArenaINS(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
 
@@ -411,14 +429,14 @@ class PDEArenaINS(BaseHDF5DirectoryDataset):
         density = file['u'][sample_idx, time_idx-n_steps*self.dt:time_idx]
         comb_x =  np.stack([vx, vy, density], 1)
 
-        vx = file['Vx'][sample_idx,     time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['Vy'][sample_idx,     time_idx+leadtime-1:time_idx+leadtime]
-        density = file['u'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
+        vx = file['Vx'][sample_idx,     time_idx:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,     time_idx:time_idx+leadtime]
+        density = file['u'][sample_idx, time_idx:time_idx+leadtime]
         comb_y =  np.stack([vx, vy, density], 1)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [0, 0] # Not Periodic
@@ -457,30 +475,33 @@ class CompNSDataset(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
 
         vx = file['Vx'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         vy = file['Vy'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         density = file['density'][sample_idx, time_idx-n_steps*self.dt:time_idx]
-        p = file['pressure'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][sample_idx,      time_idx-n_steps*self.dt:time_idx]
 
         comb_x =  np.stack([vx, vy, density, p], 1)
 
 
-        vx = file['Vx'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['Vy'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        density = file['density'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
-        p = file['pressure'][sample_idx,      time_idx+leadtime-1:time_idx+leadtime]
+        vx = file['Vx'][sample_idx,           time_idx:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,           time_idx:time_idx+leadtime]
+        density = file['density'][sample_idx, time_idx:time_idx+leadtime]
+        p = file['pressure'][sample_idx,      time_idx:time_idx+leadtime]
 
         comb_y =  np.stack([vx, vy, density, p], 1)
 
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [1, 1] # Periodic
@@ -519,30 +540,33 @@ class CompNSDataset128(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
 
         vx = file['Vx'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         vy = file['Vy'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         density = file['density'][sample_idx, time_idx-n_steps*self.dt:time_idx]
-        p = file['pressure'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][sample_idx,      time_idx-n_steps*self.dt:time_idx]
 
         comb_x =  np.stack([vx, vy, density, p], 1)
 
 
-        vx = file['Vx'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['Vy'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        density = file['density'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
-        p = file['pressure'][sample_idx,      time_idx+leadtime-1:time_idx+leadtime]
+        vx = file['Vx'][sample_idx,           time_idx:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,           time_idx:time_idx+leadtime]
+        density = file['density'][sample_idx, time_idx:time_idx+leadtime]
+        p = file['pressure'][sample_idx,      time_idx:time_idx+leadtime]
 
         comb_y =  np.stack([vx, vy, density, p], 1)
 
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [1, 1] # Periodic
@@ -581,30 +605,33 @@ class CompNSDataset512(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['Vx'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['Vx'].shape[1]-time_idx)
 
         vx = file['Vx'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         vy = file['Vy'][sample_idx,           time_idx-n_steps*self.dt:time_idx]
         density = file['density'][sample_idx, time_idx-n_steps*self.dt:time_idx]
-        p = file['pressure'][sample_idx, time_idx-n_steps*self.dt:time_idx]
+        p = file['pressure'][sample_idx,      time_idx-n_steps*self.dt:time_idx]
 
         comb_x =  np.stack([vx, vy, density, p], 1)
 
 
-        vx = file['Vx'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['Vy'][sample_idx,           time_idx+leadtime-1:time_idx+leadtime]
-        density = file['density'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
-        p = file['pressure'][sample_idx,      time_idx+leadtime-1:time_idx+leadtime]
+        vx = file['Vx'][sample_idx,           time_idx:time_idx+leadtime]
+        vy = file['Vy'][sample_idx,           time_idx:time_idx+leadtime]
+        density = file['density'][sample_idx, time_idx:time_idx+leadtime]
+        p = file['pressure'][sample_idx,      time_idx:time_idx+leadtime]
 
         comb_y =  np.stack([vx, vy, density, p], 1)
 
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [1, 1] # Periodic
@@ -632,8 +659,11 @@ class BurgersDataset(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['tensor'].shape[1]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['tensor'].shape[1]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['tensor'].shape[1]-time_idx)
 
@@ -641,12 +671,12 @@ class BurgersDataset(BaseHDF5DirectoryDataset):
         # print(vx.shape)
         vx = vx[:, None, :, None]
 
-        vy = file['tensor'][sample_idx, time_idx+leadtime-1:time_idx+leadtime]
+        vy = file['tensor'][sample_idx, time_idx:time_idx+leadtime]
         vy = vy[:, None, :, None]
 
         comb = np.concatenate((vx, vy), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [1, 1] # Periodic
@@ -675,19 +705,22 @@ class DiffSorb1DDataset(BaseHDF5DirectoryDataset):
         samples = list(file.keys())
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file[samples[sample_idx]]['data'].shape[0]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file[samples[sample_idx]]['data'].shape[0]-time_idx)
 
         #get history of length n_steps
         comb_x = file[samples[sample_idx]]['data'][time_idx-n_steps*self.dt:time_idx].transpose(0, 2, 1)[:, :, :, None]
-        #get label at time_idx-1+leadtime
-        comb_y =  file[samples[sample_idx]]['data'][time_idx+leadtime-1:time_idx+leadtime].transpose(0, 2, 1)[:, :, :, None]
+        #get label at time_idx:time_idx+leadtime
+        comb_y =  file[samples[sample_idx]]['data'][time_idx:time_idx+leadtime].transpose(0, 2, 1)[:, :, :, None]
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
     
 class PoolBoilingDataset(BaseHDF5DirectoryDataset):
     @staticmethod
@@ -709,28 +742,31 @@ class PoolBoilingDataset(BaseHDF5DirectoryDataset):
     def _reconstruct_sample(self, file, leadtime, sample_idx, time_idx, n_steps):
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.randint(1, min(self.leadtime_max+1, file['velx'].shape[0]-time_idx+1), (1,))
+            if self.leadtime_fixed:
+                leadtime = self.leadtime_max
+            else:
+                #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                leadtime = torch.randint(1, min(self.leadtime_max+1, file['velx'].shape[0]-time_idx+1), (1,)).item()
         else:
             leadtime = min(leadtime, file['velx'].shape[0]-time_idx)
 
-        vx = file['velx'][time_idx-n_steps*self.dt:time_idx]
-        vy = file['vely'][time_idx-n_steps*self.dt:time_idx]
+        vx          = file['velx'][time_idx-n_steps*self.dt:time_idx]
+        vy          = file['vely'][time_idx-n_steps*self.dt:time_idx]
         temp = file['temperature'][time_idx-n_steps*self.dt:time_idx]
-        p = file['pressure'][time_idx-n_steps*self.dt:time_idx]
-        dist_field = file['dfun'][time_idx-n_steps*self.dt:time_idx]
+        p       = file['pressure'][time_idx-n_steps*self.dt:time_idx]
+        dist_field  = file['dfun'][time_idx-n_steps*self.dt:time_idx]
         comb_x =  np.stack([vx, vy, temp, p, dist_field], 1)
 
-        vx = file['velx'][time_idx+leadtime-1:time_idx+leadtime]
-        vy = file['vely'][time_idx+leadtime-1:time_idx+leadtime]
-        temp = file['temperature'][time_idx+leadtime-1:time_idx+leadtime]
-        p = file['pressure'][time_idx+leadtime-1:time_idx+leadtime]
-        dist_field = file['dfun'][time_idx+leadtime-1:time_idx+leadtime]
+        vx          = file['velx'][time_idx:time_idx+leadtime]
+        vy          = file['vely'][time_idx:time_idx+leadtime]
+        temp = file['temperature'][time_idx:time_idx+leadtime]
+        p       = file['pressure'][time_idx:time_idx+leadtime]
+        dist_field  = file['dfun'][time_idx:time_idx+leadtime]
         comb_y =  np.stack([vx, vy, temp, p, dist_field], 1)
 
         comb = np.concatenate((comb_x, comb_y), axis=0)
 
-        return comb, leadtime.to(torch.float32)
+        return comb, leadtime
 
     def _get_specific_bcs(self, f):
         return [0, 0] # Not Periodic

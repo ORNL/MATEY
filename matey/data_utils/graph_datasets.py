@@ -22,6 +22,7 @@ except ImportError:
     tf = None
     tf_exist = False
 import random
+from .utils import unwrap_leadtime_config
 
 @dataclass(frozen=True)
 class SampleId:
@@ -32,7 +33,7 @@ class SampleId:
     t: Optional[int] = None  # time index if applicable
     
 class BaseCFDGraphDataset(Dataset):
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=1, supportdata=None, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
         train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
         group_id=0, group_rank=0, group_size=1, use_MPI=False):
 
@@ -48,7 +49,8 @@ class BaseCFDGraphDataset(Dataset):
         self.include_string = include_string if len(include_string)>0 else split
         self.dt = dt
         assert self.dt==1, f"currently only support dt=1 but got {dt}"
-        self.leadtime_max = leadtime_max
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed == True, set leadtime for all samples to be constant leadtime_max
         self.nsteps_input = n_steps
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
 
@@ -394,7 +396,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                 continue
             times = self._load_times(full_path)
             T = len(times)
-            for t in range(0, T - self.nsteps_input-1): 
+            for t in range(0, T - self.nsteps_input-self.leadtime_max+1): 
                 pt_name = f"graphdata_{t:05d}.pt"
                 samples.append(SampleId(group=cdir, item=pt_name, path=f"{self.processed_dir}/{cdir}/{pt_name}", t=t))
         return samples
@@ -409,7 +411,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
     
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None      
@@ -421,14 +423,19 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         inp_endt=inp_startt+n_in #exclusive
         
         if leadtime is None:
-            leadtime = torch.randint(1, min(self.leadtime_max+1, self.time_steps-inp_endt+2), (1,))
+            leadtime = 1
+            #FIXME: (1) need to move AR for graph to the main repo; (2) leadtime>1 is supported
+            if self.leadtime_fixed:
+                leadtime = 1 #max(self.leadtime_max//2, 1)])
+            else:
+                raise ValueError(f"Fix leadtime for now but got {self.leadtime_fixed}")
         else:
             leadtime = min(leadtime, self.time_steps-inp_endt+1)
 
         # input times: [t, t+1, ..., t + nsteps_input - 1]
         input_times = [inp_startt + k for k in range(n_in)]
         # target time: t + nsteps_input + leadtime
-        target_t = inp_endt+ leadtime.item()-1
+        target_t = inp_endt+ leadtime-1
 
         group = meta.group
         case_dir = os.path.join(self.processed_dir, group)
@@ -473,7 +480,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         data.target_t = target_t
         data.group = group
         data.dt = int(self.dt)
-        data.leadtime = leadtime.reshape(-1,1).to(torch.float32)
+        data.leadtime = torch.tensor([leadtime]).reshape(-1,1).to(torch.float32)
         bcs = self._get_specific_bcs()
         return {"graph": data, "bcs": bcs, "field_labels_out": [self.field_names.index(x) for x in self.field_names_out]}
 

@@ -12,6 +12,12 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import copy
 
+def unwrap_leadtime_config(leadtime_config):
+    leadtime_max=leadtime_config.get("leadtime_max", 1)
+    leadtime_fixed=leadtime_config.get("leadtime_fixed", False)
+    leadtime_returnfull=leadtime_config.get("leadtime_returnfull", False)
+    return leadtime_max, leadtime_fixed, leadtime_returnfull
+
 def extract_batch(data_iter, device=None):
     """return minibatch of data_iter"""
     try:

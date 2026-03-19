@@ -10,6 +10,7 @@ import h5py
 import glob
 import yaml
 from ..utils import getblocksplitstat
+from .utils import unwrap_leadtime_config
 
 """
 WELL_DATASETS = [
@@ -54,7 +55,7 @@ class TheWellDataset(Dataset):
         leadtime_max: when >0, future solution solution prediction, tar is a solution at the lead time;
                       when =0, self-supervised learning and tar is None
     """
-    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_max=0, supportdata=None, split='train', 
+    def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
                  train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
                  group_id=0, group_rank=0, group_size=1):
         super().__init__()
@@ -66,7 +67,8 @@ class TheWellDataset(Dataset):
         self.extra_specific = extra_specific # Whether to use parameters in name
         
         self.dt = 1
-        self.leadtime_max = leadtime_max 
+        self.leadtime_max, self.leadtime_fixed, self.leadtime_returnfull = unwrap_leadtime_config(leadtime_config)
+        #if leadtime_fixed==True, set leadtime for all samples to be constant leadtime_max
         self.nsteps_input = n_steps
         self.train_val_test = train_val_test
         self.partition = {'train': 0, 'val': 1, 'test': 2}[split]
@@ -152,7 +154,7 @@ class TheWellDataset(Dataset):
                 file_insteps = self.nsteps_input
                 self.file_lens.append(steps)
                 self.file_insteps.append(file_insteps)
-                self.file_steps.append(steps-file_insteps-(self.dt-1))
+                self.file_steps.append(steps-file_insteps-max(self.leadtime_max, 1)+1)
                 self.file_samples.append(samples)
                 self.offsets.append(self.offsets[-1]+self.file_steps[-1]*self.file_samples[-1])
             except:
@@ -192,7 +194,7 @@ class TheWellDataset(Dataset):
 
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
-            leadtime=torch.tensor([index[1]], dtype=torch.int)
+            leadtime=index[1]
             index = index[0]
         else:
             leadtime=None
@@ -213,21 +215,20 @@ class TheWellDataset(Dataset):
             self._loaddata_file(file_idx)
 
         if leadtime is None:
-            #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
-            leadtime = torch.tensor([0])
+            leadtime = 0 
             if self.leadtime_max>0:
-                leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx-nsteps_input+1), (1,))
+                if self.leadtime_fixed:
+                    leadtime = self.leadtime_max
+                else:
+                    #generate a random leadtime uniformly sampled from [1, self.leadtime_max]
+                    leadtime = torch.randint(1, min(self.leadtime_max+1, self.file_lens[file_idx]-time_idx-nsteps_input+1), (1,)).item()
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx-nsteps_input)
         assert time_idx + nsteps_input + leadtime <= self.file_lens[file_idx]
 
-        #try:
-        if True:
-            trajectory, leadtime = self._reconstruct_sample(self.datasets[file_idx], sample_idx, leadtime, time_idx, nsteps_input)
-            bcs = self._get_specific_bcs(self.datasets[file_idx])
-        #except:
-        #    raise RuntimeError(f'Failed to reconstruct sample for file {self.files_paths[file_idx]} trajectory {sample_idx} time {time_idx}')
-
+        trajectory, leadtime = self._reconstruct_sample(self.datasets[file_idx], sample_idx, leadtime, time_idx, nsteps_input)
+        bcs = self._get_specific_bcs(self.datasets[file_idx])
+       
         #T,C,H,W ==> T,C,D(=1),H,W for compatibility with 3D
         if self.spatial_dims==2:
             trajectory=np.expand_dims(trajectory, axis=2)
@@ -245,7 +246,10 @@ class TheWellDataset(Dataset):
                 else:
                     trajectory = np.append(trajectory, np.take(trajectory, [-(ires+1) for ires in range(ps-nres_)], axis=2+ips), axis=2+ips)
 
-        return {"x": trajectory[:-1], "bcs": torch.as_tensor(bcs), "y": trajectory[-1], "leadtime": leadtime}
+        assert trajectory.shape[0]==self.nsteps_input+leadtime if self.leadtime_returnfull else self.nsteps_input+1, f"Check TheWEll data shape {trajectory.shape, self.nsteps_input, leadtime}"
+        return {"x": trajectory[:self.nsteps_input], "bcs": torch.as_tensor(bcs), 
+                "y": trajectory[-leadtime:] if self.leadtime_returnfull else trajectory[-1:], 
+                "leadtime": torch.tensor([leadtime]).to(torch.float32)}
 
     def __len__(self):
         return self.len
@@ -292,12 +296,16 @@ class TheWellDataset(Dataset):
         #get input history
         comb_x = self._readdata(file, sample_idx, time_idx, time_idx+nsteps_input)
         if self.type not in ["postneutronstarmerger"]: #temporary, reduced D from 66 to 64
-            assert comb_x.shape==tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)]), f"{comb_x.shape}, {tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)])}, {file}"
-        #get the label at time_idx-1+leadtime
-        time_idx = time_idx+nsteps_input+leadtime.item()-1
-        comb_y = self._readdata(file, sample_idx, time_idx, time_idx+1)
+            assert comb_x.shape==tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)]), f"{comb_x.shape}, {tuple([nsteps_input]+[dim for dim in self.cubsizes]+[len(self.field_names)])}, {file}" 
+        
+        if self.leadtime_returnfull:
+            tlabel_start = time_idx+nsteps_input
+        else:
+            tlabel_start = time_idx+nsteps_input+leadtime-1
+
+        comb_y = self._readdata(file, sample_idx, tlabel_start, time_idx+nsteps_input+leadtime)
         if self.type not in ["postneutronstarmerger"]: #temporary, reduced D from 66 to 64
-            assert comb_y.shape==tuple([1]+[dim for dim in self.cubsizes]+[len(self.field_names)])
+            assert comb_y.shape==tuple([leadtime]+[dim for dim in self.cubsizes]+[len(self.field_names)]) if self.leadtime_returnfull else tuple([1]+[dim for dim in self.cubsizes]+[len(self.field_names)])
         comb = np.concatenate((comb_x, comb_y), axis=0) #T, H, W, C or T, D, H, W, C
 
         #start index and end size of local split for current
@@ -305,9 +313,9 @@ class TheWellDataset(Dataset):
         cbszz, cbszx, cbszy = self.blockdict["Ind_dim"] # [Dloc, Hloc, Wloc]
 
         if self.spatial_dims==2:#return: T,C,H,W
-            return comb.transpose(0, 3, 1, 2)[:,:,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime.to(torch.float32)
+            return comb.transpose(0, 3, 1, 2)[:,:,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime
         elif self.spatial_dims==3:#return: T,C,D,H,W
-            return comb.transpose(0, 4, 1, 2, 3)[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime.to(torch.float32)
+            return comb.transpose(0, 4, 1, 2, 3)[:,:,isz0:isz0+cbszz,isx0:isx0+cbszx, isy0:isy0+cbszy], leadtime
         else:
             raise ValueError(f"unknown spatial dims {self.spatial_dims}")
 
