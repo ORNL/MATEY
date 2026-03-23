@@ -609,7 +609,7 @@ class Trainer:
                 else:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     isgraph = False
-                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
+                    imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod, filtersize=getattr(self.params, "hierarchical", {}).get("filtersize",2)) if imod>0 else 0
                 #if self.global_rank == 0:
                 #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
                 seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
@@ -776,7 +776,7 @@ class Trainer:
                     else:
                         inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                         isgraph = False
-                        imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod) if imod>0 else 0
+                        imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod, filtersize=getattr(self.params, "hierarchical", {}).get("filtersize",2)) if imod>0 else 0
                     seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
                     opts = ForwardOptionsBase(
                     imod=imod, 

@@ -182,7 +182,7 @@ class MixedDataset(Dataset):
         self.train_offset = train_offset
         self.canonical_fields = canonical_fields
         self.canonical_cond_fields = canonical_cond_fields
-        #if True: allow mixed datasets sampled in one distributed minibatch (and henc for one optimization step)
+        #if True: allow mixed datasets sampled in one distributed minibatch (and hence for one optimization step)
         #Default: False
         self.mixed_dset_opt=mixed_dset_opt
         try:

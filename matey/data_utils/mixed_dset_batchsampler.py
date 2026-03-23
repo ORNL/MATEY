@@ -6,7 +6,6 @@ from typing import  Iterator
 import torch
 from torch.utils.data import Sampler, BatchSampler, Dataset
 import functools, operator, math
-from collections import defaultdict
 
 class MultisetBatchSampler(BatchSampler):
     r"""Batch Sampler that samples from multiple datasets with samples inside each mini-batch from a specific dataset.
@@ -18,6 +17,8 @@ class MultisetBatchSampler(BatchSampler):
         self.sub_dsets = dataset.sub_dsets
         self.ordered_sampling=ordered_sampling
         self.mixed_dset_opt=dataset.mixed_dset_opt
+        if self.mixed_dset_opt and not self.ordered_sampling:
+            raise ValueError("mixed_dset_opt is only supported for now in ordered_sampling; will revisit as needed for other cases")        
         #dsets group by tkhead {groupID: [iset ...]}
         self.dsets_groupbytk = dataset.dsets_groupbytk
         self.setgroup2rankgroup=dataset.setgroup2rankgroup
