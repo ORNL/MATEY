@@ -398,9 +398,9 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
 
     def _get_norm_data(self, data):
         self.get_min_max()
-        data[:,:,:,0] = (data[:,:,:,0] - self.uminmax[0])/(self.uminmax[1] - self.uminmax[0])
-        data[:,:,:,1] = (data[:,:,:,1] - self.vminmax[0])  /(self.vminmax[1]   - self.vminmax[0])
-        data[:,:,:,2] = (data[:,:,:,2] - self.wminmax[0])   /(self.wminmax[1]    - self.wminmax[0])
+        data[:,:,:,:,0] = (data[:,:,:,:,0] - self.uminmax[0])/(self.uminmax[1] - self.uminmax[0])
+        data[:,:,:,:,1] = (data[:,:,:,:,1] - self.vminmax[0])  /(self.vminmax[1]   - self.vminmax[0])
+        data[:,:,:,:,2] = (data[:,:,:,:,2] - self.wminmax[0])   /(self.wminmax[1]    - self.wminmax[0])
 
         return data
 
