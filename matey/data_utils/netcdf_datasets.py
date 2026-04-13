@@ -410,22 +410,12 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
     def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps):
         frames_x = []
         for i in range(time_idx - n_steps, time_idx):
-            if self.data_files[dat[i]] is None:
-                self._open_file(dat[i])
-            u = np.ma.getdata(self.data_files[dat[i]].variables["uvel"][:])
-            v = np.ma.getdata(self.data_files[dat[i]].variables["vvel"][:])
-            w = np.ma.getdata(self.data_files[dat[i]].variables["wvel"][:])
-            frames_x.append(np.stack([u, v, w], axis=-1))
+            frames_x.append(self._read_frame(dat[i]))
         comb_x = np.stack(frames_x, axis=0)  # n_steps, D, H, W, C
         
         frames_y = []
         for target_idx  in range(time_idx, time_idx + leadtime):
-            if self.data_files[dat[target_idx]] is None:
-                self._open_file(dat[target_idx])
-            u_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["uvel"][:])
-            v_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["vvel"][:])
-            w_y = np.ma.getdata(self.data_files[dat[target_idx]].variables["wvel"][:])
-            frames_y.append(np.stack([u_y, v_y, w_y], axis=-1))
+            frames_y.append(self._read_frame(dat[target_idx]))
         comb_y = np.stack(frames_y, axis=0)  # n_steps, D, H, W, C
 
         comb = np.concatenate([comb_x, comb_y], axis=0)
@@ -518,5 +508,11 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
     def _loaddata_file(self, file_ind):
         self.datasets[file_ind] = self.folder_file_lists[file_ind]
     
-    def _open_file(self, filepath):
-        self.data_files[filepath] = netCDF4.Dataset(filepath, 'r')
+    
+    def _read_frame(self, filepath):
+        with netCDF4.Dataset(filepath, 'r') as ds:  # closes automatically
+            u = np.ma.getdata(ds.variables["uvel"][:, :, :])
+            v = np.ma.getdata(ds.variables["vvel"][:, :, :])
+            w = np.ma.getdata(ds.variables["wvel"][:, :, :])
+        return np.stack([u, v, w], axis=-1)
+
