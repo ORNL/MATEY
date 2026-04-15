@@ -11,6 +11,10 @@ import torch.distributed as dist
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import copy
+import subprocess
+import json
+import os
+
 
 def unwrap_leadtime_config(leadtime_config):
     leadtime_max=leadtime_config.get("leadtime_max", 1)
@@ -499,3 +503,53 @@ def plot_contour(axs, data, varnames, caseset, nvar=4):
         cax = divider.append_axes('right', size='5%', pad=0.05)
         plt.colorbar(cs, cax=cax, orientation='vertical')
     return cs
+
+def decompress_zstd(file_path):
+        """
+        Use system 'zstd' to decompress the leaf chunk. No extra Python packages needed.
+        """
+        # Optional: validate first
+        test = subprocess.run(["zstd", "-t", file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if test.returncode != 0:
+            raise RuntimeError(f"zstd validation failed for {file_path}:\n{test.stderr.decode('utf-8','ignore')}")
+        # Decompress to stdout and capture in Python
+        out = subprocess.run(["zstd", "-d", "-c", file_path], check=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+        return out
+def locate_leaf_chunk_file(chunks_dir, timestep):
+    """
+    For chunk index [timestep, 0, 0, 0, 0], descend under c/ until we reach the leaf file.
+    Typical path: c/<t>/0/0/0/0  (last '0' is the leaf file with no extension).
+    """
+    path = os.path.join(chunks_dir, str(timestep))
+    for _ in range(4): 
+        next_path = os.path.join(path, "0")
+        if os.path.isdir(next_path):
+            path = next_path
+        else:
+            if os.path.isfile(next_path):
+                return next_path
+            if os.path.isfile(path):
+                return path
+            raise FileNotFoundError(f"Leaf chunk file not found under: {os.path.join(chunks_dir, str(timestep))}")
+    leaf = os.path.join(path, "0")
+    if os.path.isfile(leaf):
+        return leaf
+    raise FileNotFoundError(f"Expected leaf file at: {leaf}")
+
+def load_zarr_metadata(path):
+    """Load Zarr v3 metadata from zarr.json."""
+    with open(os.path.join(path, "zarr.json"), "r") as f:
+        return json.load(f)
+
+def list_timestep_indices(chunks_dir):
+    """List available timestep indices from chunk directories."""
+    indices = []
+    for item in os.listdir(chunks_dir):
+        if os.path.isdir(os.path.join(chunks_dir, item)):
+            try:
+                idx = int(item)
+                indices.append(idx)
+            except ValueError:
+                continue
+    return sorted(indices)
