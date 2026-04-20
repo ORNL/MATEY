@@ -28,7 +28,7 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False, use_linear=False):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.conditioning = (n_states_cond is not None and n_states_cond > 0)
@@ -77,10 +77,10 @@ class BaseModel(nn.Module):
                         if self.conditioning:
                             embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
                     else:
-                        embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
-                        debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, notransposed=notransposed, smooth=smooth))
+                        embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim, use_linear=use_linear))
+                        debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, notransposed=notransposed, smooth=smooth, use_linear=use_linear))
                         if self.conditioning:
-                            embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                            embed_ensemble_cond.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim, use_linear=use_linear))
                 tokenizer_ensemble_heads_level[head_name]["embed"] = embed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["debed"] = debed_ensemble
                 tokenizer_ensemble_heads_level[head_name]["embed_cond"] = embed_ensemble_cond
@@ -105,8 +105,9 @@ class BaseModel(nn.Module):
             debed_ensemble_new = nn.ModuleList()
             #for ps_scale in self.patch_size:
             for ilevel in range(self.token_level):
-                embed_ensemble_new.append(hMLP_stem(patch_size=self.patch_size[ilevel], in_chans=embed_dim//4, embed_dim=embed_dim))
-                debed_ensemble_new.append(hMLP_output(patch_size=self.patch_size[ilevel], embed_dim=embed_dim, out_chans=n_states))
+                _use_linear = getattr(self.embed_ensemble[0], 'use_linear', False) if len(self.embed_ensemble) > 0 else False
+                embed_ensemble_new.append(hMLP_stem(patch_size=self.patch_size[ilevel], in_chans=embed_dim//4, embed_dim=embed_dim, use_linear=_use_linear))
+                debed_ensemble_new.append(hMLP_output(patch_size=self.patch_size[ilevel], embed_dim=embed_dim, out_chans=n_states, use_linear=_use_linear))
 
             if self.token_level>1:
                 embed_ensemble_new[-1]=self.embed_ensemble[0]
@@ -154,6 +155,7 @@ class BaseModel(nn.Module):
                                 out_chans=new_out,
                                 notransposed=old_debed.notransposed,
                                 smooth=old_debed.smooth,
+                                use_linear=getattr(old_debed, 'use_linear', False),
                             )
 
                             old_head = old_debed.out_head
