@@ -161,12 +161,20 @@ class BaseModel(nn.Module):
                             old_head = old_debed.out_head
                             new_head = new_debed.out_head
                             # Copy weights
-                            new_head.weight[:, :old_out, ...].copy_(
-                                old_head.weight
-                            )
-                            new_head.bias[:old_out].copy_(
-                                old_head.bias
-                            )
+                            if getattr(old_debed, 'use_linear', False):
+                                # out_head is nn.Linear(embed_dim//4, out_chans*kD*kH*kW)
+                                kD, kH, kW = old_debed.out_head_ks
+                                n_old = old_out*kD*kH*kW
+                                new_head.weight[:n_old, :].copy_(old_head.weight)
+                                new_head.bias[:n_old].copy_(old_head.bias)
+                            else:
+                                # out_head is nn.ConvTranspose3d(embed_dim//4, out_chans, kD, kH, kW)
+                                new_head.weight[:, :old_out, ...].copy_(
+                                    old_head.weight
+                                )
+                                new_head.bias[:old_out].copy_(
+                                    old_head.bias
+                                )
 
                             if isinstance(old_debed.smooth, nn.Conv3d):
                                 old_smooth = old_debed.smooth
