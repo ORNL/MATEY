@@ -309,8 +309,8 @@ class hMLP_output(nn.Module):
                 self.out_head = out_head
             else:
                 self.out_head = nn.ConvTranspose3d(embed_dim//4, out_chans, kernel_size=self.ks[0], stride=self.ks[0])
-                if self.smooth:
-                    self.smooth = nn.Conv3d(out_chans, out_chans, kernel_size=self.ks[0], stride=1, groups=out_chans, padding="same", padding_mode="reflect")
+            if self.smooth:
+                self.smooth = nn.Conv3d(out_chans, out_chans, kernel_size=self.ks[0], stride=1, groups=out_chans, padding="same", padding_mode="reflect")
 
     def forward(self, x):
         #B,C,D,H,W
@@ -337,12 +337,9 @@ class hMLP_output(nn.Module):
             return x
         else:
             x = self.out_proj(x)
-            if self.notransposed:
-                x = self.out_head(x)
-            else:
-                x = self.out_head(x)
-                if self.smooth:
-                    x = self.smooth(x)
+            x = self.out_head(x)
+            if self.smooth:
+                x = self.smooth(x)
             return x
 
 class GraphhMLP_stem(nn.Module):
