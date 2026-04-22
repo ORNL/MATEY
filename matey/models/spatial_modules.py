@@ -134,7 +134,7 @@ class UpsampleConv3d(nn.Module):
 class UpsampleinSpace(nn.Module):
     """ upsample solution fields
     """
-    def __init__(self, patch_size=(1,16,16), channels=3, nconv=3, notransposed=False):
+    def __init__(self, patch_size=(1,16,16), channels=3, nconv=3, notransposed=False, use_linear=False):
         #patch_size: (ps_z, ps_x, ps_y)
         super().__init__()
         self.patch_size = patch_size
@@ -142,19 +142,54 @@ class UpsampleinSpace(nn.Module):
         self.nconv = nconv
         self.ks = calc_ks4conv(patch_size=self.patch_size, nconv=self.nconv)
         self.notransposed = notransposed
-    
-        modulelist = []
-        for ilayer in range(self.nconv-1):
-            ks_ilayer = self.ks[-(ilayer+1)]
-            modulelist.append(UpsampleConv3d(channels, channels, kernel_size=ks_ilayer, bias=False))
-            modulelist.append(nn.InstanceNorm3d(channels, affine=True))
-            modulelist.append(nn.GELU())
-        modulelist.append(UpsampleConv3d(channels, channels, kernel_size=self.ks[0]))
-        self.out_proj = torch.nn.Sequential(*modulelist)
+        self.use_linear = use_linear
+
+        if self.use_linear:
+            self.out_proj = nn.ModuleList()
+            for ilayer in range(self.nconv-1):
+                kD, kH, kW = self.ks[-(ilayer+1)]
+                self.out_proj.append(nn.Linear(channels, channels * kD * kH * kW, bias=False))
+                self.out_proj.append(nn.InstanceNorm3d(channels, affine=True))
+                self.out_proj.append(nn.GELU())
+            # Final head
+            kD, kH, kW = self.ks[0]
+            self.out_head = nn.Linear(channels, channels * kD * kH * kW)
+            self.out_head_ks = self.ks[0]
+            self.out_proj.append(self.out_head)
+        else:
+            modulelist = []
+            for ilayer in range(self.nconv-1):
+                ks_ilayer = self.ks[-(ilayer+1)]
+                modulelist.append(UpsampleConv3d(channels, channels, kernel_size=ks_ilayer, bias=False))
+                modulelist.append(nn.InstanceNorm3d(channels, affine=True))
+                modulelist.append(nn.GELU())
+            modulelist.append(UpsampleConv3d(channels, channels, kernel_size=self.ks[0]))
+            self.out_proj = torch.nn.Sequential(*modulelist)
         
     def forward(self, x):
         #B,C,D,H,W
-        x = self.out_proj(x)
+        if self.use_linear:
+            layer_idx = 0
+            for ilayer in range(self.nconv-1):
+                TB, _, D, H, W = x.shape
+                kD, kH, kW = self.ks[-(ilayer+1)]
+                # Apply linear, norm, activation
+                x = rearrange(x, 'tb c d h w -> (tb d h w) c')
+                x = self.out_proj[layer_idx](x)  # Linear layer
+                x = rearrange(x, '(tb d h w) (c kd kh kw) -> tb c (d kd) (h kh) (w kw)',
+                              tb=TB, d=D, h=H, w=W, c=self.channels, kd=kD, kh=kH, kw=kW)
+                x = self.out_proj[layer_idx + 1](x)  # InstanceNorm3d
+                x = self.out_proj[layer_idx + 2](x)  # GELU
+                layer_idx += 3
+            # Final head
+            TB, _, D, H, W = x.shape
+            kD, kH, kW = self.out_head_ks
+            x = rearrange(x, 'tb c d h w -> (tb d h w) c')
+            x = self.out_proj[layer_idx](x)  # out_head
+            x = rearrange(x, '(tb d h w) (c kd kh kw) -> tb c (d kd) (h kh) (w kw)',
+                          tb=TB, d=D, h=H, w=W, c=self.channels, kd=kD, kh=kH, kw=kW)
+        else:
+            x = self.out_proj(x)
            
         return x
     
@@ -287,7 +322,8 @@ class hMLP_output(nn.Module):
                 self.acts.append(nn.GELU())
             # Final head
             kD, kH, kW = self.ks[0]
-            self.out_head = nn.Linear(embed_dim//4, out_chans * kD * kH * kW)
+            self.out_head = nn.Linear(embed_dim//4, out_chans * kD * kH * kW, bias=False)
+            self.bias = nn.Parameter(torch.zeros(out_chans))
             self.out_head_ks = self.ks[0]
             if self.smooth:
                 self.smooth = nn.Conv3d(out_chans, out_chans, kernel_size=self.ks[0], stride=1, groups=out_chans, padding="same", padding_mode="reflect")
@@ -332,6 +368,7 @@ class hMLP_output(nn.Module):
             x = self.out_head(x)
             x = rearrange(x, '(tb d h w) (cout kd kh kw) -> tb cout (d kd) (h kh) (w kw)',
                           tb=TB, d=D, h=H, w=W, cout=self.out_chans, kd=kD, kh=kH, kw=kW)
+            x = x + self.bias[None, :, None, None, None]
             if self.smooth:
                 x = self.smooth(x)
             return x
