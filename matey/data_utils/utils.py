@@ -520,6 +520,10 @@ def locate_leaf_chunk_file(chunks_dir, timestep):
     """
     For chunk index [timestep, 0, 0, 0, 0], descend under c/ until we reach the leaf file.
     Typical path: c/<t>/0/0/0/0  (last '0' is the leaf file with no extension).
+    The current implementation assumes the following:
+    - 4 levels of directories under c/ (for the 4 dimensions other than time: D, H, W, C).
+    - All non-time dimensions are chunked with chunk size 1, leading to directories named '0' at each level.
+    - The leaf chunk file is named '0' with no extension.
     """
     path = os.path.join(chunks_dir, str(timestep))
     for _ in range(4): 
@@ -538,7 +542,10 @@ def locate_leaf_chunk_file(chunks_dir, timestep):
     raise FileNotFoundError(f"Expected leaf file at: {leaf}")
 
 def load_zarr_metadata(path):
-    """Load Zarr v3 metadata from zarr.json."""
+    """
+    Load Zarr v3 metadata from zarr.json.
+    We assume the metadata is stored in a file named 'zarr.json' at the given path, which is typical for Zarr v3 datasets.
+    """
     with open(os.path.join(path, "zarr.json"), "r") as f:
         return json.load(f)
 
