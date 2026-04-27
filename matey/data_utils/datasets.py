@@ -12,6 +12,7 @@ import os
 from .mixed_dset_batchsampler import MultisetBatchSampler
 from .hdf5_datasets import *
 from .netcdf_datasets import *
+from .zarr_datasets import *
 from .exodus_datasets import *
 from .hdf5_3Ddatasets import *
 from .blastnet_3Ddatasets import *
@@ -42,6 +43,7 @@ DSET_NAME_TO_OBJECT = {
     'SOLPS2D' :SOLPSDataset,
     ##JHU
     "isotropic1024fine": isotropic1024Dataset,
+    'jhtdbchannelflow': JHTDB_ChannelDataset,
     #TaylorGreen
     "taylorgreen": TaylorGreen,
     ##BLASTNET
