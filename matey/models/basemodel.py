@@ -166,7 +166,8 @@ class BaseModel(nn.Module):
                                 kD, kH, kW = old_debed.out_head_ks
                                 n_old = old_out*kD*kH*kW
                                 new_head.weight[:n_old, :].copy_(old_head.weight)
-                                new_head.bias[:n_old].copy_(old_head.bias)
+                                if old_head.bias is not None:
+                                    new_head.bias[:n_old].copy_(old_head.bias)
                             else:
                                 # out_head is nn.ConvTranspose3d(embed_dim//4, out_chans, kD, kH, kW)
                                 new_head.weight[:, :old_out, ...].copy_(
@@ -238,10 +239,11 @@ class BaseModel(nn.Module):
                         channels=new_c,
                         nconv=old_mod.nconv,
                         notransposed=old_mod.notransposed,
+                        use_linear=getattr(old_mod, 'use_linear', False)
                     )
 
-                    # Copy weights
-                    for old_layer, new_layer in zip(old_mod.out_proj, new_mod.out_proj):
+                    # Copy weights - works for both linear and conv3D
+                    for idx, (old_layer, new_layer) in enumerate(zip(old_mod.out_proj, new_mod.out_proj)):
                         # UpsampleConv3d
                         if isinstance(old_layer, UpsampleConv3d):
                             old_conv = old_layer.upsample[1]
@@ -251,7 +253,24 @@ class BaseModel(nn.Module):
 
                             if old_conv.bias is not None:
                                 new_conv.bias[:old_c].copy_(old_conv.bias[:old_c])
-
+                        # Linear layer (use_linear=True)
+                        elif isinstance(old_layer, nn.Linear):
+                            old_w = old_layer.weight
+                            new_w = new_layer.weight
+                            old_b = old_layer.bias
+                            new_b = new_layer.bias
+                            # Get kernel size for this layer based on position
+                            layer_num = idx // 3  # Each layer is Linear+Norm+GELU (3 modules)
+                            if layer_num < old_mod.nconv - 1:
+                                kD, kH, kW = old_mod.ks[-(layer_num+1)]
+                            else:
+                                kD, kH, kW = old_mod.ks[0]
+                            
+                            # Expand both input and output dimensions
+                            old_out_features = old_c * kD * kH * kW
+                            new_w[:old_out_features, :old_c].copy_(old_w)
+                            if old_b is not None:
+                                new_b[:old_out_features].copy_(old_b)
                         #InstanceNorm3d
                         elif isinstance(old_layer, nn.InstanceNorm3d):
                             new_layer.weight[:old_c].copy_(old_layer.weight[:old_c])

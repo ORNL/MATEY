@@ -36,7 +36,8 @@ def build_avit(params):
                 cond_input=getattr(params,'supportdata', False),
                 n_steps=params.n_steps,
                 bias_type=params.bias_type,
-                hierarchical=getattr(params, 'hierarchical', None)
+                hierarchical=getattr(params, 'hierarchical', None),
+                use_linear=getattr(params, 'use_linear', False),
                 )
     return model
 
@@ -52,9 +53,9 @@ class AViT(BaseModel):
         n_states (int): Number of input state variables.
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  space_type="axial_attention", time_type="attention", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None):
+                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None, use_linear=False):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
-                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical,use_linear=use_linear)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 

@@ -41,7 +41,8 @@ def build_turbt(params):
                      bias_type=params.bias_type,
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
-                     notransposed=getattr(params, 'notransposed', False)
+                     notransposed=getattr(params, 'notransposed', False),
+                     use_linear=getattr(params, 'use_linear', False),
                     )
     return model
 
@@ -58,8 +59,8 @@ class TurbT(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical, 
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False, use_linear=False):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical, use_linear=use_linear,
                          notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
@@ -106,8 +107,8 @@ class TurbT(BaseModel):
             else:
                 #self.module_upscale[str(imod)]=PatchExpandinSpace(embed_dim, expand_ratio=upscalefactor)
                 #self.module_upscale[str(imod)]=PatchUpsampleinSpace(embed_dim, expand_ratio=upscalefactor)
-                self.module_upscale_space[str(imod)]=UpsampleinSpace(patch_size=[upscalefactor, upscalefactor, upscalefactor], channels=n_states)
-                self.module_upscale_space2D[str(imod)]=UpsampleinSpace(patch_size=[1, upscalefactor, upscalefactor], channels=n_states)
+                self.module_upscale_space[str(imod)]=UpsampleinSpace(patch_size=[upscalefactor, upscalefactor, upscalefactor], channels=n_states, use_linear=use_linear)
+                self.module_upscale_space2D[str(imod)]=UpsampleinSpace(patch_size=[1, upscalefactor, upscalefactor], channels=n_states, use_linear=use_linear)
             if imod ==0:
                 self.module_blocks[str(imod)] = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
                                         #for i in range(processor_blocks)])
