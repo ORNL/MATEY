@@ -508,10 +508,6 @@ def decompress_zstd(file_path):
         """
         Use system 'zstd' to decompress the leaf chunk. No extra Python packages needed.
         """
-        # Optional: validate first
-        test = subprocess.run(["zstd", "-t", file_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if test.returncode != 0:
-            raise RuntimeError(f"zstd validation failed for {file_path}:\n{test.stderr.decode('utf-8','ignore')}")
         # Decompress to stdout and capture in Python
         out = subprocess.run(["zstd", "-d", "-c", file_path], check=True,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout

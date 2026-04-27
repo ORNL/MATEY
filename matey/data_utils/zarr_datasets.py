@@ -37,7 +37,6 @@ class BaseZarrDataset(Dataset):
         self.group_id = group_id
         self.group_rank = group_rank
         self.group_size = group_size
-        self.input_control_act = False
 
         self.time_index, self.sample_index, self.field_names, self.type, self.cubsizes = self._specifics()
         self.title = self.type
@@ -132,7 +131,7 @@ class BaseZarrDataset(Dataset):
         time_idx = local_idx % self.file_steps[0]
 
         time_idx += self.n_steps
-        if leadtime is None and not self.input_control_act:
+        if leadtime is None:
             if self.leadtime_fixed:
                 leadtime = self.leadtime_max
             else:
@@ -141,11 +140,6 @@ class BaseZarrDataset(Dataset):
                     leadtime = torch.randint(1, max_lead, (1,)).item()
                 else:
                     leadtime = 0
-        elif self.input_control_act:
-            if leadtime is None:
-                leadtime = min(self.leadtime_max, self.n_timesteps - time_idx)
-            else:
-                leadtime = min(leadtime, self.n_timesteps - time_idx)
         else:
             leadtime = min(leadtime, self.n_timesteps - time_idx)
 
