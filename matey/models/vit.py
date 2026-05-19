@@ -11,6 +11,7 @@ from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
 from ..utils import ForwardOptionsBase, TrainOptionsBase, densenodes_to_graphnodes
 from typing import Optional
+from ..data_utils import check_same_sample_across_halo
 
 def build_vit(params):
     """ Builds model from parameter file.
@@ -37,6 +38,7 @@ def build_vit(params):
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
                      use_linear=getattr(params, 'use_linear', False),
+                     ghost_sync=getattr(params, 'ghost_sync', False)
                     )
     return model
 
@@ -52,10 +54,10 @@ class ViT_all2all(BaseModel):
         n_states (int): Number of input state variables.
         sts_f
     """
-    def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
+    def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None, ghost_sync=False,
                  drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None, use_linear=False):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
-                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical, use_linear=use_linear)
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime, 
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical, ghost_sync=ghost_sync)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
         self.blocks = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
@@ -117,7 +119,7 @@ class ViT_all2all(BaseModel):
         x_local = rearrange(x_local, '(t nrfb) c d h w -> nrfb t c d h w', t=T)
         x = self.add_localpatches(xbase, x_local, patch_ids, ntokendim)
         return x
-
+        
     def forward(self, data, state_labels, bcs, opts: ForwardOptionsBase, train_opts: Optional[TrainOptionsBase]=None):
         ##################################################################
         #unpack arguments
@@ -131,6 +133,7 @@ class ViT_all2all(BaseModel):
         cond_input = opts.cond_input
         isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
+        ghost_info = opts.ghost_info
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
@@ -138,13 +141,15 @@ class ViT_all2all(BaseModel):
             field_labels_out = state_labels
 
         if isgraph:
+            with torch.no_grad():
+                check_same_sample_across_halo(data, ghost_info, sequence_parallel_group) if sequence_parallel_group is not None else None 
             x = data.x#[nnodes, T, C]
             edge_index = data.edge_index #
             batch = data.batch ##[N_total]
             T = x.shape[1] 
-            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
+            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #, sequence_parallel_group=sequence_parallel_group) #node features, mean_g:[G,C], std_g:[G,C]
             refineind=None
-            x = (x, batch, edge_index)
+            x = (x, batch, edge_index, ghost_info, sequence_parallel_group)  
         else:
             x = data
             #T,B,C,D,H,W
@@ -164,7 +169,7 @@ class ViT_all2all(BaseModel):
         if self.cond_input and cond_input is not None:
             leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
-        if  self.sts_model:
+        if self.sts_model:
             assert not isgraph, "Not set sts_model yet"
             #x_padding: coarse tokens; x_local: refined local tokens
             x_padding, patch_ids, _, _, x_local, leadtime_local, tposarea_padding, tposarea_local = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, leadtime=leadtime, blockdict=blockdict)
@@ -210,12 +215,11 @@ class ViT_all2all(BaseModel):
                 #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
                 #output: [N_total, T, C] (only real nodes)
                 x= densenodes_to_graphnodes(x_padding, mask_padding) #[nnodes, T, C]
-                x_padding = (x, batch, edge_index)
+                x_padding = (x, batch, edge_index, ghost_info, sequence_parallel_group)
                 D, H, W = -1, -1, -1 #place holder
-
             x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
             if isgraph:
-                node_ft, batch, edge_index = x
+                node_ft, batch, _, _, _ = x
                 #node_ft: [nnodes, T, C]
                 x = node_ft[:,:,field_labels_out[0]]
                 N = x.shape[0]

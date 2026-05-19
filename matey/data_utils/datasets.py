@@ -202,7 +202,8 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
-        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if ("graph" not in subset) and ("SOLPS" not in subset)] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
+        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if ("SOLPS" not in subset)] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
+
         if len(self.DP_dsets)==0 and group_size>1:
             warnings.warn(
                 "SP group is set, but no DP_dsets is defined. As a result, no SP will be used."
@@ -434,6 +435,7 @@ class MixedDataset(Dataset):
             datasamples["graph"] = variables["graph"]
             datasamples["bcs"] = variables["bcs"]
             datasamples["field_labels_out"] = datasamples["field_labels"][variables["field_labels_out"]]
+            datasamples["ghost_info"] = variables["ghost_info"]
             return datasamples
 
         else:
@@ -503,6 +505,11 @@ def my_collate(batch):
         objs = [b[key] for b in batch]
         if key == "graph":
             batch_new[key] = Batch.from_data_list(objs)
+        elif key == "ghost_info":
+            # GhostInfo is per-graph and non-batchable: mixed types (Tensor, List[Tensor], Dict)
+            # make default_collate fail. Keep as a plain
+            # list — index with batch_new["ghost_info"][i] in the forward pass.
+            batch_new[key] = objs # List[GhostInfo]
         else:
             batch_new[key] = default_collate(objs)
     return batch_new

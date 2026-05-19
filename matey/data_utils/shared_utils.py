@@ -35,7 +35,7 @@ def normalize_spatiotemporal_persample(x, sequence_parallel_group=None):
     x = (x - data_mean) / (data_std)
     return x, data_mean, data_std
 
-def normalize_spatiotemporal_persample_graph(x, batch, eps=1e-4):
+def normalize_spatiotemporal_persample_graph(x, batch, eps=1e-4, sequence_parallel_group=None):
     """
     inputs:
         x #[N_total, T, C]
@@ -49,6 +49,12 @@ def normalize_spatiotemporal_persample_graph(x, batch, eps=1e-4):
         x2_mean_time = (x*x).mean(dim=1) #N_total, C
         mean_g = global_mean_pool(x_mean_time, batch) #[G, C]
         mean_x2_g = global_mean_pool(x2_mean_time, batch)
+        if sequence_parallel_group is not None:
+            dist.all_reduce(mean_g, op=dist.ReduceOp.SUM, group=sequence_parallel_group)
+            dist.all_reduce(mean_x2_g, op=dist.ReduceOp.SUM, group=sequence_parallel_group)
+            world_size = dist.get_world_size(sequence_parallel_group)
+            mean_g = mean_g / world_size
+            mean_x2_g = mean_x2_g / world_size
         var_g = mean_x2_g - mean_g**2 #[G, C]
         std_g = torch.clamp_min(torch.sqrt(var_g), eps)
 

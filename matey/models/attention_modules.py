@@ -10,7 +10,7 @@ from einops import rearrange, repeat
 import math
 from functools import partial
 from timm.layers import DropPath
-from .ringX_attn import ringX_attn_func
+from .ringX_attn import ringX_varlen_attn_func as ringX_attn_func
 from .shared_modules import MLP, InstanceNorm1d_Masked
 #from .spatial_modules import RMSInstanceNormSpace
 
