@@ -13,13 +13,10 @@ export OMP_NUM_THREADS=1
 export master_node=$SLURMD_NODENAME
 export config="basic_config" 
 export run_name="demo_diffusion"
-# export yaml_config=./config/Demo_CIFAR10_diffusion_TT.yaml
-# export yaml_config=./config/Demo_CIFAR10_diffusion_ViT.yaml
-# export yaml_config=./config/Demo_CIFAR10_diffusion_UNet.yaml
-# export yaml_config=./config/Demo_MW_diffusion_UNet.yaml
-# export yaml_config=./config/Demo_MW_diffusion_TT.yaml
+
+export yaml_config=./config/Demo_MW_diffusion_TT.yaml
 # export yaml_config=./config/Demo_MW_diffusion_ViT.yaml
-export yaml_config=./config/Demo_MW_diffusion_TurbTMod.yaml
+
 
 ##conda env with rocm 6.0.0
 #module load rocm/6.0.0

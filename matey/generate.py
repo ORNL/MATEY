@@ -12,7 +12,6 @@ from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
-from .models.turbt_modified import build_turbt_modified
 from .models.diffusion_model import build_diffusion_model
 from .utils.distributed_utils import determine_turt_levels, get_sequence_parallel_group
 from .utils.forward_options import ForwardOptionsBase
@@ -100,16 +99,7 @@ class Generator:
         if self.params.diffusion:
             self.model = build_diffusion_model(self.params).to(self.device)
         else:
-            if self.params.model_type == 'avit':
-                self.model = build_avit(self.params).to(self.device)
-            elif self.params.model_type == "svit":
-                self.model = build_svit(self.params).to(self.device)
-            elif self.params.model_type == "vit_all2all":
-                self.model = build_vit(self.params).to(self.device)
-            elif self.params.model_type == "turbt":
-                self.model = build_turbt(self.params).to(self.device)
-            elif self.params.model_type == "turbt_modified":
-                self.model = build_turbt_modified(self.params).to(self.device)
+            raise NotImplementedError("Only diffusion model generation is implemented currently. Please set params.diffusion to True.")
 
 
         if dist.is_initialized() and self.params.use_ddp:

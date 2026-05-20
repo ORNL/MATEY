@@ -6,8 +6,6 @@ from .avit import build_avit
 from .svit import build_svit
 from .vit import build_vit
 from .turbt import build_turbt
-from .turbt_modified import build_turbt_modified
-from .unet import build_unet
 
 def build_diffusion_model(params):
     model = EDMPrecond(params=params)
@@ -43,12 +41,6 @@ class EDMPrecond(nn.Module):
         elif params.model_type == 'turbt':
             self.model = build_turbt(params)
             self.tokenizer_heads_params = self.model.tokenizer_heads_params
-        elif params.model_type == 'turbt_modified':
-            self.model = build_turbt_modified(params)
-            self.tokenizer_heads_params = self.model.tokenizer_heads_params
-        elif params.model_type == 'unet':
-            self.model = build_unet(params)
-            self.tokenizer_heads_params = {'CIFAR10': [[1, 1, 1]]}
         else:
             raise ValueError(f"Unknown diffusion model type: {params.model_type}")
 

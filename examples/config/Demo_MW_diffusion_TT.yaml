@@ -8,7 +8,7 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: 'Demo_Diffusion_MW_cond_S_newembskip_lt5' # Output path
+  exp_dir: 'Demo_Diffusion_MW_cond_TurbT_3level_S_lt5' # Output path
   # exp_dir: 'Demo_Diffusion_CIFAR10_correctedEpoch' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
@@ -71,10 +71,7 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Rand', compNS, '512'],
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
-              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/train', 'thermalcollision2d', '', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10/train/cifar10-32x32.zip', 'cifar10', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10_unzip/train', 'cifar10', 'tk-2D'],
-              
+              ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/train', 'thermalcollision2d', '', 'tk-2D'],              
               ]
   valid_data_paths: [
               #['/home/6pz/data/PDEBench_Data/2D/shallow-water', 'swe', ''],
@@ -84,8 +81,6 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
               ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/test', 'thermalcollision2d', '', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10/test/cifar10-32x32.zip', 'cifar10', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10_unzip/test', 'cifar10', 'tk-2D'],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

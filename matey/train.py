@@ -21,7 +21,6 @@ from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
-from .models.turbt_modified import build_turbt_modified
 from .models.diffusion_model import build_diffusion_model
 from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
@@ -194,8 +193,6 @@ class Trainer:
             self.model = build_vit(self.params).to(self.device)
         elif self.params.model_type == "turbt":
             self.model = build_turbt(self.params).to(self.device)
-        elif self.params.model_type == "turbt_modified":
-            self.model = build_turbt_modified(self.params).to(self.device)
 
         if self.params.compile:
             print('WARNING: BFLOAT NOT SUPPORTED IN SOME COMPILE OPS SO SWITCHING TO FLOAT16')

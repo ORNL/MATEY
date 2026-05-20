@@ -12,26 +12,12 @@ export OMP_NUM_THREADS=1
 
 export master_node=$SLURMD_NODENAME
 export config="basic_config" 
-# export model_dir="./Demo_Diffusion_CIFAR10_3level_Ti_1e-3lr/basic_config/demo_diffusion/"
-# export model_dir="./Demo_Diffusion_CIFAR10_UNet_1e-3lr/basic_config/demo_diffusion/"
-# export model_dir="./Demo_Diffusion_CIFAR10_3level_Ti_newembskip_1e-3lr/basic_config/demo_diffusion/"
 
-# export model_dir="./Demo_Diffusion_MW_cond_S_newembskip_lt5/basic_config/demo_diffusion/"
-# export model_dir="./Demo_Diffusion_MW_cond_S_newembskip_1e-3lr/basic_config/demo_diffusion/"
-
-# export model_dir="./Demo_Diffusion_MW_UNet_1e-3lr/basic_config/demo_diffusion/"
-# export model_dir="./Demo_Diffusion_MW_cond_UNet_1e-3lr/basic_config/demo_diffusion/"
-# export model_dir="./Demo_Diffusion_MW_cond_UNet_newemb_lt5/basic_config/demo_diffusion/"
 
 export model_dir="./Demo_Diffusion_MW_cond_TurbT_3level_S_lt5/basic_config/demo_diffusion/"
 
+export output_dir="./MW_cond_generation_outputs_batches_lt5/turbt/"
 
-# export output_dir="./CIFAR10_generation_outputs/"
-# export output_dir="./MW_generation_outputs/"
-# export output_dir="./MW_cond_generation_outputs_batches/"
-# export output_dir="./MW_cond_generation_outputs_batches_lt5/turbt/"
-# export output_dir="./MW_cond_generation_outputs_batches_lt5/UNet/"
-export output_dir="./MW_cond_generation_outputs_batches_lt5/TurbTMod/"
 
 ##conda env with rocm 6.0.0
 #module load rocm/6.0.0
