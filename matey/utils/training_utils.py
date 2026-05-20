@@ -11,7 +11,6 @@ from torch_geometric.nn import global_mean_pool
 from .visualization_utils import checking_data_pred_tar
 import copy
 
-
 def preprocess_target(leadtime, ramping_warmup = False):
     """
     #Inputs:
@@ -60,7 +59,13 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     # output: Model output after the final autoregressive step ([B, C, D, H, W])
     #  rollout_steps: Number of autoregressive steps performed.
     """
-    rollout_steps = preprocess_target(opts.leadtime) 
+    is_constant = torch.all(opts.leadtime == opts.leadtime[0, 0])
+    if is_constant:
+        rollout_steps = int(opts.leadtime[0,0].item())
+    else:
+        rollout_steps = preprocess_target(opts.leadtime) 
+        raise ValueError(f"Not expecting unequal leadtime across samples, {rollout_steps, opts.leadtime, is_constant}")
+    
     x_t = inp
     if opts.isgraph:
         n_steps = x_t.x.shape[1] #[nnodes, T, C]
@@ -153,6 +158,7 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         logs['train_nrmse'] += log_nrmse 
         loss_logs[dset_type] += loss.item()
         logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+            
     return loss, log_nrmse
 
 def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type):
@@ -208,4 +214,3 @@ class EDMLoss:
         loss = weight * ((D_yn - y) ** 2)
         return loss, D_yn
 
-#----------------------------------------------------------------------------
