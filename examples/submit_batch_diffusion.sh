@@ -2,10 +2,10 @@
 #SBATCH -A LRN037
 #SBATCH -J matey
 #SBATCH -o %x-%j.out
-#SBATCH -t 02:00:00
+#SBATCH -t 00:20:00
 #SBATCH -p batch
 #SBATCH -N 1
-##SBATCH -q debug
+#SBATCH -q debug
 #SBATCH -C nvme
 
 export OMP_NUM_THREADS=1

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
 from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output, UpsampleinSpace, UpsampleConv3d 
-from .time_modules import leadtimeMLP
+from .time_modules import leadtimeMLP, FourierEmbedding, PositionalEmbedding, Linear
 from .input_modules import input_control_MLP
 from .positionbias_modules import positionbias_mod
 import sys
@@ -28,7 +28,8 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False, use_linear=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False, use_linear=False,
+                 diffusion=False, model_channels=128, channel_mult_emb=4, embedding_type='positional', channel_mult_noise=1):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.conditioning = (n_states_cond is not None and n_states_cond > 0)
@@ -90,7 +91,27 @@ class BaseModel(nn.Module):
             if self.cond_input:
                 self.inconMLP.append(input_control_MLP(hidden_dim=embed_dim,n_steps=n_steps))
             self.posbias.append(positionbias_mod(bias_type, embed_dim))
-        self.embed_dim=embed_dim 
+        self.diffusion = diffusion
+        if self.diffusion:
+            emb_channels = model_channels * channel_mult_emb
+            noise_channels = model_channels * channel_mult_noise
+            init = dict(init_mode='xavier_uniform')
+
+            self.map_noise = (PositionalEmbedding(num_channels=noise_channels, endpoint=True)
+                              if embedding_type == 'positional'
+                              else FourierEmbedding(num_channels=noise_channels))
+            self.map_layer0 = Linear(in_features=noise_channels, out_features=emb_channels, **init)
+            self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
+
+            self.affine = nn.ModuleDict({})
+            for ilevel in range(nlevels):
+                self.affine[str(ilevel)] = Linear(in_features=emb_channels, out_features=embed_dim, **init)
+
+            self.diffusion_cond_proj = nn.ModuleDict({})
+            for ilevel in range(nlevels):
+                self.diffusion_cond_proj[str(ilevel)] = Linear(in_features=embed_dim, out_features=embed_dim, **init)
+
+        self.embed_dim=embed_dim
         
     def expand_conv_projections(self, refine_resol):
         """ Appends addition conv heads"""

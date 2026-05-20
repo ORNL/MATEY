@@ -8,7 +8,7 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: 'Demo_Diffusion_MW_cond_TurbT_3level_S_lt5' # Output path
+  exp_dir: 'Demo_Diffusion_MW_cond_TT_3level_S_lt5' # Output path
   # exp_dir: 'Demo_Diffusion_CIFAR10_correctedEpoch' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
@@ -46,6 +46,10 @@ basic_config: &basic_config
   processor_blocks: 12 # Number of transformer blocks in the backbone - 12/12/12/24 for Ti/S/B/L
   diffusion: !!bool True
   cond_diffusion: !!bool True
+  model_channels: 128       # Base channel count for noise embedding MLP
+  channel_mult_emb: 4       # Multiplier for embedding MLP hidden dim (emb_channels = model_channels * channel_mult_emb)
+  embedding_type: 'positional'  # Noise level embedding type: 'positional' or 'fourier'
+  channel_mult_noise: 1     # Multiplier for noise embedding dim (noise_channels = model_channels * channel_mult_noise)
   tokenizer_heads:
     - head_name: "tk-2D"
       patch_size: [[1, 4, 4]]
