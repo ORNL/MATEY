@@ -44,7 +44,7 @@ def build_turbt(params):
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
                      notransposed=getattr(params, 'notransposed', False),
-                     diffusion=getattr(params, 'diffusion', False)
+                     diffusion=getattr(params, 'diffusion', False),
                     )
     return model
 
@@ -119,34 +119,31 @@ class TurbT(BaseModel):
                 #FIXME: figure out how to do local attention in 3D physical space for corrections
                 self.module_blocks[str(imod)] = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
                                         for i in range(processor_blocks//self.nhlevels)])
-                
-        self.diffusion=diffusion
+
+        self.diffusion = diffusion
         if self.diffusion:
-            #from https://github.com/NVlabs/edm/blob/008a4e5316c8e3bfe61a62f874bddba254295afb/training/networks.py#L269
-            #FIXME: @Paul, currently place holder pls check the proper setting of these variables
-            model_channels      = 128          # Base multiplier for the number of channels.
-            channel_mult_emb    = 4            # Multiplier for the dimensionality of the embedding vector.
-            embedding_type      = 'positional' # Timestep embedding type: 'positional' for DDPM++, 'fourier' for NCSN++.
-            channel_mult_noise  = 1            # Timestep embedding size: 1 for DDPM++, 2 for NCSN++.
+            model_channels = 128
+            channel_mult_emb = 4
+            embedding_type = 'positional'
+            channel_mult_noise = 1
             emb_channels = model_channels * channel_mult_emb
             noise_channels = model_channels * channel_mult_noise
             init = dict(init_mode='xavier_uniform')
-            
-            self.map_noise = PositionalEmbedding(num_channels=noise_channels, endpoint=True) if embedding_type == 'positional' else FourierEmbedding(num_channels=noise_channels)
+
+            self.map_noise = (PositionalEmbedding(num_channels=noise_channels, endpoint=True)
+                              if embedding_type == 'positional'
+                              else FourierEmbedding(num_channels=noise_channels))
             self.map_layer0 = Linear(in_features=noise_channels, out_features=emb_channels, **init)
-            # self.map_layer1 = Linear(in_features=emb_channels, out_features=embed_dim, **init)
             self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
 
             self.affine = nn.ModuleDict({})
             for imod in range(self.nhlevels):
                 self.affine[str(imod)] = Linear(in_features=emb_channels, out_features=embed_dim, **init)
-            # self.affine = Linear(in_features=emb_channels, out_features=embed_dim, **init)
 
-            self.skip_projection = nn.ModuleDict({})
+            self.diffusion_cond_proj = nn.ModuleDict({})
             for imod in range(self.nhlevels):
-                self.skip_projection[str(imod)] = Linear(in_features=embed_dim*2, out_features=embed_dim, **init)
+                self.diffusion_cond_proj[str(imod)] = Linear(in_features=embed_dim, out_features=embed_dim, **init)
 
-                
     def filterdata(self, data, blockdict=None):
         #T,B,C,D,H,W
         assert data.ndim==6, f"unkown tensor shape in filter_data, {data.shape}"
@@ -254,32 +251,26 @@ class TurbT(BaseModel):
         field_labels_out=opts.field_labels_out
         sigma = getattr(opts, 'sigma', None)
         diffusion_cond = getattr(opts, 'diffusion_cond', None)
-        persample_normalize = False
+        persample_normalize = not self.diffusion
         ##################################################################
         if refine_ratio is None:
             refineind=None
         else:
             raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
-        
+
         if field_labels_out is None:
             field_labels_out = state_labels
 
         if self.diffusion:
             emb = self.map_noise(sigma)
-            # print(f'noise_labels shape: {sigma.shape}, emb shape: {emb.shape}')
-            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
-            # print(f'after swap emb shape: {emb.shape}')
+            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
             emb = silu(self.map_layer0(emb))
-            # print(f'after first layer emb shape: {emb.shape}')
-            emb = silu(self.map_layer1(emb)) #in shape
-            # print(f'after second layer emb shape: {emb.shape}')
-            emb = self.affine[str(imod)](emb)
-            # print(f'after affine emb shape: {emb.shape}')
-            if diffusion_cond is not None:
-                if imod == self.nhlevels - 1:
-                    diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
-                    opts.diffusion_cond = diffusion_cond
-            # print(f"Paul debugging, imod = {imod}, diffusion_cond shape after rearrange: {diffusion_cond.shape}", flush=True)
+            emb = silu(self.map_layer1(emb))
+            emb = self.affine[str(imod)](emb)  # (B, embed_dim)
+
+            if diffusion_cond is not None and imod == self.nhlevels - 1:
+                diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
+                opts.diffusion_cond = diffusion_cond
 
         if isgraph:
             """
@@ -298,8 +289,7 @@ class TurbT(BaseModel):
 
             if imod<self.nhlevels-1:
                 if diffusion_cond is not None:
-                    # print(f"Paul debugging, before filterdata, imod = {imod}, diffusion_cond shape: {diffusion_cond.shape}, x shape: {x.shape}", flush=True)
-                    concat_data = torch.cat([x, diffusion_cond], dim=2) #concat in channel dimension for filtering together
+                    concat_data = torch.cat([x, diffusion_cond], dim=2)
                     concat_data, blockdict = self.filterdata(concat_data, blockdict=blockdict)
                     x = concat_data[:, :, :x.shape[2], :, :, :]
                     diffusion_cond = concat_data[:, :, x.shape[2]:, :, :, :]
@@ -308,17 +298,16 @@ class TurbT(BaseModel):
                 else:
                     x, blockdict=self.filterdata(x, blockdict=blockdict)
                     opts.blockdict = blockdict
-                
             if imod>imod_bottom:
                 opts.imod -= 1
                 x_pred = self.forward(x, state_labels, bcs, opts)
             #x_input = x.clone()
             #T,B,C,D,H,W
             T, B, _, D, H, W = x.shape
-            #self.debug_nan(x, message="input")
             if persample_normalize:
+                #self.debug_nan(x, message="input")
                 x, data_mean, data_std = normalize_spatiotemporal_persample(x)
-            #self.debug_nan(x, message="input after normalization")
+                #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
@@ -327,20 +316,23 @@ class TurbT(BaseModel):
         if self.cond_input and cond_input is not None:
             leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
-        # print(f"Paul debugging, diffusion_cond shape before get_patchsequence: {diffusion_cond.shape}, x shape: {x.shape}",  flush=True)
         x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
-        # print(f"Paul debugging, x shape after get_patchsequence: {x.shape}",  flush=True)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')
-        # print(f"Paul debugging, x shape after rearrange: {x.shape}",  flush=True)
+        ################################################################################
         if diffusion_cond is not None:
-            diffusion_cond, _, _, _, _, _, _, _ = self.get_patchsequence(diffusion_cond, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
-            # print(f"Paul debugging, diffusion_cond shape after get_patchsequence: {diffusion_cond.shape}", flush=True)
-            diffusion_cond = rearrange(diffusion_cond, 't b c ntoken_tot -> b c (t ntoken_tot)')
-            # print(f"Paul debugging, diffusion_cond shape after get_patchsequence reshaping: {diffusion_cond.shape}", flush=True)
-
-        # if self.diffusion:
-            # print("Paul debugging, sigma, emb, x", sigma.shape, emb.shape, x.shape, flush=True)
-            # x = x + emb.unsqueeze(-1)
+            diffusion_cond_tokens, _, _, _, _, _, _, _ = \
+                self.get_patchsequence(diffusion_cond, state_labels, tkhead_name,
+                                       refineind=None, blockdict=blockdict,
+                                       ilevel=imod, isgraph=isgraph)
+            diffusion_cond_tokens = rearrange(
+                diffusion_cond_tokens, 't b c ntoken_tot -> b c (t ntoken_tot)')
+            b_curr, _, L_curr = x.shape
+            cond_combined = diffusion_cond_tokens + emb.unsqueeze(-1)
+            cond_fused = self.diffusion_cond_proj[str(imod)](
+                rearrange(cond_combined, 'b c L -> (b L) c'))
+            x = x + rearrange(cond_fused, '(b L) c -> b c L', b=b_curr)
+        elif self.diffusion:
+            x = x + emb.unsqueeze(-1)
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
             use_zpos=True if D>1 else False
@@ -360,47 +352,16 @@ class TurbT(BaseModel):
             ps = self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"][-1].patch_size
             nfact=4//ps[-1]
             """
-            if diffusion_cond is not None:
-                # print(f"Paul debugging, before sequence_factor_short, diffusion_cond shape: {diffusion_cond.shape}, x shape: {x.shape}", flush=True)
-                diffusion_cond, _=self.sequence_factor_short(diffusion_cond, imod, tkhead_name, [T, D, H, W], nfact=nfact)
-                # print(f"Paul debugging, after sequence_factor_short, diffusion_cond shape: {diffusion_cond.shape}, x shape: {x.shape}", flush=True)
-
             x, nfact=self.sequence_factor_short(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
-
         for iblk, blk in enumerate(self.module_blocks[str(imod)]):
             if iblk==0:
                 b_mod=x.shape[0]
                 if not isgraph and leadtime is not None:
                     leadtime = leadtime.repeat(b_mod // B, 1)
-                if self.diffusion:
-                    if diffusion_cond is not None:
-                        # add diffusion_cond as additional tokens for the diffusion model to attend to
-                        x = torch.cat([x, diffusion_cond], dim=2)
-                    
-                    # add noise embedding to input tokens as conditional information for diffusion model
-                    emb_mod = emb.repeat(b_mod // B, 1)                    
-                    x = torch.cat([x, emb_mod.unsqueeze(-1)], dim=2)
-
-                x_input = x.clone()
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk, local_att=local_att)
             else:
-                if iblk==len(self.module_blocks[str(imod)])-1 and self.diffusion:
-                    # for the last block, add skip connection from input tokens to facilitate training of diffusion model
-                    x = torch.cat([x, x_input], dim=1)
-                    local_batch = x.shape[0]
-                    x = rearrange(x, 'b c L -> (b L) c') 
-                    x = self.skip_projection[str(imod)](x) # Residual connection from input to the last block in the level
-                    x = rearrange(x, '(b L) c -> b c L', b = local_batch) 
                 x = blk(x, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask4attblk, local_att=local_att)
-        
         #self.debug_nan(x_padding, message="attention block")
-
-        if self.diffusion:
-            x = x[:, :, :-1] # remove noise embedding from tokens after processing
-        if diffusion_cond is not None:
-            doubled_L = x.shape[2]
-            x = x[:, :, :doubled_L//2] # remove diffusion_cond part from tokens after processing
-
         if local_att:
             #nfact=4//ps[-1]
             x=self.sequence_factor_long(x, imod, tkhead_name, [T, D, H, W], nfact=nfact)
