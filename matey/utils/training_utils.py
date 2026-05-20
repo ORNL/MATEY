@@ -11,6 +11,7 @@ from torch_geometric.nn import global_mean_pool
 from .visualization_utils import checking_data_pred_tar
 import copy
 
+
 def preprocess_target(leadtime, ramping_warmup = False):
     """
     #Inputs:
@@ -59,13 +60,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
     # output: Model output after the final autoregressive step ([B, C, D, H, W])
     #  rollout_steps: Number of autoregressive steps performed.
     """
-    is_constant = torch.all(opts.leadtime == opts.leadtime[0, 0])
-    if is_constant:
-        rollout_steps = int(opts.leadtime[0,0].item())
-    else:
-        rollout_steps = preprocess_target(opts.leadtime) 
-        raise ValueError(f"Not expecting unequal leadtime across samples, {rollout_steps, opts.leadtime, is_constant}")
-    
+    rollout_steps = preprocess_target(opts.leadtime) 
     x_t = inp
     if opts.isgraph:
         n_steps = x_t.x.shape[1] #[nnodes, T, C]
@@ -158,7 +153,6 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         logs['train_nrmse'] += log_nrmse 
         loss_logs[dset_type] += loss.item()
         logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
-            
     return loss, log_nrmse
 
 def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type):
@@ -191,3 +185,27 @@ def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, 
     loss_l1_dset_logs[dset_type]   += raw_l1_loss
     loss_rmse_dset_logs[dset_type] += raw_rmse_loss
     return
+
+class EDMLoss:
+    def __init__(self, P_mean=-1.2, P_std=1.2, sigma_data=0.5):
+        self.P_mean = P_mean
+        self.P_std = P_std
+        self.sigma_data = sigma_data
+
+    def __call__(self, net, images, field_labels, bcs, opts, augment_pipe=None):
+        rnd_normal = torch.randn([1, images.shape[1], 1, 1, 1, 1], device=images.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+        # y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
+        y = images
+        augment_labels = None
+        n = torch.randn_like(y) * sigma
+        # print(f"In EDMLoss: sigma shape: {sigma.shape}, y shape: {y.shape}, n shape: {n.shape}, labels shape: {opts.diffusion_cond.shape if getattr(opts, 'diffusion_cond', None) is not None else None}")
+        D_yn = net(y + n, sigma, field_labels, bcs, opts, augment_labels=augment_labels)
+        y = y.squeeze(0) if y.ndim == 6 else y
+        D_yn = D_yn.squeeze(0) if D_yn.ndim == 6 else D_yn
+        # print(f"D_yn shape: {D_yn.shape}, y shape: {y.shape}")
+        loss = weight * ((D_yn - y) ** 2)
+        return loss, D_yn
+
+#----------------------------------------------------------------------------

@@ -8,5 +8,5 @@ from .utils import *
 from .trustworthiness import *
 from .train import Trainer
 from .inference import Inferencer
-
+from .generate import Generator
 __version__ = "0.1.0"
