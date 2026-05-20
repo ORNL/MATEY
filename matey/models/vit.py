@@ -7,6 +7,8 @@ import torch.nn as nn
 import numpy as np
 from einops import rearrange
 from .spacetime_modules import SpaceTimeBlock_all2all
+from .time_modules import FourierEmbedding, PositionalEmbedding, Linear
+from torch.nn.functional import silu
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
 from ..utils import ForwardOptionsBase, TrainOptionsBase, densenodes_to_graphnodes
@@ -37,6 +39,7 @@ def build_vit(params):
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
                      use_linear=getattr(params, 'use_linear', False),
+                     diffusion=getattr(params, 'diffusion', False)
                     )
     return model
 
@@ -53,7 +56,7 @@ class ViT_all2all(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None, use_linear=False):
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None, use_linear=False, diffusion=False):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
                          cond_input=cond_input, n_steps=n_steps, bias_type=bias_type,SR_ratio=SR_ratio, hierarchical=hierarchical, use_linear=use_linear)
         self.drop_path = drop_path
@@ -71,6 +74,33 @@ class ViT_all2all(BaseModel):
         self.processor_blocks=processor_blocks
         self.replace_patch=replace_patch
         assert not (self.replace_patch and self.sts_model)
+        
+        self.diffusion=diffusion
+        if self.diffusion:
+            #from https://github.com/NVlabs/edm/blob/008a4e5316c8e3bfe61a62f874bddba254295afb/training/networks.py#L269
+            #FIXME: @Paul, currently place holder pls check the proper setting of these variables
+            model_channels      = 128          # Base multiplier for the number of channels.
+            channel_mult_emb    = 4            # Multiplier for the dimensionality of the embedding vector.
+            embedding_type      = 'positional' # Timestep embedding type: 'positional' for DDPM++, 'fourier' for NCSN++.
+            channel_mult_noise  = 1            # Timestep embedding size: 1 for DDPM++, 2 for NCSN++.
+            emb_channels = model_channels * channel_mult_emb
+            noise_channels = model_channels * channel_mult_noise
+            init = dict(init_mode='xavier_uniform')
+            
+            self.map_noise = PositionalEmbedding(num_channels=noise_channels, endpoint=True) if embedding_type == 'positional' else FourierEmbedding(num_channels=noise_channels)
+            self.map_layer0 = Linear(in_features=noise_channels, out_features=emb_channels, **init)
+            # self.map_layer1 = Linear(in_features=emb_channels, out_features=embed_dim, **init)
+            self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
+
+            # self.affine = nn.ModuleDict({})
+            # for imod in range(self.nhlevels):
+            #     self.affine[str(imod)] = Linear(in_features=emb_channels, out_features=embed_dim, **init)
+            self.affine = Linear(in_features=emb_channels, out_features=embed_dim, **init)
+
+            # self.skip_projection = nn.ModuleDict({})
+            # for imod in range(self.nhlevels):
+            #     self.skip_projection[str(imod)] = Linear(in_features=embed_dim*2, out_features=embed_dim, **init)
+            self.skip_projection = Linear(in_features=embed_dim*2, out_features=embed_dim, **init)
 
     def expand_sts_model(self):
         """ Appends addition sts blocks"""
@@ -131,11 +161,27 @@ class ViT_all2all(BaseModel):
         cond_input = opts.cond_input
         isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
+        sigma = getattr(opts, 'sigma', None)
+        diffusion_cond = getattr(opts, 'diffusion_cond', None)
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         if field_labels_out is None:
             field_labels_out = state_labels
+        
+        if self.diffusion:
+            emb = self.map_noise(sigma)
+            # print(f'noise_labels shape: {sigma.shape}, emb shape: {emb.shape}')
+            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
+            # print(f'after swap emb shape: {emb.shape}')
+            emb = silu(self.map_layer0(emb))
+            # print(f'after first layer emb shape: {emb.shape}')
+            emb = silu(self.map_layer1(emb)) #in shape
+            # print(f'after second layer emb shape: {emb.shape}')
+            emb = self.affine(emb)
+            # print(f'after affine emb shape: {emb.shape}')
+            if diffusion_cond is not None:
+                diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
 
         if isgraph:
             x = data.x#[nnodes, T, C]
@@ -174,6 +220,13 @@ class ViT_all2all(BaseModel):
             x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
         x_padding = rearrange(x_padding, 't b c ntoken_tot -> b c (t ntoken_tot)')
 
+        if diffusion_cond is not None:
+            diffusion_cond, _, _, _, _, _, _, _ = self.get_patchsequence(diffusion_cond, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+            diffusion_cond = rearrange(diffusion_cond, 't b c ntoken_tot -> b c (t ntoken_tot)')
+
+        # if self.diffusion:
+        #     x_padding = x_padding + emb.unsqueeze(-1)
+
         # Repeat the steps for conditioning if present
         if conditioning:
             assert self.sts_model == False
@@ -194,11 +247,35 @@ class ViT_all2all(BaseModel):
                 x_padding = x_padding + c
 
             if iblk==0:
+                if self.diffusion:
+                    if diffusion_cond is not None:
+                        # add diffusion_cond as additional tokens for the diffusion model to attend to
+                        x_padding = torch.cat([x_padding, diffusion_cond], dim=2)
+                    
+                    # add noise embedding to input tokens as conditional information for diffusion model
+                    x_padding = torch.cat([x_padding, emb.unsqueeze(-1)], dim=2)
+
+                    x_input = x_padding.clone()
+                
                 x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=leadtime, mask_padding=mask4attblk )
             else:
+                if iblk==len(self.blocks)-1 and self.diffusion:
+                    # for the last block, add skip connection from input tokens to facilitate training of diffusion model
+                    x_padding = torch.cat([x_padding, x_input], dim=1)
+                    local_batch = x_padding.shape[0]
+                    x_padding = rearrange(x_padding, 'b c L -> (b L) c') 
+                    x_padding = self.skip_projection(x_padding) # Residual connection from input to the last block in the level
+                    x_padding = rearrange(x_padding, '(b L) c -> b c L', b = local_batch) 
                 x_padding = blk(x_padding, sequence_parallel_group=sequence_parallel_group, bcs=bcs, leadtime=None, mask_padding=mask4attblk)
         #self.debug_nan(x_padding, message="attention block")
         ################################################################################
+
+        if self.diffusion:
+            x_padding = x_padding[:, :, :-1] # remove noise embedding from tokens after processing
+        if diffusion_cond is not None:
+            doubled_L = x_padding.shape[2]
+            x_padding = x_padding[:, :, :doubled_L//2] # remove diffusion_cond part from tokens after processing
+
         x_padding = rearrange(x_padding, 'b c (t ntoken_tot) -> t b c ntoken_tot', t=T)
         ######## Decode ########
         if self.sts_model:
