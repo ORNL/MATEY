@@ -13,10 +13,15 @@ export OMP_NUM_THREADS=1
 export master_node=$SLURMD_NODENAME
 export config="basic_config" 
 
+# export model_dir="./Demo_Diffusion_MW_cond_avit_S_lt5/basic_config/demo_diffusion/"
+# export model_dir="./Demo_Diffusion_MW_cond_svit_S_lt5/basic_config/demo_diffusion/"
+# export model_dir="./Demo_Diffusion_MW_cond_vit_S_lt5/basic_config/demo_diffusion/"
+# export model_dir="./Demo_Diffusion_MW_cond_TT_3level_S_lt5/basic_config/demo_diffusion/"
 
-export model_dir="./Demo_Diffusion_MW_cond_TurbT_3level_S_lt5/basic_config/demo_diffusion/"
-
-export output_dir="./MW_cond_generation_outputs_batches_lt5/turbt/"
+# export output_dir="./MW_cond_generation_outputs_batches_lt5/avit/"
+# export output_dir="./MW_cond_generation_outputs_batches_lt5/svit/"
+# export output_dir="./MW_cond_generation_outputs_batches_lt5/vit/"
+export output_dir="./MW_cond_generation_outputs_batches_lt5/TT_3level/"
 
 
 ##conda env with rocm 6.0.0

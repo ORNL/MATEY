@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
+from torch.nn.functional import silu
 from .spacetime_modules import SpaceTimeBlock
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids
@@ -36,7 +37,12 @@ def build_avit(params):
                 cond_input=getattr(params,'supportdata', False),
                 n_steps=params.n_steps,
                 bias_type=params.bias_type,
-                hierarchical=getattr(params, 'hierarchical', None)
+                hierarchical=getattr(params, 'hierarchical', None),
+                diffusion=getattr(params, 'diffusion', False),
+                model_channels=getattr(params, 'model_channels', 128),
+                channel_mult_emb=getattr(params, 'channel_mult_emb', 4),
+                embedding_type=getattr(params, 'embedding_type', 'positional'),
+                channel_mult_noise=getattr(params, 'channel_mult_noise', 1),
                 )
     return model
 
@@ -52,9 +58,12 @@ class AViT(BaseModel):
         n_states (int): Number of input state variables.
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  space_type="axial_attention", time_type="attention", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None,
-                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None):
+                drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], hierarchical=None,
+                diffusion=False, model_channels=128, channel_mult_emb=4, embedding_type='positional', channel_mult_noise=1):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
-                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical)
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical,
+                         diffusion=diffusion, model_channels=model_channels, channel_mult_emb=channel_mult_emb,
+                         embedding_type=embedding_type, channel_mult_noise=channel_mult_noise)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 
@@ -165,16 +174,29 @@ class AViT(BaseModel):
         isgraph = opts.isgraph
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
+        sigma = getattr(opts, 'sigma', None)
+        diffusion_cond = getattr(opts, 'diffusion_cond', None)
+        persample_normalize = not self.diffusion
+        ##################################################################
         assert not isgraph, "graph is not supported in AViT"
         #T,B,C,D,H,W
         T, _, _, D, _, _ = x.shape
+
+        if self.diffusion:
+            emb = self.map_noise(sigma)
+            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)
+            emb = silu(self.map_layer0(emb))
+            emb = silu(self.map_layer1(emb))
+            emb = self.affine[str(imod)](emb)  # (B, embed_dim)
+            if diffusion_cond is not None:
+                diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
         if self.tokenizer_heads_gammaref[tkhead_name] is None and refine_ratio is None:
             refineind=None
         else:
             refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x, self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
 
-        x, data_mean, data_std = normalize_spatiotemporal_persample(x)
-        #self.debug_nan(x, message="input")
+        if persample_normalize:
+            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
 
         #[T, B, C_emb//4, D, H, W]
         x_pre = self.get_unified_preembedding(x, state_labels, self.space_bag[imod])
@@ -202,6 +224,21 @@ class AViT(BaseModel):
             c_pre = self.get_unified_preembedding(cond_dict["fields"], cond_dict["labels"], self.space_bag_cond[imod])
             c = self.get_structured_sequence(c_pre, -1, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed_cond"])
 
+        if diffusion_cond is not None:
+            diffusion_cond_pre = self.get_unified_preembedding(
+                diffusion_cond, state_labels, self.space_bag[imod])
+            diffusion_cond_tokens = self.get_structured_sequence(
+                diffusion_cond_pre, -1, self.tokenizer_ensemble_heads[imod][tkhead_name]["embed"])
+            # diffusion_cond_tokens: t b embed_dim ntokD ntokH ntokW
+            _, B_x, _, D_x, H_x, W_x = x.shape
+            cond_combined = diffusion_cond_tokens + rearrange(emb, 'b c -> 1 b c 1 1 1')
+            cond_fused = self.diffusion_cond_proj[str(imod)](
+                rearrange(cond_combined, 't b c d h w -> (t b d h w) c'))
+            x = x + rearrange(cond_fused, '(t b d h w) c -> t b c d h w',
+                               t=T, b=B_x, d=D_x, h=H_x, w=W_x)
+        elif self.diffusion:
+            x = x + rearrange(emb, 'b c -> 1 b c 1 1 1')
+
         # Process
         for iblk, blk in enumerate(self.blocks):
             if conditioning:
@@ -228,8 +265,10 @@ class AViT(BaseModel):
             x = self.add_sts_model(x, x_pre, state_labels, bcs, tkhead_name, leadtime=leadtime, refineind=refineind, blockdict=blockdict)
 
         # Denormalize
-        x = x * data_std + data_mean # All state labels in the batch should be identical
+        if persample_normalize:
+            x = x * data_std + data_mean
         if train_opts is not None and train_opts.returnbase4train:
-            xbase = xbase * data_std + data_mean
+            if persample_normalize:
+                xbase = xbase * data_std + data_mean
             return x[-1], xbase[-1]
         return x[-1] # Just return last step - now just predict delta.

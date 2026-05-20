@@ -94,7 +94,7 @@ class Trainer:
             print(f"Warning: reserved n_states {self.params.n_states} too small — {msg_suffix}.")
             self.params.n_states = new_n_states
 
-        if self.params.diffusion:
+        if getattr(self.params, "diffusion", False):
             self.diffusion_loss = EDMLoss()
 
         self.initialize_model()
@@ -183,7 +183,7 @@ class Trainer:
             self.val_sampler.set_epoch(0)
     
     def initialize_model(self):
-        if self.params.diffusion:
+        if getattr(self.params, "diffusion", False):
             self.model = build_diffusion_model(self.params).to(self.device)
         elif self.params.model_type == 'avit':
             self.model = build_avit(self.params).to(self.device)

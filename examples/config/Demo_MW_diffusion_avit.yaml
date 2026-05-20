@@ -8,7 +8,7 @@ basic_config: &basic_config
   enable_amp: !!bool False # Use automatic mixed precision - blows up with low variance fields right now
   compile: !!bool False # Compile model - Does not currently work
   gradient_checkpointing: !!bool False # Whether to use gradient checkpointing - Slow, but lower memory
-  exp_dir: 'Demo_Diffusion_MW_cond_ViT_S_newembskip_lt5' # Output path
+  exp_dir: 'Demo_Diffusion_MW_cond_avit_S_lt5' # Output path
   # exp_dir: 'Demo_Diffusion_CIFAR10_correctedEpoch' # Output path
   log_interval: 1 # How often to log - Don't think this is actually implemented
   pretrained: !!bool False # Whether to load a pretrained model
@@ -23,7 +23,7 @@ basic_config: &basic_config
   scheduler: 'cosine' # Only cosine implemented
   warmup_steps: 10 # Warmup when not using DAdapt
   learning_rate: 1e-3 # -1 means use DAdapt
-  weight_decay: 1e-3 
+  weight_decay: 1e-3
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
   dt: 1 # Striding of data - Not currently implemented > 1
@@ -33,19 +33,23 @@ basic_config: &basic_config
   accum_grad: 1  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
   # Model settings
   # model_type: 'turbt'
-  model_type:  'vit_all2all' # no need for time_type and space_type inputs
+  # model_type:  'vit_all2all' # no need for time_type and space_type inputs
   #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
-  #time_type: 'all2all_time' # 
+  #time_type: 'all2all_time' #
   #space_type: 'all2all' #
-  #model_type:  'avit' #currently only support space_type=="axial_attention" and time_type=="attention"
-  #time_type: 'attention' # Conditional on block type
-  #space_type: 'axial_attention' # Conditional on block type 
+  model_type:  'avit' #currently only support space_type=="axial_attention" and time_type=="attention"
+  time_type: 'attention' # Conditional on block type
+  space_type: 'axial_attention' # Conditional on block type
   tie_fields: !!bool False # Whether to use 1 embedding per field per data
   embed_dim: 384 # Dimension of internal representation - 192/384/768/1024 for Ti/S/B/L
   num_heads: 6 # Number of heads for attention - 3/6/12/16 for Ti/S/B/L
   processor_blocks: 12 # Number of transformer blocks in the backbone - 12/12/12/24 for Ti/S/B/L
   diffusion: !!bool True
   cond_diffusion: !!bool True
+  model_channels: 128       # Base channel count for noise embedding MLP
+  channel_mult_emb: 4       # Multiplier for embedding MLP hidden dim (emb_channels = model_channels * channel_mult_emb)
+  embedding_type: 'positional'  # Noise level embedding type: 'positional' or 'fourier'
+  channel_mult_noise: 1     # Multiplier for noise embedding dim (noise_channels = model_channels * channel_mult_noise)
   tokenizer_heads:
     - head_name: "tk-2D"
       patch_size: [[1, 4, 4]]
@@ -69,9 +73,6 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
               ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/train', 'thermalcollision2d', '', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10/train/cifar10-32x32.zip', 'cifar10', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10_unzip/train', 'cifar10', 'tk-2D'],
-              
               ]
   valid_data_paths: [
               #['/home/6pz/data/PDEBench_Data/2D/shallow-water', 'swe', ''],
@@ -81,8 +82,6 @@ basic_config: &basic_config
               #['/home/6pz/data/PDEBench_Data/2D/CFD/2D_Train_Turb', compNS, ''],
               #['/home/6pz/data/PDEBench_Data/2D/diffusion-reaction', 'diffre2d', ''],
               ['/lustre/orion/lrn037/proj-shared/miniweather_thermals_tiny/test', 'thermalcollision2d', '', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10/test/cifar10-32x32.zip', 'cifar10', 'tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/CIFAR10_unzip/test', 'cifar10', 'tk-2D'],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 
