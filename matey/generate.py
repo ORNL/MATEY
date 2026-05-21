@@ -35,7 +35,8 @@ class Generator:
         self.epoch = 0
         self.mp_type = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.half
 
-        self.cond_diffusion = getattr(self.params, "cond_diffusion", False)
+        self.diffusion_config = getattr(self.params, 'diffusion_config', None) or {}
+        self.cond_diffusion = self.diffusion_config.get("cond_diffusion", False)
         self.profiling = self.params.profiling if hasattr(self.params, "profiling") else False
 
         self.output_dir = self.params.output_dir
@@ -96,10 +97,10 @@ class Generator:
         self.single_print("self.train_data_loader:",  len(self.train_data_loader), "valid_data_loader:", len(self.valid_data_loader))
         
     def initialize_model(self):
-        if getattr(self.params, "diffusion", False):
+        if self.diffusion_config.get("diffusion", False):
             self.model = build_diffusion_model(self.params).to(self.device)
         else:
-            raise NotImplementedError("Only diffusion model generation is implemented currently. Please set params.diffusion to True.")
+            raise NotImplementedError("Only diffusion model generation is implemented currently. Please set params.diffusion_config.diffusion to True.")
 
 
         if dist.is_initialized() and self.params.use_ddp:
@@ -254,7 +255,7 @@ class Generator:
                         isgraph=isgraph,
                         field_labels_out= field_labels
                         )
-                        if getattr(self.params, "cond_diffusion", False):
+                        if self.cond_diffusion:
                             opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w') # conditioning on input history
                         # Euler step.
                         # denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
@@ -283,7 +284,7 @@ class Generator:
                             isgraph=isgraph,
                             field_labels_out= field_labels
                             )
-                            if getattr(self.params, "cond_diffusion", False):
+                            if self.cond_diffusion:
                                 opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w') # conditioning on input history
                             # denoised = net(x_next, t_next, class_labels).to(torch.float64)
                             # denoised = net(x_next, t_next, None)

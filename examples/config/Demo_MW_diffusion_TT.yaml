@@ -44,12 +44,13 @@ basic_config: &basic_config
   embed_dim: 384 # Dimension of internal representation - 192/384/768/1024 for Ti/S/B/L
   num_heads: 6 # Number of heads for attention - 3/6/12/16 for Ti/S/B/L
   processor_blocks: 12 # Number of transformer blocks in the backbone - 12/12/12/24 for Ti/S/B/L
-  diffusion: !!bool True
-  cond_diffusion: !!bool True
-  model_channels: 128       # Base channel count for noise embedding MLP
-  channel_mult_emb: 4       # Multiplier for embedding MLP hidden dim (emb_channels = model_channels * channel_mult_emb)
-  embedding_type: 'positional'  # Noise level embedding type: 'positional' or 'fourier'
-  channel_mult_noise: 1     # Multiplier for noise embedding dim (noise_channels = model_channels * channel_mult_noise)
+  diffusion_config:
+    diffusion: !!bool True
+    cond_diffusion: !!bool True
+    model_channels: 128       # Base channel count for noise embedding MLP
+    channel_mult_emb: 4       # Multiplier for embedding MLP hidden dim (emb_channels = model_channels * channel_mult_emb)
+    embedding_type: 'positional'  # Noise level embedding type: 'positional' or 'fourier'
+    channel_mult_noise: 1     # Multiplier for noise embedding dim (noise_channels = model_channels * channel_mult_noise)
   tokenizer_heads:
     - head_name: "tk-2D"
       patch_size: [[1, 4, 4]]

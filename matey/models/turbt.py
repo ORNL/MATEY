@@ -43,11 +43,7 @@ def build_turbt(params):
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
                      notransposed=getattr(params, 'notransposed', False),
-                     diffusion=getattr(params, 'diffusion', False),
-                     model_channels=getattr(params, 'model_channels', 128),
-                     channel_mult_emb=getattr(params, 'channel_mult_emb', 4),
-                     embedding_type=getattr(params, 'embedding_type', 'positional'),
-                     channel_mult_noise=getattr(params, 'channel_mult_noise', 1),
+                     diffusion_config=getattr(params, 'diffusion_config', None),
                     )
     return model
 
@@ -65,11 +61,10 @@ class TurbT(BaseModel):
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6,
                  drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False,
-                 diffusion=False, model_channels=128, channel_mult_emb=4, embedding_type='positional', channel_mult_noise=1):
+                 diffusion_config=None):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical,
                          notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1,
-                         diffusion=diffusion, model_channels=model_channels, channel_mult_emb=channel_mult_emb,
-                         embedding_type=embedding_type, channel_mult_noise=channel_mult_noise)
+                         diffusion_config=diffusion_config)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
         self.module_blocks=nn.ModuleDict({})

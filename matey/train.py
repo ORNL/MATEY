@@ -41,6 +41,7 @@ class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
         self.device = device
         self.params = params
+        self.diffusion_config = getattr(params, 'diffusion_config', None) or {}
         self.global_rank = global_rank
         self.local_rank = local_rank
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -94,7 +95,7 @@ class Trainer:
             print(f"Warning: reserved n_states {self.params.n_states} too small — {msg_suffix}.")
             self.params.n_states = new_n_states
 
-        if getattr(self.params, "diffusion", False):
+        if self.diffusion_config.get("diffusion", False):
             self.diffusion_loss = EDMLoss()
 
         self.initialize_model()
@@ -183,7 +184,7 @@ class Trainer:
             self.val_sampler.set_epoch(0)
     
     def initialize_model(self):
-        if getattr(self.params, "diffusion", False):
+        if self.diffusion_config.get("diffusion", False):
             self.model = build_diffusion_model(self.params).to(self.device)
         elif self.params.model_type == 'avit':
             self.model = build_avit(self.params).to(self.device)
@@ -535,7 +536,7 @@ class Trainer:
     def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
         autoregressive = getattr(self.params, "autoregressive", False)
-        if getattr(self.params, "diffusion", False):
+        if self.diffusion_config.get("diffusion", False):
             loss, output = self.diffusion_loss(self.model, inp, field_labels, bcs, opts)
             return output, loss
         elif not autoregressive:
@@ -553,17 +554,12 @@ class Trainer:
         data_time = 0
         data_start = self.timer.get_time()
         self.model.train()
-        if getattr(self.params, "diffusion", False):
-            logs = {'train_EDMloss': torch.zeros(1).to(self.device),
-                    'train_rmse': torch.zeros(1).to(self.device),
-                    'train_nrmse': torch.zeros(1).to(self.device),
+        logs = {'train_rmse': torch.zeros(1).to(self.device),
+                'train_nrmse': torch.zeros(1).to(self.device),
                 'train_l1': torch.zeros(1).to(self.device),
                 'train_ssim': torch.zeros(1).to(self.device)}
-        else:
-            logs = {'train_rmse': torch.zeros(1).to(self.device),
-                    'train_nrmse': torch.zeros(1).to(self.device),
-                'train_l1': torch.zeros(1).to(self.device),
-                'train_ssim': torch.zeros(1).to(self.device)}
+        if self.diffusion_config.get("diffusion", False):
+            logs['train_EDMloss'] = torch.zeros(1).to(self.device)
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -642,21 +638,20 @@ class Trainer:
                 field_labels_out= field_labels_out
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    if getattr(self.params, "diffusion", False):
-                        if getattr(self.params, "cond_diffusion", False):
+                    if self.diffusion_config.get("diffusion", False):
+                        if self.diffusion_config.get("cond_diffusion", False):
                             opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w')
-                            inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
-                            output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
                         else:
                             assert torch.all(inp[0] == tar), "For unconditioned diffusion model, input should be the target"
-                            output, loss_field = self.model_forward(inp, field_labels, bcs, opts)
+                        inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
+                        output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
                         loss = loss_field.sum() / inp.shape[1]
                         print(f"Diffusion loss: {loss.item()}, EDM loss: {logs['train_EDMloss'].item()}")
                     else:
                         output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                         if not isgraph:
                             tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
-                if getattr(self.params, "diffusion", False):
+                if self.diffusion_config.get("diffusion", False):
                     logs['train_EDMloss'] += loss_field.mean().item()
                     _, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
                 else:
@@ -737,17 +732,12 @@ class Trainer:
     def validate_one_epoch(self, full=False, cutoff_skip=False):
         self.model.eval()
         self.single_print('STARTING VALIDATION!!!')
-        if getattr(self.params, "diffusion", False):
-            logs = {'valid_EDMloss':  torch.zeros(1).to(self.device),
-                    'valid_rmse':  torch.zeros(1).to(self.device),
-                    'valid_nrmse': torch.zeros(1).to(self.device),
-                    'valid_l1':    torch.zeros(1).to(self.device),
-                    'valid_ssim':  torch.zeros(1).to(self.device)}
-        else:
-            logs = {'valid_rmse':  torch.zeros(1).to(self.device),
-                    'valid_nrmse': torch.zeros(1).to(self.device),
-                    'valid_l1':    torch.zeros(1).to(self.device),
-                    'valid_ssim':  torch.zeros(1).to(self.device)}
+        logs = {'valid_rmse':  torch.zeros(1).to(self.device),
+                'valid_nrmse': torch.zeros(1).to(self.device),
+                'valid_l1':    torch.zeros(1).to(self.device),
+                'valid_ssim':  torch.zeros(1).to(self.device)}
+        if self.diffusion_config.get("diffusion", False):
+            logs['valid_EDMloss'] = torch.zeros(1).to(self.device)
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -828,14 +818,13 @@ class Trainer:
                     isgraph=isgraph,
                     field_labels_out= field_labels_out
                     )
-                    if getattr(self.params, "diffusion", False):
-                        if getattr(self.params, "cond_diffusion", False):
+                    if self.diffusion_config.get("diffusion", False):
+                        if self.diffusion_config.get("cond_diffusion", False):
                             opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w')
-                            inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
-                            output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
                         else:
                             assert torch.all(inp[0] == tar), "For unconditioned diffusion model, input should be the target"
-                            output, loss_field = self.model_forward(inp, field_labels, bcs, opts)
+                        inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
+                        output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
                         logs['valid_EDMloss'] += loss_field.mean().item()
                     else:
                         output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
