@@ -203,110 +203,95 @@ class Generator:
             torch.save(torch.tensor(leadtime).cpu(), os.path.join(self.output_dir, f'leadtimedata_batch_{batch_idx}.pt'))
             self.single_print(f'leadtime saved to {os.path.join(self.output_dir, f"leadtimedata_batch_{batch_idx}.pt")}')
 
-            for sample_idx in range(num_samples):
+            self.model.eval()
 
-                
-                init_inp = torch.randn(inp.shape).to(self.device)
+            with torch.no_grad():
+                sigma_min = 0.002
+                sigma_max = 80
+                n_diffusion_steps = 18
+                rho=7
+                S_churn=0
+                S_min=0
+                S_max=float('inf')
+                S_noise=1
 
-                
-                self.model.eval()
+                step_indices = torch.arange(n_diffusion_steps, device=self.device)
+                t_steps = (sigma_max ** (1 / rho) + step_indices / (n_diffusion_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+                t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
 
-                with torch.no_grad():
+                # Expand batch dimension to run all num_samples in one forward pass.
+                # inp: [T, B, C, D, H, W] -> [T, B*num_samples, C, D, H, W]
+                inp_b = inp.repeat_interleave(num_samples, dim=1)
+                field_labels_b = field_labels.repeat_interleave(num_samples, dim=0)
+                bcs_b = bcs.repeat_interleave(num_samples, dim=0)
+                leadtime_b = leadtime.repeat_interleave(num_samples, dim=0) if leadtime is not None else None
+                cond_input_b = cond_input.repeat_interleave(num_samples, dim=0) if cond_input is not None else None
+                cond_dict_b = {}
+                if cond_dict:
+                    cond_dict_b["labels"] = cond_dict["labels"].repeat_interleave(num_samples, dim=0)
+                    cond_dict_b["fields"] = cond_dict["fields"].repeat_interleave(num_samples, dim=1)
 
+                x_next = torch.randn_like(inp_b) * t_steps[0]
 
-                    sigma_min = 0.002
-                    sigma_max = 80
-                    n_diffusion_steps = 18
-                    rho=7
-                    S_churn=0
-                    S_min=0
-                    S_max=float('inf')
-                    S_noise=1
+                for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
+                    x_cur = x_next
 
-                    step_indices = torch.arange(n_diffusion_steps, device=self.device)
+                    # Increase noise temporarily.
+                    gamma = min(S_churn / n_diffusion_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
+                    t_hat = t_cur + gamma * t_cur
+                    x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-                    t_steps = (sigma_max ** (1 / rho) + step_indices / (n_diffusion_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-                    t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
-
-                    # tar = tar.to(self.device)
-                    # init_inp = rearrange(init_inp.to(self.device), 'b t c d h w -> t b c d h w')
-
-
-                    x_next = init_inp * t_steps[0]
-
-                    for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
-                        x_cur = x_next
-
-                        # Increase noise temporarily.
-                        gamma = min(S_churn / n_diffusion_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
-                        t_hat = t_cur + gamma * t_cur
-                        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
-
-
-                        opts = ForwardOptionsBase(
-                        imod=imod, 
-                        imod_bottom=imod_bottom ,
+                    opts = ForwardOptionsBase(
+                        imod=imod,
+                        imod_bottom=imod_bottom,
                         tkhead_name=tkhead_name,
                         sequence_parallel_group=seq_group,
-                        leadtime=leadtime,
+                        leadtime=leadtime_b,
                         blockdict=copy.deepcopy(blockdict),
-                        cond_dict=copy.deepcopy(cond_dict),
-                        cond_input=cond_input,
+                        cond_dict=copy.deepcopy(cond_dict_b),
+                        cond_input=cond_input_b,
                         isgraph=isgraph,
-                        field_labels_out= field_labels
-                        )
-                        if self.cond_diffusion:
-                            opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w') # conditioning on input history
-                        # Euler step.
-                        # denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
-                        # denoised = net(x_hat, t_hat, None)
-                        
-                        # denoised = self.inference(x_hat, t_hat, field_labels, bcs, opts)
-                        denoised = self.model(x_hat, t_hat.repeat(x_hat.shape[1]), field_labels, bcs, opts)
+                        field_labels_out=field_labels_b
+                    )
+                    if self.cond_diffusion:
+                        opts.diffusion_cond = rearrange(inp_b, 't b c d h w -> b t c d h w')
 
-                        # print(f"denoised shape: {denoised.shape}, x_hat shape: {x_hat.shape}, t_hat shape: {t_hat.shape}")
-                        d_cur = (x_hat - denoised) / t_hat
-                        x_next = x_hat + (t_next - t_hat) * d_cur
+                    # Euler step.
+                    denoised = self.model(x_hat, t_hat.repeat(x_hat.shape[1]), field_labels_b, bcs_b, opts)
+                    d_cur = (x_hat - denoised) / t_hat
+                    x_next = x_hat + (t_next - t_hat) * d_cur
 
-                        # print(f"x_next shape: {x_next.shape}, d_cur shape: {d_cur.shape}, t_next shape: {t_next.shape}, t_hat shape: {t_hat.shape}")
-                        # Apply 2nd order correction.
-                        if i < n_diffusion_steps - 1:
-
-                            opts = ForwardOptionsBase(
-                            imod=imod, 
-                            imod_bottom=imod_bottom ,
+                    # Apply 2nd order correction.
+                    if i < n_diffusion_steps - 1:
+                        opts = ForwardOptionsBase(
+                            imod=imod,
+                            imod_bottom=imod_bottom,
                             tkhead_name=tkhead_name,
                             sequence_parallel_group=seq_group,
-                            leadtime=leadtime,
+                            leadtime=leadtime_b,
                             blockdict=copy.deepcopy(blockdict),
-                            cond_dict=copy.deepcopy(cond_dict),
-                            cond_input=cond_input,
+                            cond_dict=copy.deepcopy(cond_dict_b),
+                            cond_input=cond_input_b,
                             isgraph=isgraph,
-                            field_labels_out= field_labels
-                            )
-                            if self.cond_diffusion:
-                                opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w') # conditioning on input history
-                            # denoised = net(x_next, t_next, class_labels).to(torch.float64)
-                            # denoised = net(x_next, t_next, None)
-                            # denoised = self.inference(x_next, t_next, field_labels, bcs, opts)
-                            denoised = self.model(x_next, t_next.repeat(x_next.shape[1]), field_labels, bcs, opts)
+                            field_labels_out=field_labels_b
+                        )
+                        if self.cond_diffusion:
+                            opts.diffusion_cond = rearrange(inp_b, 't b c d h w -> b t c d h w')
 
-                            d_prime = (x_next - denoised) / t_next
-                            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+                        denoised = self.model(x_next, t_next.repeat(x_next.shape[1]), field_labels_b, bcs_b, opts)
+                        d_prime = (x_next - denoised) / t_next
+                        x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-                        torch.save(x_next.cpu(), os.path.join(self.output_dir, f'generation_step_{i}_batch_{batch_idx}_sample{sample_idx}.pt'))
+                    # Save all samples for this step: [T, B*S, C, D, H, W] -> [S, T, B, C, D, H, W]
+                    x_next_grouped = rearrange(x_next, 't (b s) c d h w -> s t b c d h w', s=num_samples)
+                    torch.save(x_next_grouped.cpu(), os.path.join(self.output_dir, f'generation_step_{i}_batch_{batch_idx}.pt'))
 
-                    output = x_next    
-                    
-                    ###full resolution###
-                    # residuals = output - tar
-                    # torch.save(output.cpu(), os.path.join('Demo_Diffusion_CIFAR10_finemodel/basic_config/demo_diffusion/training_checkpoints/', 'generation_output.pt'))
-                    # self.single_print(f'Generation output saved to {"Demo_Diffusion_CIFAR10_finemodel/basic_config/demo_diffusion/training_checkpoints/generation_output.pt"}')
-                    torch.save(output.cpu(), os.path.join(self.output_dir, f'generation_output_batch_{batch_idx}_sample{sample_idx}.pt'))
-                    self.single_print(f'Generation output saved to {os.path.join(self.output_dir, f"generation_output_batch_{batch_idx}_sample{sample_idx}.pt")}')
+                # Save final output: [T, B*S, C, D, H, W] -> [S, T, B, C, D, H, W]
+                output = rearrange(x_next, 't (b s) c d h w -> s t b c d h w', s=num_samples)
+                torch.save(output.cpu(), os.path.join(self.output_dir, f'generation_output_batch_{batch_idx}.pt'))
+                self.single_print(f'Generation output saved to {os.path.join(self.output_dir, f"generation_output_batch_{batch_idx}.pt")}')
 
-
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
 
 
