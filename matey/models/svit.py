@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from einops import rearrange
-from torch.nn.functional import silu
+
 from .spacetime_modules import SpaceTimeBlock_svit
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
@@ -147,11 +147,7 @@ class sViT_all2all(BaseModel):
             field_labels_out = state_labels
 
         if self.diffusion:
-            emb = self.map_noise(sigma)
-            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)
-            emb = silu(self.map_layer0(emb))
-            emb = silu(self.map_layer1(emb))
-            emb = self.affine[str(imod)](emb)  # (B, embed_dim)
+            emb = self.compute_diffusion_emb(sigma, imod)
             if diffusion_cond is not None:
                 diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
 

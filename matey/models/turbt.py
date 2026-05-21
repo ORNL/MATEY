@@ -12,7 +12,7 @@ from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph 
 from ..data_utils.utils import construct_filterkernel, construct_filterkernel2D
 from .spatial_modules import UpsampleinSpace
-from torch.nn.functional import silu
+
 import sys, copy
 from operator import mul
 from functools import reduce
@@ -239,11 +239,7 @@ class TurbT(BaseModel):
             field_labels_out = state_labels
 
         if self.diffusion:
-            emb = self.map_noise(sigma)
-            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
-            emb = silu(self.map_layer0(emb))
-            emb = silu(self.map_layer1(emb))
-            emb = self.affine[str(imod)](emb)  # (B, embed_dim)
+            emb = self.compute_diffusion_emb(sigma, imod)
 
             if diffusion_cond is not None and imod == self.nhlevels - 1:
                 diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')

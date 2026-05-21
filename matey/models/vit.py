@@ -145,11 +145,7 @@ class ViT_all2all(BaseModel):
             field_labels_out = state_labels
 
         if self.diffusion:
-            emb = self.map_noise(sigma)
-            emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)
-            emb = silu(self.map_layer0(emb))
-            emb = silu(self.map_layer1(emb))
-            emb = self.affine[str(imod)](emb)  # (B, embed_dim)
+            emb = self.compute_diffusion_emb(sigma, imod)
             if diffusion_cond is not None:
                 diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
 

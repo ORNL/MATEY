@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
 from .spatial_modules import hMLP_stem, hMLP_output, SubsampledLinear, GraphhMLP_stem, GraphhMLP_output, UpsampleinSpace, UpsampleConv3d 
-from .time_modules import leadtimeMLP, FourierEmbedding, PositionalEmbedding, Linear
+from .time_modules import leadtimeMLP, FourierEmbedding_EDM, PositionalEmbedding_EDM, Linear_EDM
 from .input_modules import input_control_MLP
 from .positionbias_modules import positionbias_mod
 import sys
@@ -102,19 +102,19 @@ class BaseModel(nn.Module):
             noise_channels = model_channels * channel_mult_noise
             init = dict(init_mode='xavier_uniform')
 
-            self.map_noise = (PositionalEmbedding(num_channels=noise_channels, endpoint=True)
+            self.map_noise = (PositionalEmbedding_EDM(num_channels=noise_channels, endpoint=True)
                               if embedding_type == 'positional'
-                              else FourierEmbedding(num_channels=noise_channels))
-            self.map_layer0 = Linear(in_features=noise_channels, out_features=emb_channels, **init)
-            self.map_layer1 = Linear(in_features=emb_channels, out_features=emb_channels, **init)
+                              else FourierEmbedding_EDM(num_channels=noise_channels))
+            self.map_layer0 = Linear_EDM(in_features=noise_channels, out_features=emb_channels, **init)
+            self.map_layer1 = Linear_EDM(in_features=emb_channels, out_features=emb_channels, **init)
 
             self.affine = nn.ModuleDict({})
             for ilevel in range(nlevels):
-                self.affine[str(ilevel)] = Linear(in_features=emb_channels, out_features=embed_dim, **init)
+                self.affine[str(ilevel)] = Linear_EDM(in_features=emb_channels, out_features=embed_dim, **init)
 
             self.diffusion_cond_proj = nn.ModuleDict({})
             for ilevel in range(nlevels):
-                self.diffusion_cond_proj[str(ilevel)] = Linear(in_features=embed_dim, out_features=embed_dim, **init)
+                self.diffusion_cond_proj[str(ilevel)] = Linear_EDM(in_features=embed_dim, out_features=embed_dim, **init)
 
         self.embed_dim=embed_dim
         
@@ -703,9 +703,16 @@ class BaseModel(nn.Module):
             x_reconst = rearrange(x_coarsen, '(b ntz ntx nty) t c d h w -> t b c (ntz d) (ntx h) (nty w)', ntz=ntokendim[0], ntx=ntokendim[1], nty=ntokendim[2])
         return x_reconst
 
+    def compute_diffusion_emb(self, sigma, imod):
+        emb = self.map_noise(sigma)
+        emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)
+        emb = F.silu(self.map_layer0(emb))
+        emb = F.silu(self.map_layer1(emb))
+        return self.affine[str(imod)](emb)
+
     def add_sts_model(self):
        pass
-    
+
     def forward(self):
         raise NotImplementedError
        

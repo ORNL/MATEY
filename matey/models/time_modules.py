@@ -19,7 +19,7 @@ class leadtimeMLP(nn.Module):
 
 #From https://github.com/NVlabs/edm/blob/008a4e5316c8e3bfe61a62f874bddba254295afb/training/networks.py#L193
 #copied for now, need to figure out if edm can be installed as a package and if we can use these functions like edm.XX [Nov, 2025]
-class PositionalEmbedding(torch.nn.Module):
+class PositionalEmbedding_EDM(torch.nn.Module):
     def __init__(self, num_channels, max_positions=10000, endpoint=False):
         super().__init__()
         self.num_channels = num_channels
@@ -34,7 +34,7 @@ class PositionalEmbedding(torch.nn.Module):
         x = torch.cat([x.cos(), x.sin()], dim=1)
         return x
     
-class FourierEmbedding(torch.nn.Module):
+class FourierEmbedding_EDM(torch.nn.Module):
     def __init__(self, num_channels, scale=16):
         super().__init__()
         self.register_buffer('freqs', torch.randn(num_channels // 2) * scale)
@@ -51,7 +51,7 @@ def weight_init(shape, mode, fan_in, fan_out):
     if mode == 'kaiming_normal':  return np.sqrt(1 / fan_in) * torch.randn(*shape)
     raise ValueError(f'Invalid init mode "{mode}"')
     
-class Linear(torch.nn.Module):
+class Linear_EDM(torch.nn.Module):
     def __init__(self, in_features, out_features, bias=True, init_mode='kaiming_normal', init_weight=1, init_bias=0):
         super().__init__()
         self.in_features = in_features
