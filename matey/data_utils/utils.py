@@ -19,12 +19,9 @@ import os
 import torch.distributed.nn.functional as dist_nn_f
 from torch import Tensor
 from torch_geometric.data import Data
-from torch.utils.data import Dataset
-from torch_geometric.utils import coalesce
 import torch.nn.functional as F
 from collections import defaultdict
-from typing import Optional, List, Dict, Tuple, NamedTuple
-import warnings
+from typing import List, Dict, NamedTuple
 from torch_geometric.loader import ClusterData
 
 def unwrap_leadtime_config(leadtime_config):
@@ -875,7 +872,7 @@ def check_same_sample_across_halo(data, ghost_info, comm):
         maxdiff_ghost = 0.0
 
     assert maxdiff_all<1e-6 and maxdiff_own<1e-6 and maxdiff_ghost<1e-6, (
-        f"Pei debugging ghost0 [rank {dist.get_rank(sequence_parallel_group)}] first halo maxdiff_all={maxdiff_all:.6e}, "
+        f"Pei debugging ghost0 [rank {dist.get_rank(comm)}] first halo maxdiff_all={maxdiff_all:.6e}, "
         f"maxdiff_own={maxdiff_own:.6e}, "
         f"maxdiff_ghost={maxdiff_ghost:.6e}"
         )

@@ -475,7 +475,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         if self.use_MPI:
             if self.group_rank == 0:
                 self._run_partitioning()
-            _MPI.COMM_WORLD.Barrier()
+            comm.Barrier()
         else:
             self._run_partitioning()
 
@@ -511,6 +511,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             if os.path.isdir(rank_shard):
                 shard_path = rank_shard
             else:
+                print(f"Warning: shard graph dir {rank_shard} is not found on  {self.group_rank} of {self.group_id}, fallback to load full graphs", flush=True)
                 # fallback: full graph (single-rank mode)
                 shard_path = full_path
  
@@ -571,7 +572,9 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             leadtime = 1
             #FIXME: (1) need to move AR for graph to the main repo; (2) leadtime>1 is supported
             if self.leadtime_fixed:
-                leadtime = self.leadtime_max #max(self.leadtime_max//2, 1)])
+                #TODO move commits on leadtime>1 from other branch here
+                leadtime = 1
+                #leadtime = self.leadtime_max #max(self.leadtime_max//2, 1)])
             #else:
             #    raise ValueError(f"Fix leadtime for now but got {self.leadtime_fixed}")
         else:
