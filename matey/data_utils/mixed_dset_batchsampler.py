@@ -43,7 +43,10 @@ class MultisetBatchSampler(BatchSampler):
             self.batch_size = []
             for iset, subset in enumerate(self.sub_dsets):
                 if subset.type in dataset.DP_dsets:
-                    batch_size_subset = self._determine_batchsize_(subset)
+                    if "graph" in subset.type:
+                        batch_size_subset = 1 #always set local batch size to be 1 when split graph
+                    else:
+                        batch_size_subset = self._determine_batchsize_(subset)
                 else:
                     batch_size_subset = self.batch_size_base
                 sampler_rank = dataset.dsets_spconfig[iset]["sampler_rank"]

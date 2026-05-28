@@ -573,6 +573,10 @@ class Trainer:
                     graphdata = data["graph"].to(self.device)
                     tar = graphdata.y #[nnodes, C_tar] 
                     leadtime = graphdata.leadtime #[nnodes, 1]
+                    ghost_list = data["ghost_info"]# List[GhostInfo], one per sample
+                    ghost_info = ghost_list[0]
+                    if self.group_size > 1:
+                        assert graphdata.batch.unique().numel() == 1, f"expect batch size 1 when split graph but got {graphdata.batch.unique()}"
                     dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
                 else: 
                     inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
@@ -623,7 +627,8 @@ class Trainer:
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
                 isgraph=isgraph,
-                field_labels_out= field_labels_out
+                field_labels_out= field_labels_out,
+                ghost_info = ghost_info if isgraph else None,
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
@@ -737,6 +742,10 @@ class Trainer:
                 graphdata = data["graph"].to(self.device)
                 tar = graphdata.y #[nnodes, C_tar] 
                 leadtime = graphdata.leadtime #[nnodes, 1]
+                ghost_list = data["ghost_info"]# List[GhostInfo], one per sample
+                ghost_info = ghost_list[0]
+                if self.group_size > 1:
+                    assert graphdata.batch.unique().numel() == 1, f"expect batch size 1 when split graph but got {graphdata.batch.unique()}"
                 dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
             else: 
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
@@ -788,7 +797,8 @@ class Trainer:
                     cond_dict=copy.deepcopy(cond_dict),
                     cond_input=cond_input,
                     isgraph=isgraph,
-                    field_labels_out= field_labels_out
+                    field_labels_out= field_labels_out,
+                    ghost_info = ghost_info if isgraph else None,
                     )
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if not isgraph:

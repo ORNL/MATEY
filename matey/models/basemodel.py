@@ -28,7 +28,8 @@ class BaseModel(nn.Module):
         embed_dim (int): Dimension of the embedding
         n_states (int): Number of input state variables.
     """
-    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, hierarchical=None, notransposed=False, nlevels=1, smooth=False, use_linear=False):
+    def __init__(self, tokenizer_heads, n_states=6, n_states_out=None, n_states_cond=None, embed_dim=768, leadtime=False, cond_input=False, n_steps=1, bias_type="none", SR_ratio=[1,1,1], model_SR=False, 
+    hierarchical=None, notransposed=False, nlevels=1, smooth=False, use_linear=False, ghost_sync=False):
         super().__init__()
         self.space_bag = nn.ModuleList([SubsampledLinear(n_states, embed_dim//4) for _ in range(nlevels)])
         self.conditioning = (n_states_cond is not None and n_states_cond > 0)
@@ -72,10 +73,10 @@ class BaseModel(nn.Module):
                 embed_ensemble_cond = nn.ModuleList()
                 for ps_scale, ps_scale_out in zip(patch_size, output_patch_size):
                     if "graph" in head_name:
-                        embed_ensemble.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
-                        debed_ensemble.append(GraphhMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, smooth=smooth))
+                        embed_ensemble.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim, ghost_sync=ghost_sync))
+                        debed_ensemble.append(GraphhMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, smooth=smooth, ghost_sync=ghost_sync))
                         if self.conditioning:
-                            embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim))
+                            embed_ensemble_cond.append(GraphhMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim, ghost_sync=ghost_sync))
                     else:
                         embed_ensemble.append(hMLP_stem(patch_size=ps_scale, in_chans=embed_dim//4, embed_dim=embed_dim, use_linear=use_linear))
                         debed_ensemble.append(hMLP_output(patch_size=ps_scale_out, embed_dim=embed_dim, out_chans=n_states_out, notransposed=notransposed, smooth=smooth, use_linear=use_linear))
@@ -191,6 +192,7 @@ class BaseModel(nn.Module):
                                 out_chans=new_out,
                                 nconv=old_debed.nconv,
                                 smooth=old_debed.smooth_flag,
+                                ghost_sync=old_debed.ghost_sync,
                             )
                             for old_conv, new_conv in zip(old_debed.convs, new_debed.convs):
                                 new_conv.lin.weight.copy_(old_conv.lin.weight)
@@ -323,12 +325,13 @@ class BaseModel(nn.Module):
             #self.debug_nan(x)
             return x
         else:
-            #input: (node_features, batch, edge_index); output: (emb node_features, batch, edge_index)
-            node_features, batch, edge_index = x 
+            #input: (node_features, batch, edge_index, ghost_info, sequence_parallel_group); 
+            #output: (emb node_features, batch, edge_index, ghost_info, sequence_parallel_group)
+            node_features, batch, edge_index, ghost_info, sequence_parallel_group = x 
             #node_features [nnodes, t, c]
             state_labels = state_labels[batch] #state_labels[nnodes, c]
             node_features = op(node_features, state_labels) #[nnodes, t, c_emb//4]
-            return (node_features, batch, edge_index)
+            return (node_features, batch, edge_index, ghost_info, sequence_parallel_group)
 
     def get_structured_sequence(self, x, embed_index, tokenizer, isgraph=False):
         if not isgraph:
@@ -341,7 +344,7 @@ class BaseModel(nn.Module):
             x = rearrange(x, '(t b) c d h w -> t b c d h w', t=T)
             #self.debug_nan(x, message="embed_ensemble")
         else:
-            #input: (node_features, batch, edge_index); output: (node_features, batch, edge_index)
+            #input: (node_features, batch, edge_index, ghost_info); output: (node_features, batch, edge_index, ghost_info)
             x = tokenizer[embed_index](x) 
         return x
 
@@ -561,8 +564,8 @@ class BaseModel(nn.Module):
         tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
         x = self.get_structured_sequence(x_pre, -1, tokenizer, isgraph=isgraph)
         if isgraph:
-            #x: (node_features, batch, edge_index)
-            node_emb, batch, edge_index = x
+            #x: (node_features, batch, edge_index, ghost_info, sequence_parallel_group)
+            node_emb, batch, edge_index, ghost_info, sequence_parallel_group = x
             x, mask = graph_to_densenodes(node_emb, batch) #[B, Max_nodes, T, C_inp]
             x = rearrange(x, 'b nnodes_max t c -> t b c nnodes_max')
             mask_padding = mask #leverage mask_padding from adaptive tokenization implementation: True: meaningful patches; False: padding patches
