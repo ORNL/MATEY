@@ -18,7 +18,7 @@ from functools import reduce
 from ..utils.forward_options import ForwardOptionsBase
 import torch.distributed as dist
 from ..utils import densenodes_to_graphnodes
-from ..data_utils import check_same_sample_across_halo
+from ..data_utils import check_same_sample_across_halo, HaloExchange_sync
 
 def build_turbt(params):
     """ Builds model from parameter file.
@@ -318,7 +318,7 @@ class TurbT(BaseModel):
         ######## Decode ########
         x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
         if isgraph:
-            node_ft, batch, _, _, _ = x
+            node_ft, batch, _, ghost_info, sequence_parallel_group= x
             #node_ft: [nnodes, T, C]
             x = node_ft[:,:,field_labels_out[0]]
             N = x.shape[0]
@@ -328,7 +328,10 @@ class TurbT(BaseModel):
             std_node  = data_std[batch].view(N, 1, -1)[:, :, mask]
 
             x = x * std_node + mean_node
-            return x[:, -1, :] #[nnodes, C]
+            x= x[:, -1, :] #[nnodes, C]
+            if ghost_info is not None:
+                x = HaloExchange_sync(x, ghost_info, sequence_parallel_group)
+            return x
         ########upsampling######
         x_correct = x[-1]
         del x
