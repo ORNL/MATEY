@@ -40,7 +40,7 @@ export TF_FORCE_GPU_ALLOW_GROWTH=true
 
 #srun -n 100 python ../matey/data_utils/graph_datasets.py
 
-export run_name="demo_graph_vit_split"
+export run_name="demo_graph_vit_split_lt5"
 export yaml_config=./config/Demo_graph_vit_split.yaml
 srun -N1 -n8 -c7 --gpu-bind=closest python basic_usage.py \
---run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split &
+--run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split 2>&1
