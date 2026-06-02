@@ -152,6 +152,7 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
          #[nnodes, C_tar] 
         # Differentiate between log and accumulation losses
         raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        raw_loss_nrmse = raw_loss.sqrt().mean()
         # Scale loss for accum
         loss = raw_loss.mean() /params.accum_grad
         spatial_dims = None
@@ -161,6 +162,7 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         #Differentiate between log and accumulation losses
         #B,C,D,H,W->B,C
         raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
+        raw_loss_nrmse = raw_loss.sqrt().mean()
         # Scale loss for accum
         loss = raw_loss.mean()/params.accum_grad
         #Optional spatial gradient loss
@@ -174,7 +176,7 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         logs['train_l1'] += F.l1_loss(output, tar)
         log_nrmse = raw_loss.sqrt().mean()
         logs['train_nrmse'] += log_nrmse 
-        loss_logs[dset_type] += loss.item()
+        loss_logs[dset_type] += raw_loss_nrmse.item()
         logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
             
     return loss, log_nrmse
