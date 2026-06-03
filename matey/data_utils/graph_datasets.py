@@ -473,13 +473,13 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             }
             with open(self.processed_index, "w") as f:
                 json.dump(index_obj, f, indent=2)
-
-        # ── Stage 2: partition full graphs ─────────────────────────────────────
-        if self.use_dist:
-            self._run_partitioning(rank=rank, world_size=world_size)
-            dist.barrier()
-        else:
-            self._run_partitioning()
+        if self.group_size>1:
+            # ── Stage 2: partition full graphs ─────────────────────────────────────
+            if self.use_dist:
+                self._run_partitioning(rank=rank, world_size=world_size)
+                dist.barrier()
+            else:
+                self._run_partitioning()
 
     def _run_partitioning(self, rank=0, world_size=1):
         self.partition_dataset(
@@ -517,7 +517,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                     #full graph (single-rank mode)
                     shard_path = full_path
                 else:
-                    raise RuntimeError(f"Error: shard graph dir {rank_shard} is not found on  {self.group_rank} of {self.group_id}", flush=True)
+                    raise RuntimeError(f"Error: shard graph dir {rank_shard} is not found on  {self.group_rank} of {self.group_id}")
  
             times = self._load_times(shard_path)
             T     = len(times)
@@ -634,7 +634,7 @@ if __name__ == "__main__":
     device, world_size, local_rank, global_rank = setup_dist()
     rank = global_rank
 
-    splitgraph=True #False #
+    splitgraph=False #True #
     if splitgraph:
         #ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
         #                                    group_id=0, group_rank=rank, group_size=world_size)
@@ -659,12 +659,12 @@ if __name__ == "__main__":
             world_size=world_size
         )
     else:
-        #ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
-        #                                    group_id=0, group_rank=rank, group_size=world_size)
-        #print("Airfoil train samples:", len(ds_train), "example:", ds_train[0])
+        ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
+                                            group_id=0, group_rank=0, group_size=1, use_dist=True)
+        print("Airfoil train samples:", len(ds_train), "example:", ds_train[0])
         #"""
         ds_valid = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='val',split="val",dt=1, 
-                                            group_id=0, group_rank=rank, group_size=world_size, use_dist=True)
+                                            group_id=0, group_rank=0, group_size=1, use_dist=True)
         print("Airfoil valid samples:", len(ds_valid), "example:", ds_valid[0])
         """
         ds_test = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='test',split="test",dt=1, 
@@ -679,7 +679,7 @@ if __name__ == "__main__":
         # Parallel over graphs: each rank gets a strided subset
         for igraph in range(rank, num_graphs, world_size):
             print(f"Airfoil train sample {ds_train[igraph]}, {igraph}/{len(ds_train)}/{world_size}")
-            data = ds_train[igraph][0]
+            data = ds_train[igraph]["graph"]
             x = data.x  
             x = x.squeeze(1)
             assert x.ndim==2, f"{x.shape}"
