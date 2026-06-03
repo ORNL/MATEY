@@ -1,3 +1,4 @@
+log*
 MPP_*
 *.out
 *.png

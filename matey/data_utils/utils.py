@@ -848,8 +848,8 @@ def check_same_sample_across_halo(data, ghost_info, comm):
     sigs = [None for _ in range(world)]
     dist.all_gather_object(sigs, sig, group=comm)
 
-    if rank == 0:
-        print("Pei debugging sample sigs:", sigs, flush=True)
+    #if rank == 0:
+    #    print("Pei debugging sample sigs:", sigs, flush=True)
 
     if len(set(sigs)) != 1:
         raise RuntimeError(f"Halo sample mismatch: rank={rank}, sig={sig}, all={sigs}")

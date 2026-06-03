@@ -639,8 +639,12 @@ class Trainer:
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
                 torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
                 if bad.item() > 0:
-                    print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
-                    print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    if isgraph:
+                        print(f"INF: {inp.x.min(), inp.x.max(), inp.y.min(), inp.y.max(), torch.isinf(inp.x).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                        print(f"NAN: {torch.isnan(inp.x).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    else:
+                        print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                        print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
                     continue
                 if not isgraph:
                     if self.params.pei_debug:

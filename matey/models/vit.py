@@ -11,7 +11,7 @@ from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
 from ..utils import ForwardOptionsBase, TrainOptionsBase, densenodes_to_graphnodes
 from typing import Optional
-from ..data_utils import check_same_sample_across_halo
+from ..data_utils import check_same_sample_across_halo, HaloExchange_sync
 
 def build_vit(params):
     """ Builds model from parameter file.
@@ -219,7 +219,7 @@ class ViT_all2all(BaseModel):
                 D, H, W = -1, -1, -1 #place holder
             x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
             if isgraph:
-                node_ft, batch, _, _, _ = x
+                node_ft, batch, _, ghost_info, sequence_parallel_group = x
                 #node_ft: [nnodes, T, C]
                 x = node_ft[:,:,field_labels_out[0]]
                 N = x.shape[0]
@@ -229,7 +229,11 @@ class ViT_all2all(BaseModel):
                 std_node  = data_std[batch].view(N, 1, -1)[:, :, mask]
 
                 x = x * std_node + mean_node
-                return x[:, -1, :] #[nnodes, C]
+                x= x[:, -1, :] #[nnodes, C]
+                if ghost_info is not None:
+                    x = HaloExchange_sync(x, ghost_info, sequence_parallel_group)
+
+                return x
            
         ######### Denormalize ########
         #t b c d h w

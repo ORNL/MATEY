@@ -24,7 +24,7 @@ def check_sp(group, global_rank, group_id):
     print(f"Rank {global_rank} is in group {group_id}, {group} with group rank {group_rank}")
   
         
-def setup_dist(params):
+def setup_dist(params=None):
     #num_gpus_per_node = torch.cuda.device_count()
     world_size = int(os.environ['SLURM_NTASKS'])
     global_rank = rank = int(os.environ['SLURM_PROCID'])
@@ -39,7 +39,7 @@ def setup_dist(params):
     if os.getenv("SLURM_STEP_NODELIST") is not None:
         os.environ['MASTER_ADDR']  = parse_slurm_nodelist(os.environ["SLURM_STEP_NODELIST"])[0]
 
-    if params.use_ddp or params.use_fsdp:
+    if params is None or (params.use_ddp or params.use_fsdp):
         dist.init_process_group(
             backend="nccl",
             init_method='env://',
