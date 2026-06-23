@@ -209,3 +209,26 @@ def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, 
     loss_l1_dset_logs[dset_type]   += raw_l1_loss
     loss_rmse_dset_logs[dset_type] += raw_rmse_loss
     return
+
+class EDMLoss:
+    def __init__(self, P_mean=-1.2, P_std=1.2, sigma_data=0.5):
+        self.P_mean = P_mean
+        self.P_std = P_std
+        self.sigma_data = sigma_data
+
+    def __call__(self, net, images, field_labels, bcs, opts, augment_pipe=None):
+        rnd_normal = torch.randn([1, images.shape[1], 1, 1, 1, 1], device=images.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+        # y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
+        y = images
+        augment_labels = None
+        n = torch.randn_like(y) * sigma
+        # print(f"In EDMLoss: sigma shape: {sigma.shape}, y shape: {y.shape}, n shape: {n.shape}, labels shape: {opts.diffusion_cond.shape if getattr(opts, 'diffusion_cond', None) is not None else None}")
+        D_yn = net(y + n, sigma, field_labels, bcs, opts, augment_labels=augment_labels)
+        y = y.squeeze(0) if y.ndim == 6 else y
+        D_yn = D_yn.squeeze(0) if D_yn.ndim == 6 else D_yn
+        # print(f"D_yn shape: {D_yn.shape}, y shape: {y.shape}")
+        loss = weight * ((D_yn - y) ** 2)
+        return loss, D_yn
+

@@ -21,6 +21,7 @@ from .models.avit import build_avit
 from .models.svit import build_svit
 from .models.vit import build_vit
 from .models.turbt import build_turbt
+from .models.diffusion_model import build_diffusion_model
 from .utils.logging_utils import Timer, record_function_opt
 from .utils.distributed_utils import get_sequence_parallel_group, add_weight_decay, CosineNoIncrease, determine_turt_levels
 from .utils.visualization_utils import checking_data_pred_tar
@@ -33,13 +34,14 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict,set_optimizer_state_dict
 from torch_geometric.nn import global_mean_pool
-from .utils.training_utils import autoregressive_rollout, compute_loss_and_logs, update_loss_logs_inplace_eval
+from .utils.training_utils import EDMLoss, autoregressive_rollout, compute_loss_and_logs, update_loss_logs_inplace_eval
 import copy
 
 class Trainer:
     def __init__(self, params, global_rank, local_rank, device):
         self.device = device
         self.params = params
+        self.diffusion_config = getattr(params, 'diffusion_config', None) or {}
         self.global_rank = global_rank
         self.local_rank = local_rank
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -92,6 +94,9 @@ class Trainer:
                 f"expanding to {new_n_states}" + (" (fully new embedding)" if self.new_embedding else ""))
             print(f"Warning: reserved n_states {self.params.n_states} too small — {msg_suffix}.")
             self.params.n_states = new_n_states
+
+        if self.diffusion_config.get("diffusion", False):
+            self.diffusion_loss = EDMLoss()
 
         self.initialize_model()
         self.initialize_optimizer()
@@ -179,7 +184,9 @@ class Trainer:
             self.val_sampler.set_epoch(0)
     
     def initialize_model(self):
-        if self.params.model_type == 'avit':
+        if self.diffusion_config.get("diffusion", False):
+            self.model = build_diffusion_model(self.params).to(self.device)
+        elif self.params.model_type == 'avit':
             self.model = build_avit(self.params).to(self.device)
         elif self.params.model_type == "svit":
             self.model = build_svit(self.params).to(self.device)
@@ -529,7 +536,10 @@ class Trainer:
     def model_forward(self, inp, field_labels, bcs, opts: ForwardOptionsBase, pushforward=True):
         # Handles a forward pass through the model, either normal or autoregressive rollout.
         autoregressive = getattr(self.params, "autoregressive", False)
-        if not autoregressive:
+        if self.diffusion_config.get("diffusion", False):
+            loss, output = self.diffusion_loss(self.model, inp, field_labels, bcs, opts)
+            return output, loss
+        elif not autoregressive:
             output = self.model(inp, field_labels, bcs, opts)
             return output, None
         else:
@@ -546,8 +556,10 @@ class Trainer:
         self.model.train()
         logs = {'train_rmse': torch.zeros(1).to(self.device),
                 'train_nrmse': torch.zeros(1).to(self.device),
-            'train_l1': torch.zeros(1).to(self.device),
-            'train_ssim': torch.zeros(1).to(self.device)}
+                'train_l1': torch.zeros(1).to(self.device),
+                'train_ssim': torch.zeros(1).to(self.device)}
+        if self.diffusion_config.get("diffusion", False):
+            logs['train_EDMloss'] = torch.zeros(1).to(self.device)
         steps = 0
         grad_logs = defaultdict(lambda: torch.zeros(1, device=self.device))
         grad_counts = defaultdict(lambda: torch.zeros(1, device=self.device))
@@ -631,11 +643,25 @@ class Trainer:
                 ghost_info = ghost_info if isgraph else None,
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
-                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
-                    if not isgraph:
-                        tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
-                #compute loss and update (in-place) logging dicts.
-                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                    if self.diffusion_config.get("diffusion", False):
+                        if self.diffusion_config.get("cond_diffusion", False):
+                            opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w')
+                        else:
+                            assert torch.all(inp[0] == tar), "For unconditioned diffusion model, input should be the target"
+                        inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
+                        output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
+                        loss = loss_field.sum() / inp.shape[1]
+                        print(f"Diffusion loss: {loss.item()}, EDM loss: {logs['train_EDMloss'].item()}")
+                    else:
+                        output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                        if not isgraph:
+                            tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
+                if self.diffusion_config.get("diffusion", False):
+                    logs['train_EDMloss'] += loss_field.mean().item()
+                    _, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                else:
+                    #compute loss and update (in-place) logging dicts.
+                    loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
                 torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
                 if bad.item() > 0:
@@ -719,6 +745,8 @@ class Trainer:
                 'valid_nrmse': torch.zeros(1).to(self.device),
                 'valid_l1':    torch.zeros(1).to(self.device),
                 'valid_ssim':  torch.zeros(1).to(self.device)}
+        if self.diffusion_config.get("diffusion", False):
+            logs['valid_EDMloss'] = torch.zeros(1).to(self.device)
         if cutoff_skip:
             return logs
         loss_dset_logs      = {dataset.type: torch.zeros(1, device=self.device) for dataset in self.valid_dataset.sub_dsets}
@@ -804,9 +832,18 @@ class Trainer:
                     field_labels_out= field_labels_out,
                     ghost_info = ghost_info if isgraph else None,
                     )
-                    output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
-                    if not isgraph:
-                        tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
+                    if self.diffusion_config.get("diffusion", False):
+                        if self.diffusion_config.get("cond_diffusion", False):
+                            opts.diffusion_cond = rearrange(inp.to(self.device), 't b c d h w -> b t c d h w')
+                        else:
+                            assert torch.all(inp[0] == tar), "For unconditioned diffusion model, input should be the target"
+                        inp_cond = rearrange(tar.to(self.device), 'b t c d h w -> t b c d h w')
+                        output, loss_field = self.model_forward(inp_cond, field_labels, bcs, opts)
+                        logs['valid_EDMloss'] += loss_field.mean().item()
+                    else:
+                        output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
+                        if not isgraph:
+                            tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
                     update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
                     if not isgraph and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)

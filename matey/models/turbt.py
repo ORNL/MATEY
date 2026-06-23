@@ -12,6 +12,7 @@ from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph 
 from ..data_utils.utils import construct_filterkernel, construct_filterkernel2D
 from .spatial_modules import UpsampleinSpace
+
 import sys, copy
 from operator import mul
 from functools import reduce
@@ -43,7 +44,8 @@ def build_turbt(params):
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
                      ghost_sync=getattr(params, 'ghost_sync', False),
-                     notransposed=getattr(params, 'notransposed', False)
+                     notransposed=getattr(params, 'notransposed', False),
+                     diffusion_config=getattr(params, 'diffusion_config', None),
                     )
     return model
 
@@ -60,9 +62,11 @@ class TurbT(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, ghost_sync=False,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False):
-        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical, 
-                         notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1, ghost_sync=ghost_sync)
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False,
+                 diffusion_config=None):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical,
+                         notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1, ghost_sync=ghost_sync,
+                         diffusion_config=diffusion_config)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
         self.module_blocks=nn.ModuleDict({})
@@ -118,7 +122,7 @@ class TurbT(BaseModel):
                 #FIXME: figure out how to do local attention in 3D physical space for corrections
                 self.module_blocks[str(imod)] = nn.ModuleList([SpaceTimeBlock_all2all(embed_dim, num_heads,drop_path=self.dp[i])
                                         for i in range(processor_blocks//self.nhlevels)])
-                
+
     def filterdata(self, data, blockdict=None):
         #T,B,C,D,H,W
         assert data.ndim==6, f"unkown tensor shape in filter_data, {data.shape}"
@@ -225,14 +229,24 @@ class TurbT(BaseModel):
         isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
         ghost_info = opts.ghost_info
+        sigma = getattr(opts, 'sigma', None)
+        diffusion_cond = getattr(opts, 'diffusion_cond', None)
+        persample_normalize = not self.diffusion
         ##################################################################
         if refine_ratio is None:
             refineind=None
         else:
             raise ValueError("Adaptive tokenization is not set up/tested yet in TurbT")
-        
+
         if field_labels_out is None:
             field_labels_out = state_labels
+
+        if self.diffusion:
+            emb = self.compute_diffusion_emb(sigma, imod)
+
+            if diffusion_cond is not None and imod == self.nhlevels - 1:
+                diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
+                opts.diffusion_cond = diffusion_cond
 
         if isgraph:
             """
@@ -252,17 +266,26 @@ class TurbT(BaseModel):
             x = data
 
             if imod<self.nhlevels-1:
-                x, blockdict=self.filterdata(x, blockdict=blockdict)
-                opts.blockdict = blockdict
+                if diffusion_cond is not None:
+                    concat_data = torch.cat([x, diffusion_cond], dim=2)
+                    concat_data, blockdict = self.filterdata(concat_data, blockdict=blockdict)
+                    x = concat_data[:, :, :x.shape[2], :, :, :]
+                    diffusion_cond = concat_data[:, :, x.shape[2]:, :, :, :]
+                    opts.diffusion_cond = diffusion_cond
+                    opts.blockdict = blockdict
+                else:
+                    x, blockdict=self.filterdata(x, blockdict=blockdict)
+                    opts.blockdict = blockdict
             if imod>imod_bottom:
                 opts.imod -= 1
                 x_pred = self.forward(x, state_labels, bcs, opts)
             #x_input = x.clone()
             #T,B,C,D,H,W
             T, B, _, D, H, W = x.shape
-            #self.debug_nan(x, message="input")
-            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
-            #self.debug_nan(x, message="input after normalization")
+            if persample_normalize:
+                #self.debug_nan(x, message="input")
+                x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+                #self.debug_nan(x, message="input after normalization")
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
@@ -273,6 +296,21 @@ class TurbT(BaseModel):
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')
+        ################################################################################
+        if diffusion_cond is not None:
+            diffusion_cond_tokens, _, _, _, _, _, _, _ = \
+                self.get_patchsequence(diffusion_cond, state_labels, tkhead_name,
+                                       refineind=None, blockdict=blockdict,
+                                       ilevel=imod, isgraph=isgraph)
+            diffusion_cond_tokens = rearrange(
+                diffusion_cond_tokens, 't b c ntoken_tot -> b c (t ntoken_tot)')
+            b_curr, _, L_curr = x.shape
+            cond_combined = diffusion_cond_tokens + emb.unsqueeze(-1)
+            cond_fused = self.diffusion_cond_proj[str(imod)](
+                rearrange(cond_combined, 'b c L -> (b L) c'))
+            x = x + rearrange(cond_fused, '(b L) c -> b c L', b=b_curr)
+        elif self.diffusion:
+            x = x + emb.unsqueeze(-1)
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
             use_zpos=True if D>1 else False
@@ -345,7 +383,10 @@ class TurbT(BaseModel):
             #x_correct[:,var_index,...] = x_pred + x_correct[:,var_index,...] 
             x_correct = x_correct + x_pred 
         if imod==self.nhlevels-1:
-            x_correct=x_correct[:,state_labels[0],...] * data_std[-1] + data_mean[-1]
+            if persample_normalize:
+                x_correct=x_correct[:,state_labels[0],...] * data_std[-1] + data_mean[-1]
+            else:
+                x_correct=x_correct[:,state_labels[0],...]
         #since no T dim: b c d h w
         #x_correct=x_correct[:,var_index,...] * data_std[-1] + data_mean[-1]
         return x_correct #B,C_all,D,H,W for imod<nlevels-1; B,C_sys,D,H,W

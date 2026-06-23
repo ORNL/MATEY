@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from einops import rearrange
+
 from .spacetime_modules import SpaceTimeBlock_svit
 from .basemodel import BaseModel
 from ..data_utils.shared_utils import normalize_spatiotemporal_persample, get_top_variance_patchids, normalize_spatiotemporal_persample_graph
@@ -39,7 +40,8 @@ def build_svit(params):
                      bias_type=params.bias_type,
                      replace_patch=getattr(params, 'replace_patch', True),
                      ghost_sync=getattr(params, 'ghost_sync', False),
-                     hierarchical=getattr(params, 'hierarchical', None)
+                     hierarchical=getattr(params, 'hierarchical', None),
+                     diffusion_config=getattr(params, 'diffusion_config', None),
                     )
     return model
 
@@ -54,9 +56,11 @@ class sViT_all2all(BaseModel):
         sts_f
     """
     def __init__(self, tokenizer_heads=None, embed_dim=768, space_type="all2all", time_type="all2all", num_heads=12, processor_blocks=8, n_states=6, n_states_cond=None, ghost_sync=False,
-                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None):
-        super().__init__(tokenizer_heads=tokenizer_heads,  n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
-                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical, ghost_sync=ghost_sync)
+                 drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, SR_ratio=[1,1,1], hierarchical=None,
+                 diffusion_config=None):
+        super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states, n_states_cond=n_states_cond, embed_dim=embed_dim, leadtime=leadtime,
+                         cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, SR_ratio=SR_ratio, hierarchical=hierarchical, ghost_sync=ghost_sync,
+                         diffusion_config=diffusion_config)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
 
@@ -136,11 +140,19 @@ class sViT_all2all(BaseModel):
         isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
         ghost_info = opts.ghost_info
+        sigma = getattr(opts, 'sigma', None)
+        diffusion_cond = getattr(opts, 'diffusion_cond', None)
+        persample_normalize = not self.diffusion
         ##################################################################
         conditioning = (cond_dict != None and bool(cond_dict) and self.conditioning)
 
         if field_labels_out is None:
             field_labels_out = state_labels
+
+        if self.diffusion:
+            emb = self.compute_diffusion_emb(sigma, imod)
+            if diffusion_cond is not None:
+                diffusion_cond = rearrange(diffusion_cond, 'b t c d h w -> t b c d h w')
 
         if isgraph:
             with torch.no_grad():
@@ -159,8 +171,8 @@ class sViT_all2all(BaseModel):
                 refineind=None
             else:
                 refineind = get_top_variance_patchids(self.tokenizer_heads_params[tkhead_name], x,  self.tokenizer_heads_gammaref[tkhead_name], refine_ratio)
-            #self.debug_nan(x, message="input")
-            x, data_mean, data_std = normalize_spatiotemporal_persample(x)
+            if persample_normalize:
+                x, data_mean, data_std = normalize_spatiotemporal_persample(x)
         ################################################################################
         if self.leadtime and leadtime is not None:
             leadtime = self.ltimeMLP[imod](leadtime)
@@ -184,6 +196,19 @@ class sViT_all2all(BaseModel):
             assert refineind == None
             assert not isgraph, "Not set conditioning yet"
             c, _, _, _, _, _, _, _ = self.get_patchsequence(cond_dict["fields"], cond_dict["labels"], tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, conditioning=conditioning)
+
+        if diffusion_cond is not None:
+            diffusion_cond_padding, _, _, _, _, _, _, _ = \
+                self.get_patchsequence(diffusion_cond, state_labels, tkhead_name,
+                                       refineind=None, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+            # diffusion_cond_padding: t b c ntoken_tot
+            cond_combined = diffusion_cond_padding + rearrange(emb, 'b c -> 1 b c 1')
+            cond_fused = self.diffusion_cond_proj[str(imod)](
+                rearrange(cond_combined, 't b c L -> (t b L) c'))
+            x_padding = x_padding + rearrange(cond_fused, '(t b L) c -> t b c L', t=T, b=x_padding.shape[1])
+        elif self.diffusion:
+            x_padding = x_padding + rearrange(emb, 'b c -> 1 b c 1')
+
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
             posbias = self.posbias[imod](tposarea_padding, mask_padding=mask_padding, use_zpos=True if D>1 else False) # b t L c->b t L c_emb
@@ -231,10 +256,12 @@ class sViT_all2all(BaseModel):
                 return x
         ######### Denormalize ########
         x = x[:,:,field_labels_out[0],...]
-        x = x * data_std + data_mean 
+        if persample_normalize:
+            x = x * data_std + data_mean
         ################################################################################
         if train_opts is not None and train_opts.returnbase4train:
-            xbase = xbase * data_std + data_mean
+            if persample_normalize:
+                xbase = xbase * data_std + data_mean
             return x[-1], xbase[-1]
         return x[-1]
 

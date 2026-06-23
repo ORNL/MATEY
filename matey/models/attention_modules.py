@@ -307,6 +307,10 @@ class AttentionBlock_all2all_time(nn.Module):
         #leadtime: btoken_len x c
         #t_pos_area: token_len x 4
         B, C, len = x.shape
+
+        # Bypass attention if sequence length is 1
+        if len == 1:
+            return x
         input = x.clone()
 
         # Rearrange and prenorm
