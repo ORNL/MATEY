@@ -26,5 +26,6 @@ class ForwardOptionsBase:
     #adaptive tokenization (1 of 2 settings)
     refine_ratio: Optional[float] = None
     imod_bottom: int = 0 #needed only by turbt
+    ghost_info: Optional = None
     sigma: Optional[Tensor] = None #needed only by diffusion model
     diffusion_cond: Optional[Tensor] = None #needed only by conditional diffusion model

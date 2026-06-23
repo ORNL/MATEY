@@ -22,7 +22,9 @@ except ImportError:
     tf = None
     tf_exist = False
 import random
-from .utils import unwrap_leadtime_config
+import re
+import torch.distributed as dist
+from matey.data_utils.utils import unwrap_leadtime_config, partition_graph, build_local_subgraph, GhostInfo
 
 @dataclass(frozen=True)
 class SampleId:
@@ -35,7 +37,7 @@ class SampleId:
 class BaseCFDGraphDataset(Dataset):
     def __init__(self, path, include_string='', n_steps=1, dt=1, leadtime_config={}, supportdata=None, split='train', 
         train_val_test=None, extra_specific=False, tokenizer_heads=None, tkhead_name=None, SR_ratio=None,
-        group_id=0, group_rank=0, group_size=1, use_MPI=False):
+        group_id=0, group_rank=0, group_size=1, use_dist=False, partition_method  = "metis"):
 
         super().__init__()
         np.random.seed(2024)
@@ -59,14 +61,21 @@ class BaseCFDGraphDataset(Dataset):
         self.group_id=group_id
         self.group_rank=group_rank
         self.group_size=group_size
-        self.use_MPI=use_MPI
+        self.use_dist=bool(use_dist or (self.group_size>1))
+        if self.use_dist:
+            assert dist.is_available() and dist.is_initialized(), (
+                "torch.distributed must be initialized when use_dist=True "
+                "or group_size > 1"
+            )
 
+        self.partition_method = partition_method
+        self.partition_root = self.path+f"/{split}/partitioned_{self.group_size}"
         os.makedirs(self.processed_dir, exist_ok=True)
 
         self.field_names_out, self.type, self.time_steps, self.num_node_types = self._specifics()
         self.title = self.type
 
-        if not os.path.exists(self.processed_index):
+        if not os.path.exists(self.processed_index) or (self.group_size>1 and not os.path.exists(self.partition_root)):
             self.process()
         
         with open(self.processed_index, "r") as f:
@@ -74,9 +83,9 @@ class BaseCFDGraphDataset(Dataset):
 
         self.samples = self.discover_samples()
         self.splits= self.create_splits(self.samples)
-        self.active_indices = self.splits[self.split]
-        random.shuffle(self.active_indices)
+        self.active_indices = list(self.splits[self.split])
 
+        self._minmax_features()
         
     def get_name(self):
         return self.type
@@ -207,6 +216,15 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
       - converts each trajectory into many PyG Data graphs (t -> t+leadtime),
       - caches them under root/processed,
       - provides train/val/test splits by trajectory.
+    
+    April 2026: add Distributed with help of Claude Sonnet 4.6
+     - Each rank holds only a *shard* of each graph snapshot. The node 
+        partition is computed once (METIS or random), stored alongside the
+        processed .pt files, and reused on every subsequent run.
+     - self.group_size: Number of graph partitions == number of ranks that will share one graph. 
+        Each rank should load a specific shard is given by `group_rank`
+     - new parameter        
+        partition_method : str  "metis" (default, recommended) or "random".
     """
     @staticmethod
     def _specifics():
@@ -224,6 +242,73 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         num_node_types = 5
         return field_names_out, type, time_steps, num_node_types
     field_names = ["pos_x", "pos_y"] + [f"nodetype{iht}" for iht in range(_specifics()[-1])] + _specifics()[0]
+
+    @staticmethod
+    def partition_dataset(src_processed_dir, dst_partition_root, num_parts, method = "metis", overwrite = False, rank=0, world_size=1):
+        """
+        Pre-compute node partitions for every trajectory in src_processed_dir.
+        Saves, for each trajectory <traj_id>:
+          <dst_partition_root>/<traj_id>/node_assignment.pt   – [N] long
+          <dst_partition_root>/<traj_id>/grouprank_<r>/graphdata_<t:05d>.pt
+                                                               – local Data + GhostInfo
+        This is a *single-process* utility; run it once before distributed
+        training.  For very large datasets you can parallelise over trajectories
+        by calling it from multiple processes with disjoint traj lists.
+        """
+
+        os.makedirs(dst_partition_root, exist_ok=True)
+        traj_dirs = [
+            d for d in sorted(os.listdir(src_processed_dir))
+            if os.path.isdir(os.path.join(src_processed_dir, d))
+        ]
+
+        # stride-assign trajectories to ranks
+        my_trajs = [t for i, t in enumerate(traj_dirs) if i % world_size == rank]
+        if rank == 0:
+            print(f"[partition_dataset] {len(traj_dirs)} trajectories total, {world_size} ranks, {len(my_trajs)} trajectories each rank, {num_parts} graph parts, method={method}",
+                flush=True)
+        #print(f"[partition_dataset] {len(traj_dirs)} trajectories, {num_parts} parts, method={method}")
+
+        for traj_id in my_trajs:
+            traj_src = os.path.join(src_processed_dir, traj_id)
+            traj_dst = os.path.join(dst_partition_root, traj_id)
+
+            # ── compute partition from t=0 snapshot (topology is static) ──────
+            assignment_path = os.path.join(traj_dst, "node_assignment.pt")
+            if not overwrite and os.path.exists(assignment_path):
+                node_assignment = torch.load(assignment_path, weights_only=False, map_location="cpu")
+            else:
+                d0 = torch.load(os.path.join(traj_src, "graphdata_00000.pt"), weights_only=False,map_location="cpu")
+                node_assignment = partition_graph(d0.edge_index, d0.num_nodes, num_parts, method=method)
+                os.makedirs(traj_dst, exist_ok=True)
+                torch.save(node_assignment, assignment_path)
+
+            # ── create per-rank shard dirs ─────────────────────────────────────
+            for r in range(num_parts):
+                os.makedirs(os.path.join(traj_dst, f"grouprank_{r}"), exist_ok=True)
+
+            # ── process every time step ────────────────────────────────────────
+            pt_files = sorted(f for f in os.listdir(traj_src) if f.startswith("graphdata_") and f.endswith(".pt"))
+            for pt_name in pt_files:
+                #done = all(os.path.exists(os.path.join(traj_dst, f"grouprank_{r}", pt_name)) for r in range(num_parts))
+                done = all(MeshGraphNetsAirfoilDataset.checkifexist(os.path.join(traj_dst, f"grouprank_{r}", pt_name), load=True) for r in range(num_parts))
+                if not overwrite and done:
+                    continue
+                try:
+                    full_data = torch.load(os.path.join(traj_src, pt_name), weights_only=False, map_location="cpu")
+                except Exception as e:
+                    print(f"Failed to load file: {os.path.join(traj_src, pt_name)}", flush=True)
+                    print(f"Error: {type(e).__name__}: {e}", flush=True)
+                    raise
+
+                for r in range(num_parts):
+                    local_data, ghost_info = build_local_subgraph(full_data, node_assignment, r, num_parts)
+                    out_path = os.path.join(traj_dst, f"grouprank_{r}", pt_name)
+                    torch.save({"data": local_data, "ghost_info": ghost_info}, out_path)
+
+            print(f"[partition_dataset] done: {traj_id}")
+ 
+        print(f"[partition_dataset] finished at rank {rank}.")
     def _minmax_features(self):
         """
         #x: pos + node_type + velocity_t + pressure_t
@@ -276,8 +361,8 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             "velocity": velocity.numpy().astype(np.float32),
             "pressure": pressure.numpy().astype(np.float32)
             }
-
-    def checkifexist(self, filename, load=False):
+    @staticmethod
+    def checkifexist(filename, load=False):
         if not os.path.exists(filename):
             return False
         else:
@@ -291,15 +376,19 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                     print(f"Failed to load {filename}: {e}")
                     return False
 
-
     def process(self):
         """
-        Run once: TFRecord -> many Data graphs, saved as .pt,
+        Stage 1
+        Run once: TFRecord -> many Data graphs, saved as per-timestep .pt files,
         plus index.json with sample metadata and splits.
+        Stage 2
+        Partition every full graph into per-rank shards.
         """
         tf_files_all = self._find_tfrecord_files()
-        if self.use_MPI:
-            tf_files = [f for i, f in enumerate(tf_files_all) if i % self.group_size == self.group_rank]
+        if self.use_dist:
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            tf_files = [f for i, f in enumerate(tf_files_all) if i % world_size == rank]
         else:
             tf_files = tf_files_all
 
@@ -338,7 +427,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                     pt_name = f"graphdata_{t:05d}.pt"
                     filename = f"{self.processed_dir}/{traj_id}/{pt_name}"
                     samples_local.append(SampleId(group=traj_id, item=pt_name, path=filename, t=t))
-                    if self.checkifexist(filename): 
+                    if MeshGraphNetsAirfoilDataset.checkifexist(filename): 
                         continue
                     pos_t = pos
                     vel_t = self._to_tensor(vel[t], torch.float32) #[N,2]
@@ -356,11 +445,15 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
 
                     #print("Pei debugging", filename, x.shape, edge_attr.shape, edge_attr.shape, flush=True)
 
-        if self.use_MPI:
-            comm = MPI.COMM_WORLD
+        if self.use_dist:
             local_dicts = [s.__dict__ for s in samples_local]
-            all_dicts = comm.gather(local_dicts, root=0)
-            if self.group_rank == 0:
+            if rank == 0:
+                all_dicts = [None for _ in range(world_size)]
+            else:
+                all_dicts = None
+
+            dist.gather_object(local_dicts, object_gather_list=all_dicts, dst=0)
+            if rank == 0:
                 flat_dicts = [d for chunk in all_dicts for d in chunk]
                 index_obj = {
                     "version": 1,
@@ -370,7 +463,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
                 }
                 with open(self.processed_index, "w") as f:
                     json.dump(index_obj, f, indent=2)
-            comm.Barrier()
+            dist.barrier()
         else:
             index_obj = {
                 "version": 1,
@@ -380,7 +473,21 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
             }
             with open(self.processed_index, "w") as f:
                 json.dump(index_obj, f, indent=2)
-    
+        if self.group_size>1:
+            # ── Stage 2: partition full graphs ─────────────────────────────────────
+            if self.use_dist:
+                self._run_partitioning(rank=rank, world_size=world_size)
+                dist.barrier()
+            else:
+                self._run_partitioning()
+
+    def _run_partitioning(self, rank=0, world_size=1):
+        self.partition_dataset(
+            src_processed_dir = self.processed_dir, dst_partition_root = self.partition_root,
+            num_parts = self.group_size, method = self.partition_method, overwrite = False,
+            rank=rank, world_size=world_size
+            )
+
     def _load_times(self, case_dir):
         times=[]
         for pt_path in sorted(os.listdir(case_dir)):
@@ -389,16 +496,34 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         return times
     
     def discover_samples(self):
+        """
+        Discover samples from the *partitioned* shards for this rank.
+        Falls back to full processed dir if partitioning hasn't run yet.
+        """
+        split_dir_exists = os.path.isdir(self.partition_root)
         samples = []
-        for cdir in os.listdir(self.processed_dir):
-            full_path = os.path.join(self.processed_dir, cdir)
+        src_root = self.partition_root if split_dir_exists else self.processed_dir
+ 
+        for cdir in sorted(os.listdir(src_root)):
+            full_path = os.path.join(src_root, cdir)
             if not os.path.isdir(full_path):
                 continue
-            times = self._load_times(full_path)
-            T = len(times)
-            for t in range(0, T - self.nsteps_input-self.leadtime_max+1): 
+            # For partitioned layout the shard dir is grouprank_<r>/ inside traj dir
+            rank_shard = os.path.join(full_path, f"grouprank_{self.group_rank}")
+            if os.path.isdir(rank_shard):
+                shard_path = rank_shard
+            else:
+                if self.group_size==1:
+                    #full graph (single-rank mode)
+                    shard_path = full_path
+                else:
+                    raise RuntimeError(f"Error: shard graph dir {rank_shard} is not found on  {self.group_rank} of {self.group_id}")
+ 
+            times = self._load_times(shard_path)
+            T     = len(times)
+            for t in range(0, T - self.nsteps_input - self.leadtime_max + 1):
                 pt_name = f"graphdata_{t:05d}.pt"
-                samples.append(SampleId(group=cdir, item=pt_name, path=f"{self.processed_dir}/{cdir}/{pt_name}", t=t))
+                samples.append(SampleId(group=cdir, item=pt_name, path=os.path.join(shard_path, pt_name), t=t))
         return samples
 
     def len(self):
@@ -409,6 +534,31 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         data_norm = (data - self.min_nodefeat)/torch.clamp_min(self.max_nodefeat-self.min_nodefeat, 1e-8)
         return torch.where(self.norm_mask, data_norm, data)
     
+    def _load_shard(self, shard_path):
+        """
+        Load a shard .pt file.  Returns (local_data, ghost_info).
+        Handles both partitioned format (dict with 'data'/'ghost_info')
+        and legacy full-graph format (plain Data).
+        out_path = os.path.join(traj_dst, f"grouprank_{r}", pt_name)
+        torch.save({"data": local_data, "ghost_info": ghost_info}, out_path)
+        """
+        obj = torch.load(shard_path, weights_only=False, map_location="cpu")
+        if isinstance(obj, dict) and "data" in obj:
+            return obj["data"], obj["ghost_info"]
+        #single-rank fallback: no ghost info
+        N = obj.num_nodes
+        owned_mask = torch.ones(N, dtype=torch.bool)
+        ghost_info = GhostInfo(
+            #owned_mask       = owned_mask,
+            ghost_rank       = torch.empty(0, dtype=torch.long),
+            ghost_remote_idx = torch.empty(0, dtype=torch.long),
+            local_ghost_idx  = torch.empty(0, dtype=torch.long),
+            send_rank        = [],
+            send_local_idx   = [],
+            recv_counts      = {},
+        )
+        return obj, ghost_info
+
     def __getitem__(self, index):
         if hasattr(index, '__len__') and len(index)==2:
             leadtime=index[1]
@@ -424,11 +574,8 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         
         if leadtime is None:
             leadtime = 1
-            #FIXME: (1) need to move AR for graph to the main repo; (2) leadtime>1 is supported
             if self.leadtime_fixed:
-                leadtime = 1 #max(self.leadtime_max//2, 1)])
-            else:
-                raise ValueError(f"Fix leadtime for now but got {self.leadtime_fixed}")
+                leadtime = self.leadtime_max
         else:
             leadtime = min(leadtime, self.time_steps-inp_endt+1)
 
@@ -438,16 +585,14 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         target_t = inp_endt+ leadtime-1
 
         group = meta.group
-        case_dir = os.path.join(self.processed_dir, group)
+        case_dir = os.path.dirname(meta.path)
+        case_dir = re.sub(r"grouprank_\d+", f"grouprank_{self.group_rank}", case_dir)
 
         x_list = []
         pos = edge_index = edge_attr = None
-        self._minmax_features()
         for t in input_times:
             pt_path = os.path.join(case_dir, f"graphdata_{t:05d}.pt")
-            #if self.group_rank==0:
-            #    print(f"Pei debugging input {t}, {pt_path}", flush=True)
-            d_t = torch.load(pt_path, weights_only=False, map_location="cpu")
+            d_t, g_info = self._load_shard(pt_path)
 
             # collect features; topology & pos are static, so take from any step
             x_list.append(self.norm_data(d_t.x))
@@ -463,10 +608,7 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         x_seq = torch.stack(x_list, dim=0).permute(1, 0, 2) 
         
         target_path = os.path.join(case_dir, f"graphdata_{target_t:05d}.pt")
-        d_y = torch.load(target_path, weights_only=False, map_location="cpu")
-        #if self.group_rank==0:
-        #    print(f"Pei debugging out {target_t}, {target_path}", flush=True)
-
+        d_y, _ = self._load_shard(target_path)
         #d_y.x layout: [pos(2), node_type_oh(K), vel(2), pres(1)]
         #velocity and pressure as target
         # [N, 3] 
@@ -482,69 +624,94 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
         data.dt = int(self.dt)
         data.leadtime = torch.tensor([leadtime]).reshape(-1,1).to(torch.float32)
         bcs = self._get_specific_bcs()
-        return {"graph": data, "bcs": bcs, "field_labels_out": [self.field_names.index(x) for x in self.field_names_out]}
+        #print("Pei debugging", g_info, flush=True)
+        return {"graph": data, "bcs": bcs, "field_labels_out": [self.field_names.index(x) for x in self.field_names_out], 
+                "ghost_info" : g_info,             # for HaloExchange
+                }
 
 if __name__ == "__main__":
-    from mpi4py import MPI
+    from matey.utils import setup_dist
+    device, world_size, local_rank, global_rank = setup_dist()
+    rank = global_rank
 
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    world_size = comm.Get_size()
+    splitgraph=False #True #
+    if splitgraph:
+        #ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
+        #                                    group_id=0, group_rank=rank, group_size=world_size)
+        #MeshGraphNetsAirfoilDataset.partition_dataset(
+        #    src_processed_dir  = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/train/processed/",
+        #    dst_partition_root = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/train/partitioned_4/",
+        #    num_parts          = 4,
+        #    method             = "random",
+        #    overwrite          = False, #True, #
+        #    rank=rank, 
+        #    world_size=world_size
+        #)
+        #ds_val = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='val',split="val",dt=1, 
+        #                                    group_id=0, group_rank=rank, group_size=world_size)
+        MeshGraphNetsAirfoilDataset.partition_dataset(
+            src_processed_dir  = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/val/processed/",
+            dst_partition_root = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/val/partitioned_4/",
+            num_parts          = 4,
+            method             = "random",
+            overwrite          = True, #
+            rank=rank, 
+            world_size=world_size
+        )
+    else:
+        ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
+                                            group_id=0, group_rank=0, group_size=1, use_dist=True)
+        print("Airfoil train samples:", len(ds_train), "example:", ds_train[0])
+        #"""
+        ds_valid = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='val',split="val",dt=1, 
+                                            group_id=0, group_rank=0, group_size=1, use_dist=True)
+        print("Airfoil valid samples:", len(ds_valid), "example:", ds_valid[0])
+        """
+        ds_test = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='test',split="test",dt=1, 
+                                            group_id=0, group_rank=rank, group_size=world_size, use_dist=True)
+        print("Airfoil valid samples:", len(ds_test), "example:", ds_test[0])
+        """
 
-    
-    ds_train = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='train',split="train",dt=1, 
-                                           group_id=0, group_rank=rank, group_size=world_size, use_MPI=False)
-    print("Airfoil train samples:", len(ds_train), "example:", ds_train[0])
-    """
-    ds_valid = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='val',split="val",dt=1, 
-                                           group_id=0, group_rank=rank, group_size=world_size, use_MPI=True)
-    print("Airfoil valid samples:", len(ds_valid), "example:", ds_valid[0])
-    
-    ds_test = MeshGraphNetsAirfoilDataset(path="/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil",include_string='test',split="test",dt=1, 
-                                           group_id=0, group_rank=rank, group_size=world_size, use_MPI=True)
-    print("Airfoil valid samples:", len(ds_test), "example:", ds_test[0])
-    """
+        num_graphs = len(ds_train)
+        local_max = None
+        local_min = None
 
-    num_graphs = len(ds_train)
-    local_max = None
-    local_min = None
-
-    # Parallel over graphs: each rank gets a strided subset
-    for igraph in range(rank, num_graphs, world_size):
-        print(f"Airfoil train sample {ds_train[igraph]}, {igraph}/{len(ds_train)}/{world_size}")
-        data = ds_train[igraph][0]
-        x = data.x  
-        x = x.squeeze(1)
-        assert x.ndim==2, f"{x.shape}"
-        batch_max, _ = x.max(dim=0)  #[num_features]
-        batch_min, _ = x.min(dim=0)
-        if local_max is None:
-            local_max = batch_max
-            local_min = batch_min
-        else:
-            local_max = torch.maximum(local_max, batch_max)
-            local_min = torch.minimum(local_min, batch_min)
+        # Parallel over graphs: each rank gets a strided subset
+        for igraph in range(rank, num_graphs, world_size):
+            print(f"Airfoil train sample {ds_train[igraph]}, {igraph}/{len(ds_train)}/{world_size}")
+            data = ds_train[igraph]["graph"]
+            x = data.x  
+            x = x.squeeze(1)
+            assert x.ndim==2, f"{x.shape}"
+            batch_max, _ = x.max(dim=0)  #[num_features]
+            batch_min, _ = x.min(dim=0)
+            if local_max is None:
+                local_max = batch_max
+                local_min = batch_min
+            else:
+                local_max = torch.maximum(local_max, batch_max)
+                local_min = torch.minimum(local_min, batch_min)
 
 
-    local_max_np = local_max.cpu().numpy()
-    local_min_np = local_min.cpu().numpy()
+        global_max = local_max.clone()
+        global_min = local_min.clone()
 
-    global_max_np = np.empty_like(local_max_np)
-    global_min_np = np.empty_like(local_min_np)
+        # parallel reduction: take max/min across all ranks
+        dist.all_reduce(global_max, op=dist.ReduceOp.MAX)
+        dist.all_reduce(global_min, op=dist.ReduceOp.MIN)
 
-    # parallel reduction: take max/min across all ranks
-    comm.Allreduce(local_max_np, global_max_np, op=MPI.MAX)
-    comm.Allreduce(local_min_np, global_min_np, op=MPI.MIN)
+        global_max_np = global_max.cpu().numpy()
+        global_min_np = global_min.cpu().numpy()
 
-    if rank ==0:
-        max_values_list = global_max_np.tolist()
-        min_values_list = global_min_np.tolist()
+        if rank ==0:
+            max_values_list = global_max_np.tolist()
+            min_values_list = global_min_np.tolist()
 
-        print("Global feature_min:", min_values_list, flush=True)
-        print("Global feature_max:", max_values_list, flush=True)
+            print("Global feature_min:", min_values_list, flush=True)
+            print("Global feature_max:", max_values_list, flush=True)
 
-        output_dir = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/train/stats"
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, f"minmax_node_features.json")
-        with open(output_path, "w") as f:
-            json.dump({"feature_max": max_values_list, "feature_min": min_values_list}, f, indent=2)
+            output_dir = "/lustre/orion/lrn037/proj-shared/deepmindmeshgraph/airfoil/train/stats"
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"minmax_node_features.json")
+            with open(output_path, "w") as f:
+                json.dump({"feature_max": max_values_list, "feature_min": min_values_list}, f, indent=2)

@@ -12,6 +12,8 @@ from functools import reduce
 from einops import rearrange, repeat
 from ..utils.distributed_utils import closest_factors
 from torch_geometric.nn import GCNConv, GraphNorm
+from ..data_utils import HaloExchange_sync
+import torch.distributed as dist
 
 ### Space utils
 #FIXME: this function causes training instability. Keeping it now for reproducibility; We'll remove it
@@ -344,13 +346,14 @@ class hMLP_output(nn.Module):
 
 class GraphhMLP_stem(nn.Module):
     """graph to patch embedding"""
-    def __init__(self, patch_size=(1,1,1), in_chans=3, embed_dim=768, nconv=3):
+    def __init__(self, patch_size=(1,1,1), in_chans=3, embed_dim=768, nconv=3, ghost_sync=False):
         super().__init__()
         assert patch_size==[1, 1 ,1], f"graph input heads only support patch size of 1 for now, but get {patch_size}"
         self.patch_size = patch_size
         self.in_chans = in_chans
         self.embed_dim = embed_dim
         self.nconv = nconv
+        self.ghost_sync = ghost_sync
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -364,26 +367,40 @@ class GraphhMLP_stem(nn.Module):
 
     def forward(self, data):
         """
-        data:  (node_features, batch, edge_index)
+        data:  (node_features, batch, edge_index, ghost_info)
+            x          : [N_local, T, C]   float32   owned + ghost nodes
+            batch      : [N_local]         long      PyG batch vector
+            edge_index : [2, E_local]      long      local remapped edges
+            ghost_info : GhostInfo | None
+        Returns
+        -------
+        Same tuple with x replaced by [N_local, T, embed_dim].
+        ghost rows in x are updated after the last layer so downstream
+        modules can call halo.sync again if needed.
         """
-        x, batch, edge_index = data
+        x, batch, edge_index, ghost_info, comm = data
         N, T, C= x.shape
         x_list=[]
         for it in range(T):
             h = x[:,it,:]
             for conv, norm in zip(self.convs, self.norms):
+                #sync ghost embeddings before aggregation
+                if ghost_info is not None and self.ghost_sync:
+                    h = HaloExchange_sync(h, ghost_info, comm)
                 h_in = h
                 h = conv(h, edge_index)
                 h = norm(h, batch)
                 h = self.act(h)
                 if h.shape == h_in.shape:
                     h = h + h_in
+            if ghost_info is not None and self.ghost_sync:
+                h = HaloExchange_sync(h, ghost_info, comm)
             x_list.append(h)
         x_out = torch.stack(x_list, dim=1)
-        return (x_out, batch, edge_index)
-    
+        return (x_out, batch, edge_index, ghost_info, comm)
+
 class GraphhMLP_output(nn.Module):
-    def __init__(self, patch_size=(1,1,1), out_chans=3, embed_dim=768, nconv=3, smooth=False):
+    def __init__(self, patch_size=(1,1,1), out_chans=3, embed_dim=768, nconv=3, smooth=False, ghost_sync=False):
         super().__init__()
         assert patch_size==[1, 1 ,1], f"graph output heads only support patch size of 1 for now, but get {patch_size}"
         self.patch_size = patch_size
@@ -391,6 +408,7 @@ class GraphhMLP_output(nn.Module):
         self.embed_dim = embed_dim
         self.nconv = nconv
         self.smooth_flag = smooth
+        self.ghost_sync = ghost_sync
         
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -414,15 +432,28 @@ class GraphhMLP_output(nn.Module):
 
     def forward(self, data):
         """
-        data:  (node_features, batch, edge_index)
+        data:  (node_features, batch, edge_index, ghost_info)
+            x          : [N_local, T, embed_dim]
+            batch      : [N_local] long
+            edge_index : [2, E_local] long
+            ghost_info : GhostInfo | None
+
+        Returns
+        -------
+        Same tuple with x replaced by [N_local, T, out_chans].
+        Only owned rows carry meaningful predictions; ghost rows are
+        byproducts of the final conv and should be masked away.
         """
-        x, batch, edge_index = data
+        x, batch, edge_index, ghost_info, comm = data
         N, T, C= x.shape
         x_list=[]
         for it in range(T):
             h = x[:,it,:]
             for conv, norm in zip(self.convs, self.norms):
             #for conv in self.convs:
+             #sync before aggregation
+                if ghost_info is not None and self.ghost_sync:
+                    h = HaloExchange_sync(h, ghost_info, comm)
                 h_in = h
                 h = conv(h, edge_index)
                 h = norm(h, batch)
@@ -432,6 +463,8 @@ class GraphhMLP_output(nn.Module):
             h = self.out_head(h)
             if self.smooth is not None:
                 h = self.smooth(h, edge_index)
+            if ghost_info is not None and self.ghost_sync:
+                h = HaloExchange_sync(h, ghost_info, comm)
             x_list.append(h)
-        x_out = torch.stack(x_list, dim=1)
-        return (x_out, batch, edge_index)
+        x_out = torch.stack(x_list, dim=1) #[N_local, T, out_chans]
+        return (x_out, batch, edge_index, ghost_info, comm)

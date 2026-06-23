@@ -19,6 +19,7 @@ from functools import reduce
 from ..utils.forward_options import ForwardOptionsBase
 import torch.distributed as dist
 from ..utils import densenodes_to_graphnodes
+from ..data_utils import check_same_sample_across_halo, HaloExchange_sync
 
 def build_turbt(params):
     """ Builds model from parameter file.
@@ -42,6 +43,7 @@ def build_turbt(params):
                      bias_type=params.bias_type,
                      replace_patch=getattr(params, 'replace_patch', True),
                      hierarchical=getattr(params, 'hierarchical', None),
+                     ghost_sync=getattr(params, 'ghost_sync', False),
                      notransposed=getattr(params, 'notransposed', False),
                      diffusion_config=getattr(params, 'diffusion_config', None),
                     )
@@ -59,11 +61,11 @@ class TurbT(BaseModel):
         n_states (int): Number of input state variables.
         sts_f
     """
-    def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6,
+    def __init__(self, tokenizer_heads=None, embed_dim=768,  num_heads=12, processor_blocks=8, n_states=6, ghost_sync=False,
                  drop_path=.2, sts_train=False, sts_model=False, leadtime=False, cond_input=False, n_steps=1, bias_type="none", replace_patch=True, hierarchical=None, notransposed=False,
                  diffusion_config=None):
         super().__init__(tokenizer_heads=tokenizer_heads, n_states=n_states,  embed_dim=embed_dim, leadtime=leadtime, cond_input=cond_input, n_steps=n_steps, bias_type=bias_type, hierarchical=hierarchical,
-                         notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1,
+                         notransposed=notransposed, nlevels=hierarchical["nlevels"] if hierarchical is not None else 1, ghost_sync=ghost_sync,
                          diffusion_config=diffusion_config)
         self.drop_path = drop_path
         self.dp = np.linspace(0, drop_path, processor_blocks)
@@ -226,6 +228,7 @@ class TurbT(BaseModel):
         cond_input = opts.cond_input
         isgraph=opts.isgraph
         field_labels_out=opts.field_labels_out
+        ghost_info = opts.ghost_info
         sigma = getattr(opts, 'sigma', None)
         diffusion_cond = getattr(opts, 'diffusion_cond', None)
         persample_normalize = not self.diffusion
@@ -250,13 +253,15 @@ class TurbT(BaseModel):
             For graph objects: support one level for now
             FIXME: extend to multiple levels
             """
+            with torch.no_grad():
+                check_same_sample_across_halo(data, ghost_info, sequence_parallel_group) if sequence_parallel_group is not None else None   
             x = data.x#nnodes, T, C
             edge_index = data.edge_index #
             batch = data.batch ##[N_total]
             T = x.shape[1] 
-            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #node features, mean_g:[G,C], std_g:[G,C]
+            x, data_mean, data_std = normalize_spatiotemporal_persample_graph(x, batch) #, sequence_parallel_group=sequence_parallel_group) #node features, mean_g:[G,C], std_g:[G,C]
             refineind=None
-            x = (x, batch, edge_index)
+            x = (x, batch, edge_index, ghost_info, sequence_parallel_group)
         else:
             x = data
 
@@ -346,12 +351,12 @@ class TurbT(BaseModel):
             #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
             #output: [N_total, T, C] (only real nodes)
             x= densenodes_to_graphnodes(x, mask_padding) #[nnodes, T, C]
-            x = (x, batch, edge_index)
+            x = (x, batch, edge_index, ghost_info, sequence_parallel_group)
             D, H, W = -1, -1, -1 #place holder
         ######## Decode ########
         x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
         if isgraph:
-            node_ft, batch, edge_index = x
+            node_ft, batch, _, ghost_info, sequence_parallel_group= x
             #node_ft: [nnodes, T, C]
             x = node_ft[:,:,field_labels_out[0]]
             N = x.shape[0]
@@ -361,7 +366,10 @@ class TurbT(BaseModel):
             std_node  = data_std[batch].view(N, 1, -1)[:, :, mask]
 
             x = x * std_node + mean_node
-            return x[:, -1, :] #[nnodes, C]
+            x= x[:, -1, :] #[nnodes, C]
+            if ghost_info is not None:
+                x = HaloExchange_sync(x, ghost_info, sequence_parallel_group)
+            return x
         ########upsampling######
         x_correct = x[-1]
         del x

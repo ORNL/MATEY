@@ -16,6 +16,14 @@ import json
 import os
 
 
+import torch.distributed.nn.functional as dist_nn_f
+from torch import Tensor
+from torch_geometric.data import Data
+import torch.nn.functional as F
+from collections import defaultdict
+from typing import List, Dict, NamedTuple
+from torch_geometric.loader import ClusterData
+
 def unwrap_leadtime_config(leadtime_config):
     leadtime_max=leadtime_config.get("leadtime_max", 1)
     leadtime_fixed=leadtime_config.get("leadtime_fixed", False)
@@ -556,3 +564,315 @@ def list_timestep_indices(chunks_dir):
             except ValueError:
                 continue
     return sorted(indices)
+    
+# ──────────────────────────────────────────────────────────────────────────────
+# Graph partitioning helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GhostInfo(NamedTuple):
+    """
+    Everything a rank needs to perform a halo exchange for one graph snapshot.
+
+    owned_mask      : bool [N_local]  – True  → owned node
+    ghost_rank      : int  [G]        – which rank owns each ghost node
+    ghost_remote_idx: int  [G]        – index of the ghost inside that rank's
+                                         local owned node list
+    local_ghost_idx : int  [G]        – position of each ghost in this rank's
+                                         local node tensor
+    send_rank       : int  [S]        – ranks that need a slice of our embeddings
+    send_local_idx  : list of int[]   – for each send_rank, the local indices to
+                                         send (these are owned nodes that are
+                                         ghosts on another rank)
+    recv_counts     : dict rank→int   – how many ghost scalars to recv per rank
+                                         (needed when F varies at runtime)
+    """
+    #owned_mask       : Tensor               # [N_local] bool
+    ghost_rank       : Tensor               # [G] long
+    ghost_remote_idx : Tensor               # [G] long
+    local_ghost_idx  : Tensor               # [G] long
+    send_rank        : List[int]
+    send_local_idx   : List[Tensor]         # one tensor per send rank
+    recv_counts      : Dict[int, int]       # rank → num ghost nodes from that rank
+
+def _partition_metis(edge_index, num_nodes, num_parts):
+    """
+    Partition a graph with PyG's ClusterData (METIS under the hood).
+    Returns node-to-partition assignment [num_nodes] long tensor (0 … num_parts-1).
+    """
+    dummy = Data(edge_index=edge_index, num_nodes=num_nodes)
+    cluster_data = ClusterData(dummy, num_parts=num_parts, log=False)
+
+    # ClusterData stores node_perm (sorted by partition) and partptr (partition boundaries)
+    # reconstruct assignment[original_node] = partition_id
+    node_perm = cluster_data.partition.node_perm # [N] permuted node indices
+    partptr   = cluster_data.partition.partptr   # [num_parts+1] partition boundaries
+
+    assignment = torch.empty(num_nodes, dtype=torch.long)
+    for part_id in range(num_parts):
+        start = int(partptr[part_id])
+        end   = int(partptr[part_id + 1])
+        assignment[node_perm[start:end]] = part_id
+
+    return assignment
+def _partition_random(num_nodes, num_parts, seed= 2024):
+    rng = np.random.default_rng(seed)
+    assignment = np.arange(num_nodes) % num_parts
+    rng.shuffle(assignment)
+    return torch.from_numpy(assignment).long()
+
+def partition_graph(edge_index, num_nodes, num_parts, method= "metis"):
+    """Return node-to-part assignment tensor [num_nodes]."""
+    if method == "metis":
+        return _partition_metis(edge_index, num_nodes, num_parts)
+    elif method == "random":
+        return _partition_random(num_nodes, num_parts)
+    else:
+        raise ValueError(f"Unknown partition method: {method!r}. Choose 'metis' or 'random'.")
+
+def build_local_subgraph(data, node_assignment, group_rank, num_parts):
+    """
+    Extract the local subgraph for *rank* from a full graph, and build the
+    GhostInfo descriptor needed for halo exchange.
+
+    Parameters
+    ----------
+    data            : full PyG Data  (x, pos, edge_index, edge_attr)
+    node_assignment : [N] long, partition assignment per node
+    group_rank      : int, this data rank's id
+    num_parts       : group_size
+
+    Returns
+    -------
+    local_data  : PyG Data over owned + ghost nodes
+                  node ordering: [owned_0 … owned_K | ghost_0 … ghost_G]
+    ghost_info  : GhostInfo namedtuple
+    """
+    N           = data.num_nodes
+    edge_index  = data.edge_index    #[2, E]
+    src_nodes   = edge_index[0]
+    dst_nodes   = edge_index[1]
+
+    owned_global = torch.where(node_assignment == group_rank)[0]  #[K]
+    owned_set    = set(owned_global.tolist())
+
+    # ── find ghost nodes ──────────────────────────────────────────────────────
+    # A ghost is a neighbour (via any edge endpoint) of an owned node that
+    # belongs to a different rank.
+    ghost_global_set = set()
+    for e in range(edge_index.shape[1]):
+        s, d = int(src_nodes[e]), int(dst_nodes[e])
+        if s in owned_set and d not in owned_set:
+            ghost_global_set.add(d)
+        elif d in owned_set and s not in owned_set:
+            ghost_global_set.add(s)
+
+    ghost_global = torch.tensor(sorted(ghost_global_set), dtype=torch.long)  # [G]
+
+    # ── build global to local index map ─────────────────────────────────────────
+    K = owned_global.shape[0]
+    G = ghost_global.shape[0]
+
+    local_nodes     = torch.cat([owned_global, ghost_global], dim=0)   # [K+G]
+    global_to_local = {int(g): l for l, g in enumerate(local_nodes.tolist())}
+
+    # ── filter and remap edges ────────────────────────────────────────────────
+    # Keep edges where at least one endpoint is an owned node.
+    edge_mask = torch.zeros(edge_index.shape[1], dtype=torch.bool)
+    for e in range(edge_index.shape[1]):
+        s, d = int(src_nodes[e]), int(dst_nodes[e])
+        if s in owned_set or d in owned_set:
+            if s in global_to_local and d in global_to_local:
+                edge_mask[e] = True
+
+    kept_edges     = edge_index[:, edge_mask] #[2, E']
+    local_edge_src = torch.tensor([global_to_local[int(n)] for n in kept_edges[0].tolist()], dtype=torch.long)
+    local_edge_dst = torch.tensor([global_to_local[int(n)] for n in kept_edges[1].tolist()], dtype=torch.long)
+    local_edge_index = torch.stack([local_edge_src, local_edge_dst], dim=0)
+
+    # ── build local features ─────────────────────────────────────────────────
+    local_x        = data.x[local_nodes]         if data.x is not None        else None
+    local_pos      = data.pos[local_nodes]        if data.pos is not None      else None
+    local_edge_attr= data.edge_attr[edge_mask]    if data.edge_attr is not None else None
+
+    local_data = Data(x = local_x, pos = local_pos, edge_index = local_edge_index, edge_attr  = local_edge_attr, num_nodes = K+G)
+    # carry through any extra scalar attributes
+    for key in data.keys():
+        if key not in ("x", "pos", "edge_index", "edge_attr"):
+            setattr(local_data, key, getattr(data, key))
+
+    # ── build GhostInfo ───────────────────────────────────────────────────────
+    owned_mask = torch.zeros(K + G, dtype=torch.bool)
+    owned_mask[:K] = True
+
+    ghost_rank_list       = []
+    ghost_remote_idx_list = []
+    local_ghost_idx_list  = []
+
+    # For each remote rank r, find the list of owned node indices on r that correspond to our ghost nodes.
+    # "remote_idx" = position of the ghost in rank r's *owned* node list.
+    # We need the same ordering that rank r will use, which is:
+    #   torch.where(node_assignment == r)[0]  (sorted)
+    owned_per_rank = {}
+    for r in range(num_parts):
+        if r != group_rank:
+            owned_per_rank[r] = torch.where(node_assignment == r)[0].tolist()
+
+    for local_g_idx in range(G):
+        global_g = int(ghost_global[local_g_idx])
+        owner_r  = int(node_assignment[global_g])
+        remote_i = owned_per_rank[owner_r].index(global_g)   # position in owner's owned list
+        ghost_rank_list.append(owner_r)
+        ghost_remote_idx_list.append(remote_i)
+        local_ghost_idx_list.append(K + local_g_idx)         # ghost comes after owned in local tensor
+
+    ghost_rank_t        = torch.tensor(ghost_rank_list,       dtype=torch.long)
+    ghost_remote_idx_t  = torch.tensor(ghost_remote_idx_list, dtype=torch.long)
+    local_ghost_idx_t   = torch.tensor(local_ghost_idx_list,  dtype=torch.long)
+
+    # ── build send lists (what *this* rank must send to others) ──────────────
+    # rank r needs ghost data for nodes that we own; find which of our owned nodes appear as ghosts on each remote rank r.
+    send_rank_list      = []
+    send_local_idx_list = []
+    recv_counts         = {}
+
+    # Count ghosts grouped by owner rank
+    ghosts_per_owner = defaultdict(int)
+    for r in ghost_rank_list:
+        ghosts_per_owner[r] += 1
+    recv_counts = dict(ghosts_per_owner)
+
+    # For sends: for each remote rank r, determine which of OUR owned nodes are ghosts *on rank r*.  
+    # We detect this by looking at r's ghost list, but since we don't have that during dataset construction we reconstruct
+    # it symmetrically: node g is a ghost on rank r if g \in owned_set(this rank)
+    # and g is adjacent to at least one node owned by r.
+    for r in range(num_parts):
+        if r == group_rank:
+            continue
+        remote_owned_set = set(owned_per_rank[r])
+        nodes_to_send = []
+        for e in range(edge_index.shape[1]):
+            s, d = int(src_nodes[e]), int(dst_nodes[e])
+            # edge crosses boundary: one end is ours, the other belongs to r
+            if s in owned_set and d in remote_owned_set:
+                local_idx = global_to_local[s]
+                if local_idx not in nodes_to_send:
+                    nodes_to_send.append(local_idx)
+            elif d in owned_set and s in remote_owned_set:
+                local_idx = global_to_local[d]
+                if local_idx not in nodes_to_send:
+                    nodes_to_send.append(local_idx)
+        if nodes_to_send:
+            send_rank_list.append(r)
+            send_local_idx_list.append(torch.tensor(sorted(nodes_to_send), dtype=torch.long))
+
+    ghost_info = GhostInfo(
+        #owned_mask       = owned_mask,
+        ghost_rank       = ghost_rank_t,
+        ghost_remote_idx = ghost_remote_idx_t,
+        local_ghost_idx  = local_ghost_idx_t,
+        send_rank        = send_rank_list,
+        send_local_idx   = send_local_idx_list,
+        recv_counts      = recv_counts,
+    )
+
+    return local_data, ghost_info
+
+def HaloExchange_sync(node_feat, info, comm):
+    device = node_feat.device
+    dtype  = node_feat.dtype
+    F_dim  = node_feat.shape[1]
+    world  = dist.get_world_size(comm)
+    G      = len(info.ghost_rank)
+    K      = node_feat.shape[0] - G
+
+    # ── send/receive (unchanged) ───────────────────────────────────────────
+    send_chunks = [
+        torch.empty((0, F_dim), dtype=dtype, device=device)
+        for _ in range(world)
+    ]
+    for dst_rank, idx in zip(info.send_rank, info.send_local_idx):
+        send_chunks[int(dst_rank)] = (
+            node_feat.index_select(0, idx.to(device)).contiguous()
+        )
+
+    input_split_sizes  = [int(c.shape[0]) for c in send_chunks]
+    output_split_sizes = [int(info.recv_counts.get(src, 0)) for src in range(world)]
+
+    send_buf = torch.cat(send_chunks, dim=0).contiguous()
+    recv_buf = torch.empty(
+        (sum(output_split_sizes), F_dim), dtype=dtype, device=device
+    )
+
+    recv_buf = dist_nn_f.all_to_all_single(
+        output             = recv_buf,
+        input              = send_buf,
+        output_split_sizes = output_split_sizes,
+        input_split_sizes  = input_split_sizes,
+        group              = comm,
+    )
+
+    # ── build recv_positions: recv_positions[g] = row in recv_buf for ghost g ──
+    offset_by_src = {}
+    start = 0
+    for src in range(world):
+        offset_by_src[src] = start
+        start += output_split_sizes[src]
+
+    ghosts_by_src = defaultdict(list)
+    for g in range(G):
+        src        = int(info.ghost_rank[g])
+        remote_idx = int(info.ghost_remote_idx[g])
+        ghosts_by_src[src].append((remote_idx, g))
+
+    recv_positions = torch.empty(G, dtype=torch.long, device=device)
+    for src, pairs in ghosts_by_src.items():
+        pairs.sort(key=lambda x: x[0])
+        for k, (_, g) in enumerate(pairs):
+            recv_positions[g] = offset_by_src[src] + k
+
+    ghost_synced = recv_buf[recv_positions]               # [G, F_dim]
+
+    # no clone, no in-place — clean autograd graph
+    return torch.cat([node_feat[:K], ghost_synced], dim=0)
+
+def check_same_sample_across_halo(data, ghost_info, comm):
+    rank = dist.get_rank(comm)
+    world = dist.get_world_size(comm)
+
+    group = data.group
+    if isinstance(group, (list, tuple)):
+        group = group[0]
+
+    sig = (str(group), int(data.t0), int(data.target_t))
+
+    sigs = [None for _ in range(world)]
+    dist.all_gather_object(sigs, sig, group=comm)
+
+    #if rank == 0:
+    #    print("Pei debugging sample sigs:", sigs, flush=True)
+
+    if len(set(sigs)) != 1:
+        raise RuntimeError(f"Halo sample mismatch: rank={rank}, sig={sig}, all={sigs}")
+    
+    x = data.x#[nnodes, T, C]
+    h0 = x[:, 0, :].contiguous()
+    h1 = HaloExchange_sync(h0, ghost_info, comm)
+
+    maxdiff_all = (h1 - h0).abs().max().item()
+
+    G      = len(ghost_info.ghost_rank)
+    K      = x.shape[0] - G
+
+    maxdiff_own = (h1[:K] - h0[:K]).abs().max().item()
+
+    if ghost_info is not None and len(ghost_info.local_ghost_idx) > 0:
+        ghost_idx = ghost_info.local_ghost_idx.to(h0.device)
+        maxdiff_ghost = (h1[ghost_idx] - h0[ghost_idx]).abs().max().item()
+    else:
+        maxdiff_ghost = 0.0
+
+    assert maxdiff_all<1e-6 and maxdiff_own<1e-6 and maxdiff_ghost<1e-6, (
+        f"Pei debugging ghost0 [rank {dist.get_rank(comm)}] first halo maxdiff_all={maxdiff_all:.6e}, "
+        f"maxdiff_own={maxdiff_own:.6e}, "
+        f"maxdiff_ghost={maxdiff_ghost:.6e}"
+        )

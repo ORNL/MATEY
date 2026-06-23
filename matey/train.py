@@ -585,6 +585,10 @@ class Trainer:
                     graphdata = data["graph"].to(self.device)
                     tar = graphdata.y #[nnodes, C_tar] 
                     leadtime = graphdata.leadtime #[nnodes, 1]
+                    ghost_list = data["ghost_info"]# List[GhostInfo], one per sample
+                    ghost_info = ghost_list[0]
+                    if self.group_size > 1:
+                        assert graphdata.batch.unique().numel() == 1, f"expect batch size 1 when split graph but got {graphdata.batch.unique()}"
                     dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
                 else: 
                     inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
@@ -635,7 +639,8 @@ class Trainer:
                 cond_dict=copy.deepcopy(cond_dict),
                 cond_input=cond_input,
                 isgraph=isgraph,
-                field_labels_out= field_labels_out
+                field_labels_out= field_labels_out,
+                ghost_info = ghost_info if isgraph else None,
                 )
                 with record_function_opt("model forward", enabled=self.profiling):
                     if self.diffusion_config.get("diffusion", False):
@@ -660,8 +665,12 @@ class Trainer:
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
                 torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
                 if bad.item() > 0:
-                    print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
-                    print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    if isgraph:
+                        print(f"INF: {inp.x.min(), inp.x.max(), inp.y.min(), inp.y.max(), torch.isinf(inp.x).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                        print(f"NAN: {torch.isnan(inp.x).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
+                    else:
+                        print(f"INF: {torch.isinf(inp).any(), torch.isinf(tar).any(), torch.isinf(output).any(), bad} for {dset_type}")
+                        print(f"NAN: {torch.isnan(inp).any(), torch.isnan(tar).any(), torch.isnan(output).any(), bad} for {dset_type}")
                     continue
                 if not isgraph:
                     if self.params.pei_debug:
@@ -765,6 +774,10 @@ class Trainer:
                 graphdata = data["graph"].to(self.device)
                 tar = graphdata.y #[nnodes, C_tar] 
                 leadtime = graphdata.leadtime #[nnodes, 1]
+                ghost_list = data["ghost_info"]# List[GhostInfo], one per sample
+                ghost_info = ghost_list[0]
+                if self.group_size > 1:
+                    assert graphdata.batch.unique().numel() == 1, f"expect batch size 1 when split graph but got {graphdata.batch.unique()}"
                 dset_index, field_labels, field_labels_out, bcs = map(lambda x: x.to(self.device), [data[varname] for varname in ["dset_idx", "field_labels", "field_labels_out", "bcs"]])
             else: 
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
@@ -816,7 +829,8 @@ class Trainer:
                     cond_dict=copy.deepcopy(cond_dict),
                     cond_input=cond_input,
                     isgraph=isgraph,
-                    field_labels_out= field_labels_out
+                    field_labels_out= field_labels_out,
+                    ghost_info = ghost_info if isgraph else None,
                     )
                     if self.diffusion_config.get("diffusion", False):
                         if self.diffusion_config.get("cond_diffusion", False):
