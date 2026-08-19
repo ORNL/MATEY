@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from collections import defaultdict
 from typing import List, Dict, NamedTuple
 from torch_geometric.loader import ClusterData
+from torch_geometric.utils import to_undirected
 
 def unwrap_leadtime_config(leadtime_config):
     leadtime_max=leadtime_config.get("leadtime_max", 1)
@@ -594,13 +595,101 @@ class GhostInfo(NamedTuple):
     send_local_idx   : List[Tensor]         # one tensor per send rank
     recv_counts      : Dict[int, int]       # rank → num ghost nodes from that rank
 
+@torch.no_grad()
+def check_metis_graph(data, case_name):
+    edge_index = data.edge_index.detach().cpu().long().contiguous()
+    src, dst = edge_index
+    num_nodes = int(data.num_nodes)
+    num_edges = int(edge_index.size(1))
+
+    print(
+        f"[METIS check] case={case_name}, "
+        f"num_nodes={num_nodes}, num_edges={num_edges}",
+        flush=True,
+    )
+
+    # -------------------------------------------------------------
+    # 1. Index range
+    # -------------------------------------------------------------
+    min_index = int(edge_index.min())
+    max_index = int(edge_index.max())
+
+    if min_index < 0 or max_index >= num_nodes:
+        raise RuntimeError(
+            f"{case_name}: invalid node indices: "
+            f"min={min_index}, max={max_index}, "
+            f"num_nodes={num_nodes}"
+        )
+
+    # -------------------------------------------------------------
+    # 2. Self-loops
+    # -------------------------------------------------------------
+    num_self_loops = int((src == dst).sum())
+
+    # -------------------------------------------------------------
+    # 3. Exact symmetry, including duplicate multiplicity
+    #
+    # Encode (src, dst) as one int64 value and compare it against
+    # the encoded reversed edges (dst, src).
+    # -------------------------------------------------------------
+    edge_key = src * num_nodes + dst
+    reverse_key = dst * num_nodes + src
+
+    edge_key = torch.sort(edge_key).values
+    reverse_key = torch.sort(reverse_key).values
+
+    asymmetric_mask = edge_key != reverse_key
+    num_asymmetric = int(asymmetric_mask.sum())
+
+    # -------------------------------------------------------------
+    # 4. Duplicate adjacency entries
+    # -------------------------------------------------------------
+    num_duplicates = int(
+        (edge_key[1:] == edge_key[:-1]).sum()
+    )
+
+    # -------------------------------------------------------------
+    # 5. Degree information
+    # -------------------------------------------------------------
+    out_degree = torch.bincount(src, minlength=num_nodes)
+    in_degree = torch.bincount(dst, minlength=num_nodes)
+
+    num_zero_out_degree = int((out_degree == 0).sum())
+    num_zero_in_degree = int((in_degree == 0).sum())
+    degree_mismatch_nodes = int((out_degree != in_degree).sum())
+
+    print(
+        f"[METIS check] case={case_name}: "
+        f"index_range=[{min_index}, {max_index}], "
+        f"self_loops={num_self_loops}, "
+        f"duplicates={num_duplicates}, "
+        f"asymmetric_entries={num_asymmetric}, "
+        f"degree_mismatch_nodes={degree_mismatch_nodes}, "
+        f"zero_out_degree={num_zero_out_degree}, "
+        f"zero_in_degree={num_zero_in_degree}, "
+        f"max_out_degree={int(out_degree.max())}",
+        flush=True,
+    )
+
+    if num_asymmetric != 0:
+        raise RuntimeError(
+            f"{case_name}: graph is not exactly undirected; "
+            f"found {num_asymmetric} asymmetric adjacency entries"
+        )
+
+
+
 def _partition_metis(edge_index, num_nodes, num_parts):
     """
     Partition a graph with PyG's ClusterData (METIS under the hood).
     Returns node-to-partition assignment [num_nodes] long tensor (0 … num_parts-1).
     """
-    dummy = Data(edge_index=edge_index, num_nodes=num_nodes)
-    cluster_data = ClusterData(dummy, num_parts=num_parts, log=False)
+    edge_index = to_undirected(edge_index, num_nodes=num_nodes)
+    dummy = Data(edge_index=edge_index.long(), num_nodes=num_nodes)
+    check_metis_graph(dummy, "debugging")
+
+    #print("Pei debugging [input]", dummy, num_parts, flush=True)
+    cluster_data = ClusterData(dummy, num_parts=num_parts, log=True)
 
     # ClusterData stores node_perm (sorted by partition) and partptr (partition boundaries)
     # reconstruct assignment[original_node] = partition_id
@@ -612,6 +701,8 @@ def _partition_metis(edge_index, num_nodes, num_parts):
         start = int(partptr[part_id])
         end   = int(partptr[part_id + 1])
         assignment[node_perm[start:end]] = part_id
+
+    #print("Pei debugging [partition successful]", len(node_perm), len(partptr), num_parts, flush=True)
 
     return assignment
 def _partition_random(num_nodes, num_parts, seed= 2024):
@@ -785,6 +876,8 @@ def HaloExchange_sync(node_feat, info, comm):
     G      = len(info.ghost_rank)
     K      = node_feat.shape[0] - G
 
+    print(f"Checking node size: total nodes {node_feat.shape[0]}; own nodes {K}; ghost node {G}", flush=True)
+
     # ── send/receive (unchanged) ───────────────────────────────────────────
     send_chunks = [
         torch.empty((0, F_dim), dtype=dtype, device=device)
@@ -872,7 +965,7 @@ def check_same_sample_across_halo(data, ghost_info, comm):
         maxdiff_ghost = 0.0
 
     assert maxdiff_all<1e-6 and maxdiff_own<1e-6 and maxdiff_ghost<1e-6, (
-        f"Pei debugging ghost0 [rank {dist.get_rank(comm)}] first halo maxdiff_all={maxdiff_all:.6e}, "
+        f"Ghost0 [rank {dist.get_rank(comm)}] first halo maxdiff_all={maxdiff_all:.6e}, "
         f"maxdiff_own={maxdiff_own:.6e}, "
         f"maxdiff_ghost={maxdiff_ghost:.6e}"
         )

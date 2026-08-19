@@ -10,6 +10,7 @@ import torch.nn
 import numpy as np
 import os
 from torch.utils.data import Dataset
+import netCDF4  # Must be imported before h5py to avoid HDF5 library conflict
 import h5py
 import glob
 from ..utils import getblocksplitstat

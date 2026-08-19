@@ -4,6 +4,7 @@
 
 import torch
 import torch.distributed as dist
+from torch.distributed.nn.functional import all_reduce as autograd_all_reduce
 import torch.nn.functional as F
 from .forward_options import ForwardOptionsBase, TrainOptionsBase
 from contextlib import nullcontext
@@ -85,7 +86,7 @@ def autoregressive_rollout(model, inp, field_labels, bcs, opts: ForwardOptionsBa
                 graphdata.x = x_hist
                 output_t = model(graphdata, field_labels, bcs, opts) #[nnodes, C_out]
                 #print("graphdata.x.shape", graphdata.x.shape, output_t.shape, output_inds, flush=True)
-                next_frame = x_hist[:, -1, :].clone()
+                next_frame = x_hist[:, 0, :].clone()
                 next_frame[:,output_inds]= output_t
                 x_hist = torch.cat((x_hist[:, 1:, :], next_frame.unsqueeze(1)), dim=1) #[nnodes, T, C]
             graphdata.x = x_hist
@@ -137,7 +138,7 @@ def GradLoss(input, target):
 
     return loss
 
-def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, params):
+def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, params, seq_group=None):
     """
     compute loss and update logging dicts.
     output: Model prediction [B,C,D,H,W] for tensor inputs or [nnodes, C_tar] for graph
@@ -151,7 +152,19 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         ###full resolution###
          #[nnodes, C_tar] 
         # Differentiate between log and accumulation losses
-        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch) #B,C
+        mean_loc = global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        #NOTE: for graph we ignore the repeated calculation of ghost nodes
+        if seq_group is not None:
+            # Reduce across sequence parallel group for one sample
+            raw_loss=autograd_all_reduce(raw_loss, op=dist.ReduceOp.SUM, group=seq_group)
+            #target requires no gradient, so we can use dist.all_reduce for mean_loc
+            dist.all_reduce(mean_loc, op=dist.ReduceOp.SUM, group=seq_group)
+            world_size = dist.get_world_size(group=seq_group)
+            raw_loss = raw_loss / world_size
+            mean_loc = mean_loc / world_size
+        raw_rmse_loss = raw_loss.sqrt().mean()
+        raw_loss = raw_loss / mean_loc
         # Scale loss for accum
         loss = raw_loss.mean() /params.accum_grad
         spatial_dims = None
@@ -160,7 +173,19 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
         spatial_dims = tuple(range(output.ndim))[2:] # B,C,D,H,W
         #Differentiate between log and accumulation losses
         #B,C,D,H,W->B,C
-        raw_loss = residuals.pow(2).mean(spatial_dims)/ (1e-7 + tar.pow(2).mean(spatial_dims))
+        raw_loss = residuals.pow(2).mean(spatial_dims)
+        mean_loc = (1e-7 + tar.pow(2).mean(spatial_dims))
+        if seq_group is not None:
+            # Reduce across sequence parallel group for one sample
+            # dist.all_reduce is not differentiable, so we use autograd_all_reduce to allow gradients to flow back through the loss computation.
+            raw_loss=autograd_all_reduce(raw_loss, op=dist.ReduceOp.SUM, group=seq_group)
+            #target requires no gradient, so we can use dist.all_reduce for mean_loc
+            dist.all_reduce(mean_loc, op=dist.ReduceOp.SUM, group=seq_group)
+            world_size = dist.get_world_size(group=seq_group)
+            raw_loss = raw_loss / world_size
+            mean_loc = mean_loc / world_size
+        raw_rmse_loss = raw_loss.sqrt().mean()
+        raw_loss = raw_loss / mean_loc
         # Scale loss for accum
         loss = raw_loss.mean()/params.accum_grad
         #Optional spatial gradient loss
@@ -171,15 +196,15 @@ def compute_loss_and_logs(output, tar, graphdata, logs, loss_logs, dset_type, pa
             loss += params.grad_loss_alpha * grad_loss
     # Logging
     with torch.no_grad():
-        logs['train_l1'] += F.l1_loss(output, tar)
+        logs['train_l1'] += F.l1_loss(output, tar).item()
         log_nrmse = raw_loss.sqrt().mean()
-        logs['train_nrmse'] += log_nrmse 
+        logs['train_nrmse'] += log_nrmse.item() 
         loss_logs[dset_type] += log_nrmse.item()
-        logs['train_rmse'] += residuals.pow(2).mean(spatial_dims).sqrt().mean()
+        logs['train_rmse'] += raw_rmse_loss.item()
             
     return loss, log_nrmse
 
-def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type):
+def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type, seq_group=None, returnBatchloss=False):
     """
     compute loss and update logging dicts.
     output: Model prediction [B,C,D,H,W] for tensor inputs or [nnodes, C_tar] for graph
@@ -191,21 +216,43 @@ def update_loss_logs_inplace_eval(output, tar, graphdata, logs, loss_dset_logs, 
     if output.ndim == 2:
         #[nnodes, C_tar] 
         # Differentiate between log and accumulation losses
-        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch)/global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        raw_loss = global_mean_pool(residuals.pow(2), graphdata.batch) #B,C
+        mean_loc = global_mean_pool(1e-7 + tar.pow(2), graphdata.batch) #B,C
+        #assert seq_group is None, "TODO: seq_group should not be provided for graph data"
+        if seq_group is not None:
+            # Reduce across sequence parallel group for one sample
+            raw_loss=autograd_all_reduce(raw_loss, op=dist.ReduceOp.SUM, group=seq_group)
+            #target requires no gradient, so we can use dist.all_reduce for mean_loc
+            dist.all_reduce(mean_loc, op=dist.ReduceOp.SUM, group=seq_group)
+            world_size = dist.get_world_size(group=seq_group)
+            raw_loss = raw_loss / world_size
+            mean_loc = mean_loc / world_size
+        raw_rmse_loss = raw_loss.sqrt().mean()
+        raw_loss = raw_loss / mean_loc
         raw_loss = raw_loss.sqrt().mean()
-        raw_rmse_loss = residuals.pow(2).mean(dim=0).sqrt().mean()
     else:
         ###full resolution###
         spatial_dims = tuple(range(output.ndim))[2:]
         # Differentiate between log and accumulation losses
-        raw_loss = residuals.pow(2).mean(spatial_dims)/(1e-7+ tar.pow(2).mean(spatial_dims))
+        raw_loss = residuals.pow(2).mean(spatial_dims)
+        mean_loc = (1e-7 + tar.pow(2).mean(spatial_dims))
+        if seq_group is not None:
+            # Reduce across sequence parallel group for one sample
+            raw_loss = autograd_all_reduce(raw_loss, op=dist.ReduceOp.SUM, group=seq_group)
+            dist.all_reduce(mean_loc, op=dist.ReduceOp.SUM, group=seq_group)
+            world_size = dist.get_world_size(group=seq_group)
+            raw_loss = raw_loss / world_size
+            mean_loc = mean_loc / world_size
+        raw_rmse_loss = raw_loss.sqrt().mean()
+        raw_loss = raw_loss / mean_loc
         raw_loss = raw_loss.sqrt().mean()
-        raw_rmse_loss = residuals.pow(2).mean(spatial_dims).sqrt().mean()
     raw_l1_loss = F.l1_loss(output, tar)
-    logs['valid_nrmse'] += raw_loss
-    logs['valid_l1']    += raw_l1_loss
-    logs['valid_rmse']  += raw_rmse_loss
-    loss_dset_logs[dset_type]      += raw_loss
-    loss_l1_dset_logs[dset_type]   += raw_l1_loss
-    loss_rmse_dset_logs[dset_type] += raw_rmse_loss
+    logs['valid_nrmse'] += raw_loss.item()
+    logs['valid_l1']    += raw_l1_loss.item()
+    logs['valid_rmse']  += raw_rmse_loss.item()
+    loss_dset_logs[dset_type]      += raw_loss.item()
+    loss_l1_dset_logs[dset_type]   += raw_l1_loss.item()
+    loss_rmse_dset_logs[dset_type] += raw_rmse_loss.item()
+    if returnBatchloss:
+        logs["batch_nrmse"] = raw_loss
     return

@@ -272,6 +272,8 @@ class TurbT(BaseModel):
             leadtime = self.inconMLP[imod](cond_input) if leadtime is None else leadtime+self.inconMLP[imod](cond_input)
         ########Encode and get patch sequences [B, C_emb, T*ntoken_len_tot]########
         x, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+        if isgraph:
+            x, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group = x #all updated to aggregated graph info
         x = rearrange(x, 't b c ntoken_tot -> b c (t ntoken_tot)')
         ################################################################################
         if self.posbias[imod] is not None and tposarea_padding is not None:
@@ -313,7 +315,7 @@ class TurbT(BaseModel):
             #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
             #output: [N_total, T, C] (only real nodes)
             x= densenodes_to_graphnodes(x, mask_padding) #[nnodes, T, C]
-            x = (x, batch, edge_index, ghost_info, sequence_parallel_group)
+            x = (x, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group)
             D, H, W = -1, -1, -1 #place holder
         ######## Decode ########
         x = self.get_spatiotemporalfromsequence(x, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)

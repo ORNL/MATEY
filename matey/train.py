@@ -200,7 +200,7 @@ class Trainer:
                                 cpu_offload=CPUOffload(offload_params=False))
             elif self.params.use_ddp:
                 self.model = DDP(self.model, device_ids=[self.local_rank],
-                                output_device=[self.local_rank], find_unused_parameters=True)
+                                output_device=self.local_rank, find_unused_parameters=True)
             else:
                 raise ValueError("checkp distributed option, only support ddp and fsdp")
 
@@ -581,7 +581,7 @@ class Trainer:
                 else: 
                     inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                     field_labels_out = field_labels
-                if supportdata:
+                if supportdata and hasattr(data, "cond_input"):
                     cond_input = data["cond_input"].to(self.device)
                 else:   
                     cond_input = None
@@ -614,8 +614,8 @@ class Trainer:
                     inp = rearrange(inp.to(self.device), 'b t c d h w -> t b c d h w')
                     isgraph = False
                     imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod, filtersize=getattr(self.params, "hierarchical", {}).get("filtersize",2)) if imod>0 else 0
-                #if self.global_rank == 0:
-                #    print(f"input shape {inp.shape}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
+                if self.global_rank == 0:
+                    print(f"Rank {self.global_rank} input shape {inp.shape if not isgraph else (inp.case, inp)}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}", flush=True)
                 seq_group = self.current_group if dset_type in self.train_dataset.DP_dsets else None
                 opts = ForwardOptionsBase(
                 imod=imod, 
@@ -634,8 +634,9 @@ class Trainer:
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if not isgraph:
                         tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
+                
                 #compute loss and update (in-place) logging dicts.
-                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params)
+                loss, log_nrmse = compute_loss_and_logs(output, tar, graphdata if isgraph else None, logs, loss_logs, dset_type, self.params, seq_group=seq_group)
                 bad = torch.isnan(loss).any() or torch.isinf(loss)
                 torch.distributed.all_reduce(bad, op=torch.distributed.ReduceOp.SUM)
                 if bad.item() > 0:
@@ -678,7 +679,7 @@ class Trainer:
                         optimizer_step = self.timer.get_time() - backward_end
                 tr_time += self.timer.get_time() - model_start
                 if self.log_to_screen and batch_idx % self.params.log_interval == 0 and self.global_rank == 0:
-                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()}")
+                    print(f"Epoch {self.epoch} Batch {batch_idx} Train Loss {log_nrmse.item()} {dset_type}")
                 if self.log_to_screen:
                     print('Total Times. Batch: {}, Rank: {}, Data Shape: {}, Data time: {}, Forward: {}, Backward: {}, Optimizer: {}, lr:{}, leadtime.max: {}'.format(
                         batch_idx, self.global_rank, inp.shape if not isgraph else graphdata, dtime, forward_time, backward_time, optimizer_step, self.optimizer.param_groups[0]['lr'], leadtime.max()))
@@ -755,7 +756,7 @@ class Trainer:
                 inp, dset_index, field_labels, bcs, tar, leadtime = map(lambda x: x.to(self.device), [data[varname] for varname in ["input", "dset_idx", "field_labels", "bcs", "label", "leadtime"]])
                 field_labels_out = field_labels
             supportdata = True if hasattr(self.params, 'supportdata') else False
-            if supportdata:
+            if supportdata and hasattr(data, "cond_input"):
                 cond_input = data["cond_input"].to(self.device)
             else:
                 cond_input = None
@@ -791,6 +792,8 @@ class Trainer:
                         isgraph = False
                         imod_bottom = determine_turt_levels(self.model.module.tokenizer_heads_params[tkhead_name][-1], inp.shape[-3:], imod, filtersize=getattr(self.params, "hierarchical", {}).get("filtersize",2)) if imod>0 else 0
                     seq_group = self.current_group if dset_type in self.valid_dataset.DP_dsets else None
+                    if self.global_rank == 0:
+                        print(f"Val Rank {self.global_rank} input shape {inp.shape if not isgraph else inp}, dset_type {dset_type}, nlevels-1 {imod}, imod_bottom {imod_bottom}, {self.global_rank}, {blockdict}, {leadtime.max()}", flush=True)
                     opts = ForwardOptionsBase(
                     imod=imod, 
                     imod_bottom=imod_bottom,
@@ -807,7 +810,7 @@ class Trainer:
                     output, rollout_steps = self.model_forward(inp, field_labels, bcs, opts)
                     if not isgraph:
                         tar = tar[:, -1, :] #B,T(1 or leadtime),C,D,H,W -> B,C,D,H,W
-                    update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type)
+                    update_loss_logs_inplace_eval(output, tar, graphdata if isgraph else None, logs, loss_dset_logs, loss_l1_dset_logs, loss_rmse_dset_logs, dset_type, seq_group=seq_group)
                     if not isgraph and getattr(self.params, "log_ssim", False):
                             avg_ssim = get_ssim(output, tar, blockdict, self.global_rank, self.current_group, self.group_rank, self.group_size, self.device, self.valid_dataset, dset_index)
                             logs['valid_ssim'] += avg_ssim

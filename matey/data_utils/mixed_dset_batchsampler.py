@@ -6,16 +6,18 @@ from typing import  Iterator
 import torch
 from torch.utils.data import Sampler, BatchSampler, Dataset
 import functools, operator, math
+import json
 
 class MultisetBatchSampler(BatchSampler):
     r"""Batch Sampler that samples from multiple datasets with samples inside each mini-batch from a specific dataset.
     """
     def __init__(self, dataset: Dataset, base_sampler:Sampler, batch_size: int, shuffle: bool = True,
                  seed: int = 0, drop_last: bool = True, max_samples=10, ordered_sampling=True, nbatchs_loc=5,
-                 distributed=True):
+                 distributed=True, enforce_batchsize=False, global_rank=0):
         self.batch_size_base = batch_size
         self.sub_dsets = dataset.sub_dsets
         self.ordered_sampling=ordered_sampling
+        self.enforce_batchsize=enforce_batchsize
         self.mixed_dset_opt=dataset.mixed_dset_opt
         if self.mixed_dset_opt and not self.ordered_sampling:
             raise ValueError("mixed_dset_opt is only supported for now in ordered_sampling; will revisit as needed for other cases")        
@@ -46,7 +48,7 @@ class MultisetBatchSampler(BatchSampler):
                     if "graph" in subset.type:
                         batch_size_subset = 1 #always set local batch size to be 1 when split graph
                     else:
-                        batch_size_subset = self._determine_batchsize_(subset)
+                        batch_size_subset = self._determine_batchsize_(subset) if not self.enforce_batchsize else self.batch_size_base
                 else:
                     batch_size_subset = self.batch_size_base
                 sampler_rank = dataset.dsets_spconfig[iset]["sampler_rank"]
@@ -56,6 +58,14 @@ class MultisetBatchSampler(BatchSampler):
         else:
             self.sub_samplers = [base_sampler(subset) for subset in self.sub_dsets]
             self.batch_size = [batch_size for _ in self.sub_dsets]
+            dset_rank = 0
+        if global_rank==0:
+            print("=======Datasets summary (type, len(dataset), local bs, len(basesampler)), var-name, var-indices=======", flush=True)
+            print("mixed dset variables and indices: ", flush=True)
+            print(json.dumps(dataset.subset_dict, indent=4, sort_keys=True), flush=True)
+            for idset, subset in enumerate(self.sub_dsets):
+                print("Data info", idset, subset.type, len(subset), self.batch_size[idset], dataset.dsets_spconfig[iset]["sampler_num_replicas"], len(self.sub_samplers[idset]), len(self.sub_samplers[idset])//self.batch_size[idset], subset.field_names, dataset.subset_dict[subset.get_name()], flush=True)
+
         self.dataset = dataset
         self.epoch = 0
         self.seed = seed
@@ -63,7 +73,7 @@ class MultisetBatchSampler(BatchSampler):
         #dset_seed when constant (0) across groups, all num_sp_groups groups read from the same datset
         #when different, allow each group read from different dataset, but all ranks from the same group must read the same data sample
         self.dset_seed = self.setgroup2rankgroup if self.mixed_dset_opt else 0
-        self.batches_perset = [len(sampler)//batchsize for sampler, batchsize in zip(self.sub_samplers, self.batch_size)]
+        self.batches_perset = [max(len(sampler), batchsize)//batchsize for sampler, batchsize in zip(self.sub_samplers, self.batch_size)]
         #acutal total minibatches
         self.len_batchsamplers = sum(self.batches_perset)
         self.iset_choices = torch.tensor([iset for iset, n in enumerate(self.batches_perset) for _ in range(n)], dtype=torch.long)

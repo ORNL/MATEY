@@ -1,4 +1,5 @@
-log*
+fusion_matey_log_*
+log_*
 MPP_*
 *.out
 *.png

@@ -90,16 +90,11 @@ class BasenetCDFDirectoryDataset(Dataset):
     def _get_specific_bcs(self, f):
         raise NotImplementedError # Per dset
 
-    def _reconstruct_sample(self, file, leadtime, input_control, time_idx, n_steps):
+    def _reconstruct_sample(self, file, leadtime, input_control, time_idx, n_steps, case=None):
         raise NotImplementedError # Per dset - should be (x=(-history:local_idx+dt) so that get_item can split into x, y
 
     def _get_directory_stats(self, path):
-        self.files_paths = glob.glob(path + "/*.nc")
-        subfolders = [os.path.join(path, folder) for folder in os.listdir(path) if os.path.isdir(os.path.join(path, folder))]
-        if len(subfolders)>0:
-             for subfolder in subfolders:
-                 files_subset = glob.glob(subfolder + "/*.nc")
-                 self.files_paths += files_subset
+        self.files_paths = glob.glob(os.path.join(path, "**", "*.nc"), recursive=True)
         self.files_paths.sort()
         self.n_files = len(self.files_paths)
         #print(f"necdf, {self.files_paths}, {self.n_files}", flush=True)
@@ -192,9 +187,11 @@ class BasenetCDFDirectoryDataset(Dataset):
                 leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
+        
+        case = next(("SOLPS-"+name for name in ("KSTAR", "D3D", "SPARC") if name in self.files_paths[file_idx]), None)
 
         try:
-            trajectory, leadtime, input_control = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps)
+            trajectory, leadtime, input_control = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps, case=case)
             bcs = self._get_specific_bcs(self.datasets[file_idx])
         except:
             raise RuntimeError(f'Failed to reconstruct sample for file {self.files_paths[file_idx]} time {time_idx}')
@@ -306,9 +303,6 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         split_level = None #not used, since one trajectory per file
         return time_index, sample_index, field_names, type, split_level, cubsizes
     field_names = _specifics()[2] #class attributes
-    #FIXME: On NERSC and PSC we get an error, so use the __func__() way
-    #field_names = _specifics.__func__()[2] #class attributes
-
 
     def get_min_max(self):
         #print(casename, rho.min(), rho.max(), temp.min(), temp.max(), in_actu.min(), in_actu.max(), timestep.min(), timestep.max())
@@ -334,7 +328,7 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         #not used
         return [0, 0]
 
-    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps):
+    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps, case=None):
         """
         netcdf solps-kstar_example-1 {
         dimensions:
@@ -345,8 +339,8 @@ class  SOLPSDataset(BasenetCDFDirectoryDataset):
         variables:
             double density(nt, ny, nx) ;
             double temperature(nt, ny, nx) ;
-            double input\ actuator(nt) ;
-            double radiated\ power(nt, ny, nx) ;
+            double input actuator(nt) ;
+            double radiated power(nt, ny, nx) ;
             double timestep(nt) ;
         }
         """
@@ -515,4 +509,130 @@ class  ChannelLESDataset(BasenetCDFDirectoryDataset):
             v = np.ma.getdata(ds.variables["vvel"][:, :, :])
             w = np.ma.getdata(ds.variables["wvel"][:, :, :])
         return np.stack([u, v, w], axis=-1)
+        
+class SOLPSBaseDataset(BasenetCDFDirectoryDataset):
+    """
+    # D3D and SPARC datasets 
+    double ne2d(nt, ny, nx) ; electron density
+    double te2d(nt, ny, nx) ; electron temperature
+    double ti2d(nt, ny, nx) ; ion temperature
+    double na2d(nt, ns, ny, nx) ; ion density for each species
+    double tflux(nt, nstrat) ; input actuator
+    """
+    @staticmethod
+    def _specifics():
+        time_index = 0
+        sample_index = None
+        #field_names = ['ne2d', 'te2d', 'ti2d', 'na2d']
+        #FIXME: how to convert to radiated power?
+        field_names = ['ne2d', 'te2d', 'ti2d'] ##, 'na2d']
+        type = "SOLPS2DwION" 
+        cubsizes = [38, 98]
+        split_level = None
+        return time_index, sample_index, field_names, type, split_level, cubsizes
+    field_names = _specifics()[2] #class attributes
+    scale2ev = 6.241509074460763e+18
+    def get_min_max(self):
+        # Field names, size are shared for both, min/max, species and actuator indices are different
+        # KSTAR based on /KSTAR/19077_D/puff5e20_td_linear_ramp
+        # D3D based on d3d/174310_D/puff2.5e21_ss_noLat_dribble_308_2d_output
+        # SPARC based on sparc/v2y_D+Ne/run_05_0.3_td_to_0_to_1e20
+        self.neminmax = {
+            "SOLPS-KSTAR": np.array([756380529461540.2, 2.1904665841323272e+20]),
+            "SOLPS-D3D":np.array([3.993869294415e+16, 1.539813668964e+21]),
+            "SOLPS-SPARC":np.array([4.421135462789e+19, 1.642114173411e+22]),
+        }
+        self.teminmax = {
+            "SOLPS-KSTAR": np.array([1.602176634e-24, 3.535503111481683e-17])*self.scale2ev,
+            "SOLPS-D3D":np.array([4.854264896419e-20, 1.245952398209e-16])*self.scale2ev,
+            "SOLPS-SPARC":np.array([1.127643474910e-20, 1.311360028280e-16])*self.scale2ev,
+        }
+        self.naminmax = {
+            "SOLPS-KSTAR":np.array([5e+20, 2.747249999999793e+21]),
+            "SOLPS-D3D":np.array([3.993869294415e+16, 1.539813668964e+21]),
+            "SOLPS-SPARC":np.array([1.000000000000e+06, 3.339225319590e+11]),
+        }
+        self.timinmax = {
+            "SOLPS-KSTAR":np.array([2.6519058136717416e-20, 3.8195456228000446e-17])*self.scale2ev,
+            "SOLPS-D3D":np.array([1.102931835423e-19, 1.363727869099e-16])*self.scale2ev,
+            "SOLPS-SPARC":np.array([2.631105739593e-20, 1.388134148250e-16])*self.scale2ev,
+        }
+        self.in_actuminmax = {
+            "SOLPS-KSTAR":np.array([5e+20, 2.747249999999793e+21]),
+            "SOLPS-D3D":np.array([0.0, 4.785693e+21]),
+            "SOLPS-SPARC":np.array([0.0, 1.0e+20])
+        }
+        self.species_index = {
+            "SOLPS-KSTAR":1,
+            "SOLPS-D3D": 1,
+            "SOLPS-SPARC": 1,
+        }
+        self.actuator_index = {
+            "SOLPS-KSTAR":10,
+            "SOLPS-D3D": 5,
+            "SOLPS-SPARC": 11,
+        }
+
+    def _get_norm_data(self, data, case):
+        #note: the order needs to be consistent with self.field_names
+        data[:,:,:,0] = (data[:,:,:,0] - self.neminmax[case][0])/(self.neminmax[case][1] - self.neminmax[case][0])
+        data[:,:,:,1] = (data[:,:,:,1] - self.teminmax[case][0])/(self.teminmax[case][1] - self.teminmax[case][0])
+        data[:,:,:,2] = (data[:,:,:,2] - self.timinmax[case][0])/(self.timinmax[case][1] - self.timinmax[case][0])
+        #data[:,:,:,3] = (data[:,:,:,3] - self.naminmax[case][0])/(self.naminmax[case][1] - self.naminmax[case][0])
+        return data
+
+    def _get_specific_stats(self, dat):
+        steps = dat.dimensions["time"].size
+        return 1, steps
+
+    def _get_specific_bcs(self, dat):
+        return [0, 0]
+
+    def _reconstruct_sample(self, dat, leadtime, time_idx, n_steps, case=None):
+        """
+        variables:
+            double ne2d(nt, ny, nx) ; electron density
+            double te2d(nt, ny, nx) ; electron temperature
+            double ti2d(nt, ny, nx) ; ion temperature
+            double na2d(nt, ns, ny, nx) ; ion density for each species
+            double tflux(nt, nstrat) ; input actuator
+        }
+        """
+        self.get_min_max()
+        var_xlist=[]
+        for varname in self.field_names:
+            if varname=="na2d":
+                var_xlist.append(dat.variables[varname][time_idx-n_steps:time_idx, self.species_index[case],:,:]) # d3d and sparc have different ion species, should figure out which ones are relevant for each
+            else:
+                if varname in ['te2d', 'ti2d']: 
+                    var_xlist.append(dat.variables[varname][time_idx-n_steps:time_idx,:,:]*self.scale2ev)
+                else:
+                    var_xlist.append(dat.variables[varname][time_idx-n_steps:time_idx,:,:])
+        #na2d = 
+        if self.input_control_act:
+            in_actu = dat.variables["tflux"][time_idx-n_steps:time_idx+leadtime, self.actuator_index[case]]
+            in_actu = (in_actu - self.in_actuminmax[case][0]) / (self.in_actuminmax[case][1] - self.in_actuminmax[case][0])
+
+        comb_x = np.stack(var_xlist, -1).astype(np.float32)
+
+        var_ylist=[]
+        for varname in self.field_names:
+            if varname=="na2d":
+                var_ylist.append(dat.variables[varname][time_idx:time_idx+leadtime, self.species_index[case],:,:])
+            else:
+                if varname in ['te2d', 'ti2d']:
+                    var_ylist.append(dat.variables[varname][time_idx:time_idx+leadtime,:,:]*self.scale2ev)
+                else:
+                    var_ylist.append(dat.variables[varname][time_idx:time_idx+leadtime,:,:])
+      
+        comb_y = np.stack(var_ylist, -1).astype(np.float32)
+
+        comb = np.concatenate((comb_x, comb_y), axis=0)
+        comb_norm = self._get_norm_data(comb, case)
+
+        if self.input_control_act:
+            return comb_norm.transpose(0,3,1,2), leadtime, in_actu.astype(np.float32)
+        else:
+            return comb_norm.transpose(0,3,1,2), leadtime, None
+            
 

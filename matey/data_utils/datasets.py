@@ -18,12 +18,14 @@ from .hdf5_3Ddatasets import *
 from .blastnet_3Ddatasets import *
 from .thewell_datasets import *
 from .binary_3DSSTdatasets import *
+from .gkeyll_datasets import *
 from .graph_datasets import *
 from .flow3d_datasets import *
 import os
 from torch_geometric.data import Data as GraphData, Batch
 import warnings
 from collections import OrderedDict
+import hashlib
 
 broken_paths = []
 # IF YOU ADD A NEW DSET MAKE SURE TO UPDATE THIS MAPPING SO MIXED DSET KNOWS HOW TO USE IT
@@ -75,6 +77,11 @@ DSET_NAME_TO_OBJECT = {
     "flow3d": Flow3D_Object,
     ##deepmindgraphnet
     "meshgraphnetairfoil": MeshGraphNetsAirfoilDataset,
+    ##GKeyll
+    "gkeylltcv":GkeyllTrajDataset,
+    ##XGC
+    "graphxgc": GraphXGCDataset,
+    'SOLPS2DwION': SOLPSBaseDataset,
     ##BubbleML
     'poolboiling': PoolBoilingDataset,
     ##ChannelLES - portUrb
@@ -143,15 +150,18 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                             global_rank=global_rank, group_size=group_size, num_sp_groups=num_sp_groups, 
                             DP_dsets=getattr(params, "DP_dsets", ["isotropic1024fine", "taylorgreen"]),
                             mixed_dset_opt=getattr(params, "mixed_dset_opt", False),
-                            canonical_fields=canonical_fields, canonical_cond_fields=canonical_cond_fields)
+                            canonical_fields=canonical_fields, canonical_cond_fields=canonical_cond_fields,
+                            sample_fraction=getattr(params, "sample_fraction", 1.0))
     seed = torch.random.seed() if 'train'==split else 0
     if distributed:
         base_sampler = DistributedSampler
     else:
         base_sampler = RandomSampler
-    sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size,
+    sampler = MultisetBatchSampler(dataset, base_sampler, params.batch_size, global_rank=global_rank,
                                distributed=distributed, max_samples=params.epoch_size, 
-                               ordered_sampling=getattr(params, "ordered_sampling", True))
+                               ordered_sampling=getattr(params, "ordered_sampling", True),
+                               nbatchs_loc=getattr(params, "nbatchs_loc", 5) if split=='train' else 1,
+                               )
     # sampler = DistributedSampler(dataset) if distributed else None
     if multiepoch_loader:
         if split != 'train':
@@ -164,7 +174,7 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
         loader = DataLoader
     dataloader = loader(dataset,
                         num_workers=params.num_data_workers,
-                        #prefetch_factor=2,
+                        prefetch_factor=2,
                         batch_sampler=sampler,
                         pin_memory=torch.cuda.is_available(), 
                         persistent_workers=True, #ask dataloaders not destroyed after each epoch
@@ -172,13 +182,45 @@ def get_data_loader(params, paths, distributed, split='train', global_rank=0, nu
                         )
     return dataloader, dataset, sampler
 
+def dataset_seed(base_seed, dataset_name):
+    digest = hashlib.sha256(dataset_name.encode()).digest()
+    offset = int.from_bytes(digest[:4], byteorder="little")
+    return (base_seed + offset) % (2**63 - 1)
+
+class TruncatedDataset(Dataset):
+    """A deterministic index view of another dataset."""
+    def __init__(self, dataset, keep_fraction = 1.0, seed = 2026):
+        if not 0.0 < keep_fraction <= 1.0:
+            raise ValueError("keep_fraction must be in (0, 1]")
+
+        self.dataset = dataset
+        num_keep = max(1,int(len(dataset) * keep_fraction))
+        generator = torch.Generator().manual_seed(seed)
+        self.indices = torch.randperm(len(dataset), generator=generator)[:num_keep].tolist()
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, index):
+        if hasattr(index, "__len__") and len(index) == 2:
+            local_index, leadtime = index
+            original_index = self.indices[int(local_index)]
+            return self.dataset[[original_index, leadtime]]
+
+        original_index = self.indices[int(index)]
+        return self.dataset[original_index]
+
+    def __getattr__(self, name):
+        # Forward type, cubsizes, field_names, get_name, n_steps, etc.
+        return getattr(self.dataset, name)
 
 class MixedDataset(Dataset):
     def __init__(self, path_list=[], n_steps=1, dt=1, leadtime_config={}, supportdata=None, train_val_test=(.8, .1, .1),
                   split='train', tie_fields=True, use_all_fields=True, extended_names=False,
                   enforce_max_steps=False, train_offset=0, tokenizer_heads=None, SR_ratio=None,
                   global_rank=0, group_size=1, num_sp_groups=None, DP_dsets=["isotropic1024fine", "taylorgreen"],
-                  canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS, mixed_dset_opt=False):
+                  canonical_fields=CANONICAL_FIELDS, canonical_cond_fields=CANONICAL_COND_FIELDS, mixed_dset_opt=False,
+                  sample_fraction=1.0):
         super().__init__()
         # Global dicts used by Mixed DSET.
         self.train_offset = train_offset
@@ -202,7 +244,7 @@ class MixedDataset(Dataset):
         self.train_val_test = train_val_test
         self.use_all_fields = use_all_fields
 
-        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if ("SOLPS" not in subset)] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
+        self.DP_dsets= [subset for subset in DSET_NAME_TO_OBJECT.keys() if ("SOLPS" not in subset) and ("gkeylltcv" not in subset)] if DP_dsets=="ALL" else DP_dsets #datasets that use distributed reading and each rank get a local subplit
 
         if len(self.DP_dsets)==0 and group_size>1:
             warnings.warn(
@@ -237,7 +279,7 @@ class MixedDataset(Dataset):
                 "sampler_num_replicas": num_groups, 
                }
             subdset = DSET_NAME_TO_OBJECT[dset](path, include_string, n_steps=n_steps, dt=dt,
-                                                leadtime_config = leadtime_config, supportdata = supportdata, train_val_test=train_val_test, split=split,
+                                                leadtime_config = leadtime_config, supportdata = supportdata, train_val_test=train_val_test if dset not in ["SOLPS2D", "SOLPS2DwION"] else None, split=split,
                                                 tokenizer_heads=tokenizer_heads, tkhead_name=tkhead_name, SR_ratio=SR_ratio,
                                                 group_id=group_id, group_rank=data_rank, group_size=datagroupsize)
             # Check to make sure our dataset actually exists with these settings
@@ -245,6 +287,8 @@ class MixedDataset(Dataset):
                 len(subdset)
             except ValueError:
                 raise ValueError(f'Dataset {path} is empty. Check that n_steps < trajectory_length in file.')
+            if sample_fraction < 1.0:
+                subdset = TruncatedDataset(subdset, keep_fraction=sample_fraction, seed=dataset_seed(2026, subdset.get_name()))
             self.sub_dsets.append(subdset)
             self.offsets.append(self.offsets[-1]+len(self.sub_dsets[-1]))
         self.offsets[0] = -1
