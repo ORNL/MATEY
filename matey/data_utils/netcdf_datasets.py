@@ -188,7 +188,7 @@ class BasenetCDFDirectoryDataset(Dataset):
         else:
             leadtime = min(leadtime, self.file_lens[file_idx]-time_idx)
         
-        case = next(("SOLPS-"+name for name in ("KSTAR", "D3D", "SPARC") if name in self.files_paths[file_idx]), None)
+        case = next(("SOLPS-"+name for name in ("KSTAR", "D3D", "SPARC") if name in self.files_paths[file_idx].upper()), None)
 
         try:
             trajectory, leadtime, input_control = self._reconstruct_sample(self.datasets[file_idx], leadtime, time_idx, nsteps, case=case)

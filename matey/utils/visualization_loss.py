@@ -194,7 +194,7 @@ def main():
     print(args)
 
     if not args.case or len(args.case) < 1:
-        parser.error("Please provide at least two --case NAME PATTERN [PATTERN ...] entries")
+        parser.error("Please provide at least one --case NAME PATTERN [PATTERN ...] entries")
 
     all_epochs = {}
     all_trains = {}

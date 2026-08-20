@@ -43,6 +43,7 @@ DSET_NAME_TO_OBJECT = {
     'liquidMetalMHD': MHDDataset,
     ##SOLPS-ITER
     'SOLPS2D' :SOLPSDataset,
+    'SOLPS2DwION': SOLPSBaseDataset,
     ##JHU
     "isotropic1024fine": isotropic1024Dataset,
     'jhtdbchannelflow': JHTDB_ChannelDataset,
@@ -81,7 +82,6 @@ DSET_NAME_TO_OBJECT = {
     "gkeylltcv":GkeyllTrajDataset,
     ##XGC
     "graphxgc": GraphXGCDataset,
-    'SOLPS2DwION': SOLPSBaseDataset,
     ##BubbleML
     'poolboiling': PoolBoilingDataset,
     ##ChannelLES - portUrb

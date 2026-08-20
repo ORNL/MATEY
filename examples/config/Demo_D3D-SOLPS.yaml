@@ -65,13 +65,13 @@ basic_config: &basic_config
   extended_names: !!bool False # Whether to use extended names - not currently implemented
   embedding_offset: 0  # Use when adding extra finetuning fields
   train_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/fusion-solps/d3d/174310_D/puff2.5e21_ss_noLat_dribble_308_2d_output', 'SOLPS-D3D', '','tk-2D'],
-              ['/lustre/orion/lrn037/proj-shared/fusion-solps/sparc/v2y_D+Ne/run_05_0.3_td_to_0_to_1e20', 'SOLPS-SPARC', '','tk-2D'],
-              ['/lustre/orion/lrn037/proj-shared/fusion-solps/kstar/train','SOLPS2D','','tk-2D'],
+              ['/lustre/orion/lrn037/proj-shared/fusion-solps/D3D/174310_D/puff2.5e21_ss_noLat_dribble_308_2d_output', 'SOLPS2DwION', '','tk-2D'],
+              ['/lustre/orion/lrn037/proj-shared/fusion-solps/sparc/v2y_D+Ne/run_05_0.3_td_to_0_to_1e20', 'SOLPS2DwION', '','tk-2D'],
+              ['/lustre/orion/lrn037/proj-shared/fusion-solps/kstar/train','SOLPS2DwION','','tk-2D'],
               ]
   valid_data_paths: [
-              ['/lustre/orion/lrn037/proj-shared/fusion-solps/d3d/174310_D/puff2.5e21_ss_Sequence_sin4_308_2d_output', 'SOLPS-D3D', '','tk-2D'],
-              # ['/lustre/orion/lrn037/proj-shared/fusion-solps/kstar/valid','SOLPS2D','','tk-2D'],
+              ['/lustre/orion/lrn037/proj-shared/fusion-solps/D3D/174310_D/puff2.5e21_ss_Sequence_sin4_308_2d_output', 'SOLPS2DwION', '','tk-2D'],
+              # ['/lustre/orion/lrn037/proj-shared/fusion-solps/kstar/valid','SOLPS2DwION','','tk-2D'],
               ]
   append_datasets: [] # List of datasets to append to the input/output projections for finetuning
 

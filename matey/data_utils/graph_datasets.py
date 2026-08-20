@@ -30,6 +30,8 @@ from mpi4py import MPI
 assert not MPI.Is_initialized()
 
 here = os.path.dirname(os.path.abspath(__file__))
+#NOTE: To load this dataset, we'll need XGC_reader, which should be downloaded from 
+# "https://github.com/seunghoeku/XGC_reader" to "./third_party/XGC_reader/" folder.
 sys.path.insert(0, os.path.join(here, "..","..", "third_party", "XGC_reader"))
 from xgc_reader import base as xgc_base
 from tqdm import tqdm

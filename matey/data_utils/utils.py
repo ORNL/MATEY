@@ -876,7 +876,7 @@ def HaloExchange_sync(node_feat, info, comm):
     G      = len(info.ghost_rank)
     K      = node_feat.shape[0] - G
 
-    print(f"Checking node size: total nodes {node_feat.shape[0]}; own nodes {K}; ghost node {G}", flush=True)
+    #print(f"Checking node size: total nodes {node_feat.shape[0]}; own nodes {K}; ghost node {G}", flush=True)
 
     # ── send/receive (unchanged) ───────────────────────────────────────────
     send_chunks = [
