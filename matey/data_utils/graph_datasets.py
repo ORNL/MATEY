@@ -28,12 +28,6 @@ mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False 
 from mpi4py import MPI 
 assert not MPI.Is_initialized()
-
-here = os.path.dirname(os.path.abspath(__file__))
-#NOTE: To load this dataset, we'll need XGC_reader, which should be downloaded from 
-# "https://github.com/seunghoeku/XGC_reader" to "./third_party/XGC_reader/" folder.
-sys.path.insert(0, os.path.join(here, "..","..", "third_party", "XGC_reader"))
-from xgc_reader import base as xgc_base
 from tqdm import tqdm
 import adios2 as ad2
 import re
@@ -659,6 +653,26 @@ class MeshGraphNetsAirfoilDataset(BaseCFDGraphDataset):
 
 class GraphXGCDataset(BaseCFDGraphDataset):
     @staticmethod
+    def _get_xgc_base():
+        """
+        Lazily import XGC_reader.
+        """
+        xgc_reader_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "third_party", "XGC_reader"))
+
+        if xgc_reader_path not in sys.path:
+            sys.path.insert(0, xgc_reader_path)
+
+        try:
+            from xgc_reader import base as xgc_base
+        except ImportError as e:
+            raise ImportError(
+                "GraphXGCDataset requires XGC_reader to process raw XGC data. "
+                "Download https://github.com/seunghoeku/XGC_reader and place it "
+                "under ./third_party/XGC_reader/."
+            ) from e
+
+        return xgc_base
+    @staticmethod
     def _specifics():
         field_names_out = ['e_den', 'e_T_perp', 'e_T_para', 'e_u_para', 'i_T_perp','i_T_para', 'i_u_para', 'dpot']
         #Electron density, Electron perpendicular temperature, Electron parallel temperature, Electron parallel flow velocity
@@ -1068,6 +1082,8 @@ class GraphXGCDataset(BaseCFDGraphDataset):
             If group_size > 1, partition each full graph into:
                 partitioned_<group_size>/<case>/grouprank_<r>/graphdata_{timestep:05d}.pt
         """
+        #import xgc reader
+        xgc_base = GraphXGCDataset._get_xgc_base()
         if self.use_dist:
             rank = dist.get_rank()
             world_size = dist.get_world_size()
