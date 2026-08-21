@@ -17,6 +17,16 @@ MATEY is a scalable open-source framework for developing transformer-based spati
     source ~/virtual/matey/bin/activate
     pip install -r requirements.txt
     ```
+- Option 3 - Poetry setup (uses `pyproject.toml` + `poetry.lock`)
+    ```bash
+    # Install Poetry (one-time)
+    curl -sSL https://install.python-poetry.org | python3 -
+
+    # From the MATEY repo root
+    poetry env use python3.12
+    poetry install
+    ```
+  
       
 ## Running
  
@@ -82,7 +92,6 @@ This codebase was originally seeded (Jan 2024) from [PolymathicAI/multiple _phys
 - Xiao Jing (Georgia Tech; 2025 Summer Intern)
 - Sheikh Md Shakeel Hassan Nln (University of California, Irvine; 2024 Summer Intern)
 - Joseph Quinn (Vanderbilt University; 2024 Summer Intern)
-
 
 
 

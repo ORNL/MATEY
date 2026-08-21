@@ -177,6 +177,10 @@ class ViT_all2all(BaseModel):
             x_local = rearrange(x_local, 'nrfb t c dhw_sts -> nrfb c (t dhw_sts)')
         else:
             x_padding, patch_ids, patch_ids_ref, mask_padding, _, _, tposarea_padding, _ = self.get_patchsequence(x, state_labels, tkhead_name, refineind=refineind, blockdict=blockdict, ilevel=imod, isgraph=isgraph)
+        
+        if isgraph:
+            x_padding, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group = x_padding #all updated to aggregated graph info
+
         x_padding = rearrange(x_padding, 't b c ntoken_tot -> b c (t ntoken_tot)')
 
         # Repeat the steps for conditioning if present
@@ -215,7 +219,7 @@ class ViT_all2all(BaseModel):
                 #input:[B, Max_nodes, T, C] and mask: [B, Max_nodes]
                 #output: [N_total, T, C] (only real nodes)
                 x= densenodes_to_graphnodes(x_padding, mask_padding) #[nnodes, T, C]
-                x_padding = (x, batch, edge_index, ghost_info, sequence_parallel_group)
+                x_padding = (x, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group)
                 D, H, W = -1, -1, -1 #place holder
             x = self.get_spatiotemporalfromsequence(x_padding, patch_ids, patch_ids_ref, [D, H, W], tkhead_name, ilevel=imod, isgraph=isgraph)
             if isgraph:

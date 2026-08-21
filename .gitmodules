@@ -1,0 +1,6 @@
+[submodule "matey/third_party/XGC_reader"]
+	path = matey/third_party/XGC_reader
+	url = https://github.com/seunghoeku/XGC_reader.git
+[submodule "third_party/XGC_reader"]
+	path = third_party/XGC_reader
+	url = https://github.com/seunghoeku/XGC_reader
