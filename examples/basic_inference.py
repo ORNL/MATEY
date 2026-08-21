@@ -67,7 +67,6 @@ if __name__ == '__main__':
       d3d_xgc=[[f'{pretraining_data_dir}/fusiond-seed-xgc1-data/demo_n565pe_PT_xgc1_d3d_adjust_flow2_for_C/', 'graphxgc', '', "tk-graph"]],
       leadtime = args.leadtime
       )
-    #inferencer.inference_step_newxgcmesh(d3d_xgc_dir=args.newxgc_dir)
 
     if params.log_to_screen:
         print('DONE ---- rank %d'%global_rank)
