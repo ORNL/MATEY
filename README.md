@@ -70,9 +70,9 @@ MATEY is a scalable open-source framework for developing transformer-based spati
   ```  
 
 ## Publications & Presentations
-- Hunor Csala, Sebastian De Pascuale, Paul Laiu, Jeremy Lore, Jae-Sun Park, Pei Zhang. Autoregressive long-horizon prediction of plasma edge dynamics. [arXiv:2512.23884](https://arxiv.org/abs/2512.23884)
-- Junqi Yin, Mijanur Palash, M. Paul Laiu, Muralikrishnan Gopalakrishnan Meena, John Gounley, Stephen M. de Bruyn Kops, Feiyi Wang, Ramanan Sankaran, Pei Zhang. Pixel-Resolved Long-Context Learning for Turbulence at Exascale: Resolving Small-scale Eddies Toward the Viscous Limit. [arXiv:2507.16697](https://arxiv.org/abs/2507.16697)
-- Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley. MATEY: multiscale adaptive foundation models for spatiotemporal physical systems. [arXiv:2412.20601](https://arxiv.org/abs/2412.20601)
+- Csala, Hunor, Sebastian De Pascuale, Paul Laiu, Jeremy Lore, Jae-Sun Park, and Pei Zhang. "Autoregressive long-horizon prediction of plasma edge dynamics." Nuclear Fusion 66, no. 6 (2026): 066013. [10.1088/1741-4326/ae666c](https://iopscience.iop.org/article/10.1088/1741-4326/ae666c/meta)
+- Yin, Junqi, Mijanur Palash, M. Paul Laiu, Muralikrishnan Gopalakrishnan Meena, John Gounley, Stephen M. de Bruyn Kops, Feiyi Wang, Ramanan Sankaran, and Pei Zhang. "Pixel-resolved long-context learning for turbulence at exascale: resolving small-scale eddies toward the viscous limit." In 2026 IEEE International Parallel and Distributed Processing Symposium (IPDPS), pp. 347-362. IEEE, 2026.[10.1109/IPDPS65963.2026.00039](https://ieeexplore.ieee.org/document/11575415)
+- Zhang, Pei, M. Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley. "MATEY: multiscale adaptive transformer models for spatiotemporal physical systems." Machine Learning: Science and Technology 7, no. 3 (2026): 035016.[10.1088/2632-2153/ae67d1](https://iopscience.iop.org/article/10.1088/2632-2153/ae67d1/meta)
 - Pei Zhang, Paul Laiu, Matthew Norman, Doug Stefanski, and John Gounley. MATEY: multiscale adaptive foundation models for spatiotemporal physical systems, NeurIPS 2024 Workshop on  Machine Learning and the Physical Sciences. 
 
 ## Contributors
@@ -80,14 +80,15 @@ This codebase was originally seeded (Jan 2024) from [PolymathicAI/multiple _phys
 
 ### Active Contributors
 - Hunor Csala, ORNL
-- Andrey Prokopenko, ORNL
 - Junqi Yin, ORNL
-- Murali Gopalakrishnan Meena, ORNL
 - John Gounley, ORNL
 - Paul Laiu, ORNL
 - Pei Zhang, ORNL
 
 ### Previous Contributors
+- Jay Yoo (UIUC, 2026 Summer Intern)
+- Murali Gopalakrishnan Meena, ORNL
+- Andrey Prokopenko, ORNL
 - Mijanur R Palash, ORNL
 - Xiao Jing (Georgia Tech; 2025 Summer Intern)
 - Sheikh Md Shakeel Hassan Nln (University of California, Irvine; 2024 Summer Intern)
