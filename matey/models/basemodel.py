@@ -564,14 +564,14 @@ class BaseModel(nn.Module):
         tokenizer = self.tokenizer_ensemble_heads[ilevel][tkhead_name]["embed" if not conditioning else "embed_cond"]
         x = self.get_structured_sequence(x_pre, -1, tokenizer, isgraph=isgraph)
         if isgraph:
-            #x: (node_features, batch, edge_index, ghost_info, sequence_parallel_group)
-            node_emb, batch, edge_index, ghost_info, sequence_parallel_group = x
+            #x: (node_features, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group)
+            node_emb, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group = x
             x, mask = graph_to_densenodes(node_emb, batch) #[B, Max_nodes, T, C_inp]
             x = rearrange(x, 'b nnodes_max t c -> t b c nnodes_max')
             mask_padding = mask #leverage mask_padding from adaptive tokenization implementation: True: meaningful patches; False: padding patches
             #t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)
             t_pos_area = None
-            return x, None, None, mask_padding, None, None, t_pos_area, None
+            return (x, batch, edge_index, unpool_info, ghost_info, sequence_parallel_group), None, None, mask_padding, None, None, t_pos_area, None
         else:
             x = rearrange(x, 't b c d h w -> t b c (d h w)')
             t_pos_area, _ = self.get_t_pos_area(x_pre, -1, tkhead_name, blockdict=blockdict, ilevel=ilevel)

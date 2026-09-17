@@ -13,15 +13,15 @@ basic_config: &basic_config
   pretrained: !!bool False # Whether to load a pretrained model
   # Training settings
   drop_path: 0.1
-  batch_size: 8
+  batch_size: 8 #1
   max_epochs: 20 #800
   scheduler_epochs: -1
-  epoch_size: 100 #100 #2000 # Artificial epoch size
+  epoch_size: 100 #2000 # Artificial epoch size
   rescale_gradients: !!bool False # Activate hook that scales block gradients to norm 1
   optimizer: 'AdamW' # a
-  scheduler: 'none' #'cosine' # Only cosine implemented
+  scheduler: 'cosine' # Only cosine implemented
   warmup_steps: 10 # Warmup when not using DAdapt
-  learning_rate: 1e-4 #1e-5 # -1 means use DAdapt
+  learning_rate: 1e-3 # -1 means use DAdapt
   weight_decay: 1e-3 
   n_states: 15 #12   # Number of state variables across the datasets - Can be larger than real number and things will just go unused
   state_names: ['Pressure', 'Vx', 'Vy', 'Density',  'Vx', 'Vy', 'Density', 'Pressure'] # Should be sorted
@@ -32,10 +32,10 @@ basic_config: &basic_config
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
   # Model settings
-  model_type:  'vit_all2all' # no need for time_type and space_type inputs
-  #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
-  #time_type: 'all2all_time' # 
-  #space_type: 'all2all' #
+  #model_type:  'vit_all2all' # no need for time_type and space_type inputs
+  model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
+  time_type: 'all2all_time' # 
+  space_type: 'all2all' #
   #model_type:  'avit' #currently only support space_type=="axial_attention" and time_type=="attention"
   #time_type: 'attention' # Conditional on block type
   #space_type: 'axial_attention' # Conditional on block type 
@@ -46,12 +46,12 @@ basic_config: &basic_config
   tokenizer_heads:
     - head_name: "tk-graph"
       patch_size: [[1, 1, 1]]
-  sp_groupsize: 4 #sequence_parallel_groupsize
-  ghost_sync: !!bool True # Whether to use ghost sync in the model
-  DP_dsets: "ALL"
   adaptive: !!bool False
   sts_model: !!bool False
   adap_samp: !!bool False
+  sp_groupsize: 4 #sequence_parallel_groupsize
+  ghost_sync: !!bool True # Whether to use ghost sync in the model
+  DP_dsets: "ALL"
   nrefines: 0 #number of coarse tokens picked to be refined
   bias_type: 'none'  # Options rel, continuous, none
   # Data settings

@@ -87,7 +87,8 @@ class SpaceTimeBlock_svit(nn.Module):
             x = self.spatial(x, bcs=None, mask_padding=mask_padding, sequence_parallel_group=sequence_parallel_group) #, t_pos_area=t_pos_area_xy) # Convnext has the residual in the block
         else:
             #t_pos_area_time = rearrange(t_pos_area, 'b t slen c -> (b slen t) c')
-            x = self.temporal(x, leadtime=leadtime, sequence_parallel_group=sequence_parallel_group)#, t_pos_area=t_pos_area_time) # Residual in block
+            #NOTE: sequence in time is usually very short, so we don't do sequence parallel for time attention. If we did, we would need to rearrange t_pos_area_time to match the sequence parallel group.
+            x = self.temporal(x, leadtime=leadtime) #, sequence_parallel_group=sequence_parallel_group)#, t_pos_area=t_pos_area_time) # Residual in block
             # Now do spatial attention
             x = rearrange(x, '(b slen) c t -> (b t) c slen', slen=slen)
             #t_pos_area_xy = rearrange(t_pos_area, 'b t slen c -> (b t slen) c')

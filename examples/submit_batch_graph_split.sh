@@ -2,10 +2,10 @@
 #SBATCH -A LRN037
 #SBATCH -J matey
 #SBATCH -o %x-%j-graphsplit.out
-#SBATCH -t 02:00:00
+#SBATCH -t 01:00:00
 #SBATCH -p batch
-#SBATCH -N 1
-##SBATCH -q debug
+#SBATCH -N 3
+#SBATCH -q debug
 #SBATCH -C nvme
 
 export OMP_NUM_THREADS=1
@@ -43,4 +43,16 @@ export TF_FORCE_GPU_ALLOW_GROWTH=true
 export run_name="demo_graph_vit_split_lt5"
 export yaml_config=./config/Demo_graph_vit_split.yaml
 srun -N1 -n8 -c7 --gpu-bind=closest python basic_usage.py \
---run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split 2>&1
+--run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split 2>&1 &
+
+export run_name="demo_graph_svit_split_lt5"
+export yaml_config=./config/Demo_graph_svit_split.yaml
+srun -N1 -n8 -c7 --gpu-bind=closest python basic_usage.py \
+--run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split_svit 2>&1 &
+
+export run_name="demo_graph_turbt_split_lt5"
+export yaml_config=./config/Demo_graph_turbt_split.yaml
+srun -N1 -n8 -c7 --gpu-bind=closest python basic_usage.py \
+--run_name $run_name --config $config --yaml_config $yaml_config --use_ddp > log_graph_split_turbt 2>&1 &
+
+wait

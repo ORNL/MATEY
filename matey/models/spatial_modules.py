@@ -11,7 +11,9 @@ from operator import mul
 from functools import reduce
 from einops import rearrange, repeat
 from ..utils.distributed_utils import closest_factors
-from torch_geometric.nn import GCNConv, GraphNorm
+from torch_geometric.nn import GCNConv, GraphNorm, avg_pool
+from torch_geometric.data import Data
+from collections import deque
 from ..data_utils import HaloExchange_sync
 import torch.distributed as dist
 
@@ -346,14 +348,17 @@ class hMLP_output(nn.Module):
 
 class GraphhMLP_stem(nn.Module):
     """graph to patch embedding"""
-    def __init__(self, patch_size=(1,1,1), in_chans=3, embed_dim=768, nconv=3, ghost_sync=False):
+    def __init__(self, patch_size=[1,1,1], in_chans=3, embed_dim=768, nconv=3, ghost_sync=False):
         super().__init__()
-        assert patch_size==[1, 1 ,1], f"graph input heads only support patch size of 1 for now, but get {patch_size}"
+        #assert patch_size==[1, 1 ,1], f"graph input heads only support patch size of 1 for now, but get {patch_size}"
         self.patch_size = patch_size
         self.in_chans = in_chans
         self.embed_dim = embed_dim
         self.nconv = nconv
+        self.do_pool = self.patch_size != [1, 1, 1]
         self.ghost_sync = ghost_sync
+
+        #assert not (self.do_pool and self.ghost_sync), f"currently not supporting both self.do_pool and self.ghost_sync {self.do_pool, self.ghost_sync}"
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -364,6 +369,60 @@ class GraphhMLP_stem(nn.Module):
             embed_ilayer = embed_dim if ilayer==self.nconv-1 else embed_dim//4
             self.convs.append(GCNConv(in_chans_ilayer, embed_ilayer))
             self.norms.append(GraphNorm(embed_ilayer))
+
+    def make_hop_cluster(self, edge_index, num_nodes, seeds):
+        """
+        Assign each node to the nearest seed in hop distance.
+            edge_index: [2, E]
+            num_nodes: int
+            seeds: 1D LongTensor of seed node indices
+        returns:
+            seedid: [num_nodes] with values in [0, num_seeds-1]
+        """
+        adj = [[] for _ in range(num_nodes)]
+        row, col = edge_index
+        for u, v in zip(row.tolist(), col.tolist()):
+            adj[u].append(v)
+            adj[v].append(u)
+
+        dist = [-1] * num_nodes #distance from the nearest seed
+        seedid = [-1] * num_nodes #seed ID that claims the node
+        q = deque()
+        #starting with a list of nodes in seeds
+        for cid, s in enumerate(seeds): 
+            dist[s] = 0
+            seedid[s] = cid
+            q.append(s)
+
+        while q:
+            u = q.popleft()
+            for v in adj[u]:
+                if dist[v] == -1:
+                    dist[v] = dist[u] + 1
+                    seedid[v] = seedid[u]
+                    q.append(v)
+        
+        #leftover nodes to seed ID 0 
+        for i in range(num_nodes):
+            if seedid[i] == -1:
+                raise ValueError(f"Unexpected isolated nodes {i} {seedid}")
+                #seedid[i] = 0
+
+        return torch.tensor(seedid, dtype=torch.long, device=edge_index.device)
+     
+    def _make_hop_cluster(self, edge_index, num_nodes):
+        patch_vol = self.patch_size[0] * self.patch_size[1] * self.patch_size[2]
+        target_num_clusters = max(1, num_nodes // patch_vol)
+
+        if target_num_clusters >= num_nodes:
+            seeds = torch.arange(num_nodes, device=edge_index.device)
+        else:
+            idx = torch.linspace(0, num_nodes - 1, steps=target_num_clusters, device=edge_index.device)
+            seeds = idx.round().long().unique()
+
+        cluster = self.make_hop_cluster(edge_index, num_nodes, seeds)
+
+        return cluster
 
     def forward(self, data):
         """
@@ -378,31 +437,66 @@ class GraphhMLP_stem(nn.Module):
         ghost rows in x are updated after the last layer so downstream
         modules can call halo.sync again if needed.
         """
-        x, batch, edge_index, ghost_info, comm = data
+        x, batch0, edge_index0, ghost_info, comm = data
         N, T, C= x.shape
         x_list=[]
+        if self.do_pool:
+            #Note: currently only support one graph
+            if batch0.numel() > 0 and batch0.max().item() != 0:
+                raise NotImplementedError("Hop clustering currently supports one graph per input only")
+            cluster = self._make_hop_cluster(edge_index0, N)
+        else:
+            cluster = torch.arange(N, device=x.device)
         for it in range(T):
             h = x[:,it,:]
-            for conv, norm in zip(self.convs, self.norms):
+            batch = batch0
+            edge_index = edge_index0
+            for ilayer, (conv, norm) in enumerate(zip(self.convs, self.norms)):
                 #sync ghost embeddings before aggregation
                 if ghost_info is not None and self.ghost_sync:
-                    h = HaloExchange_sync(h, ghost_info, comm)
+                    if ilayer<2: #after ilayer==1, nodes have been aggregatered
+                        h = HaloExchange_sync(h, ghost_info, comm)
+                    elif not self.do_pool:
+                        h = HaloExchange_sync(h, ghost_info, comm)
+                if ilayer==1 and self.do_pool:
+                    pyg_data = Data(x=h, edge_index=edge_index, batch=batch)
+                    pooled = avg_pool(cluster, pyg_data)
+                    h = pooled.x
+                    batch = pooled.batch
+                    edge_index = pooled.edge_index
+
                 h_in = h
                 h = conv(h, edge_index)
                 h = norm(h, batch)
                 h = self.act(h)
                 if h.shape == h_in.shape:
                     h = h + h_in
-            if ghost_info is not None and self.ghost_sync:
+
+                assert edge_index.min().item() >= 0
+                assert edge_index.max().item() < h.size(0), (
+                    f"Bad edge_index at layer {ilayer}: "
+                    f"max={edge_index.max().item()}, num_nodes={h.size(0)}"
+                )
+            if ghost_info is not None and self.ghost_sync and not self.do_pool:
                 h = HaloExchange_sync(h, ghost_info, comm)
             x_list.append(h)
         x_out = torch.stack(x_list, dim=1)
-        return (x_out, batch, edge_index, ghost_info, comm)
-
+        unpool_info = {
+            "cluster": cluster,
+            "orig_batch": batch0,
+            "orig_edge_index": edge_index0,
+        }
+        assert edge_index.min().item() >= 0
+        assert edge_index.max().item() < x_out.size(0), (
+            f"Bad edge_index at layer {ilayer}: "
+            f"max={edge_index.max().item()}, num_nodes={h.size(0)}"
+        )
+        return (x_out, batch, edge_index, unpool_info, ghost_info, comm)
+    
 class GraphhMLP_output(nn.Module):
-    def __init__(self, patch_size=(1,1,1), out_chans=3, embed_dim=768, nconv=3, smooth=False, ghost_sync=False):
+    def __init__(self, patch_size=[1,1,1], out_chans=3, embed_dim=768, nconv=3, smooth=False, ghost_sync=False):
         super().__init__()
-        assert patch_size==[1, 1 ,1], f"graph output heads only support patch size of 1 for now, but get {patch_size}"
+        #assert patch_size==[1, 1 ,1], f"graph output heads only support patch size of 1 for now, but get {patch_size}"
         self.patch_size = patch_size
         self.out_chans = out_chans
         self.embed_dim = embed_dim
@@ -430,9 +524,9 @@ class GraphhMLP_output(nn.Module):
         else:
             self.smooth = None
 
-    def forward(self, data):
+    def forward(self, data, return_allT=False):
         """
-        data:  (node_features, batch, edge_index, ghost_info)
+        data:  (node_features, batch, edge_index, unpool_info, ghost_info)
             x          : [N_local, T, embed_dim]
             batch      : [N_local] long
             edge_index : [2, E_local] long
@@ -444,11 +538,25 @@ class GraphhMLP_output(nn.Module):
         Only owned rows carry meaningful predictions; ghost rows are
         byproducts of the final conv and should be masked away.
         """
-        x, batch, edge_index, ghost_info, comm = data
-        N, T, C= x.shape
-        x_list=[]
-        for it in range(T):
-            h = x[:,it,:]
+        x, batch, edge_index, unpool_info, ghost_info, comm = data
+        cluster = unpool_info["cluster"] #[N_orig]
+        batch = unpool_info["orig_batch"] #[N_orig]
+        edge_index = unpool_info["orig_edge_index"] #[2, E_orig]
+
+        N_patch, T, C = x.shape
+        N_orig = cluster.numel()
+
+        out_chans = self.out_head[-1].out_features
+        if return_allT:
+            x_out = x.new_empty((N_orig, T, out_chans))
+            tsteps=range(T)
+        else:
+            x_out = x.new_empty((N_orig, 1, out_chans))
+            tsteps=[-1]
+
+        for it in tsteps:
+            h = x[:,it,:]  #[N_patch, C]
+            h = h[cluster] #[N_orig, C]
             for conv, norm in zip(self.convs, self.norms):
             #for conv in self.convs:
              #sync before aggregation
@@ -462,9 +570,11 @@ class GraphhMLP_output(nn.Module):
                     h = h + h_in
             h = self.out_head(h)
             if self.smooth is not None:
+                if ghost_info is not None and self.ghost_sync:
+                    h = HaloExchange_sync(h, ghost_info, comm)
                 h = self.smooth(h, edge_index)
             if ghost_info is not None and self.ghost_sync:
                 h = HaloExchange_sync(h, ghost_info, comm)
-            x_list.append(h)
-        x_out = torch.stack(x_list, dim=1) #[N_local, T, out_chans]
+            x_out[:, it, :] = h 
+        #[N_local, T, out_chans]
         return (x_out, batch, edge_index, ghost_info, comm)

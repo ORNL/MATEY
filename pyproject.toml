@@ -1,0 +1,44 @@
+[project]
+name = "matey"
+version = "0.1.0"
+description = "Multiscale adaptive scalable transformer-based codebase for spatiotemporal systems"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = "MIT"
+authors = [
+    { name = "Hunor Csala" },
+    { name = "Andrey Prokopenko" },
+    { name = "Junqi Yin" },
+    { name = "Murali Gopalakrishnan Meena" },
+    { name = "John Gounley" },
+    { name = "Paul Laiu" },
+    { name = "Pei Zhang", email = "zhangp1@ornl.gov" },
+]
+dependencies = [
+    "adan-pytorch==0.1.0",
+    "dadaptation==3.1",
+    "einops",
+    "h5py",
+    "numpy",
+    "timm",
+    "torchinfo",
+    "wandb",
+    "tqdm",
+    "zarr",
+    "ruamel.yaml==0.17.32",
+    "ruamel.yaml.clib==0.2.7",
+    "mpi4py",
+    "scipy",
+    "matplotlib",
+    "netcdf4",
+    "flash-attn; python_version < '3.12'",
+    "exodusii @ git+https://github.com/sandialabs/exodusii.git",
+    "scikit-learn",
+]
+
+[tool.poetry]
+packages = [{ include = "matey" }]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -32,7 +32,8 @@ basic_config: &basic_config
   enforce_max_steps: !!bool False # If false and n_steps > dataset steps, use dataset steps. Otherwise, raise Exception.
   accum_grad: 1  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
   # Model settings
-  model_type:  'vit_all2all' # no need for time_type and space_type inputs
+  model_type: 'turbt'
+  #model_type:  'vit_all2all' # no need for time_type and space_type inputs
   #model_type:  'svit' #currently only support time_type=="all2all_time" and space_type=="all2all"
   #time_type: 'all2all_time' # 
   #space_type: 'all2all' #
@@ -46,6 +47,9 @@ basic_config: &basic_config
   tokenizer_heads:
     - head_name: "tk-graph"
       patch_size: [[1, 1, 1]]
+  hierarchical: #for testing if breaking settings only, not supported multiple levels yet
+      filtersize: 2
+      nlevels: 3 #[2^3, 2^2, 2^1, 2^0]
   sp_groupsize: 4 #sequence_parallel_groupsize
   ghost_sync: !!bool True # Whether to use ghost sync in the model
   DP_dsets: "ALL"

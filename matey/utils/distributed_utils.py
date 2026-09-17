@@ -25,19 +25,26 @@ def check_sp(group, global_rank, group_id):
   
         
 def setup_dist(params=None):
-    #num_gpus_per_node = torch.cuda.device_count()
-    world_size = int(os.environ['SLURM_NTASKS'])
-    global_rank = rank = int(os.environ['SLURM_PROCID'])
-    local_rank = int(os.environ['SLURM_LOCALID'])
-
-    os.environ['WORLD_SIZE'] = str(world_size)
-    os.environ['RANK'] = str(global_rank)
-    os.environ['LOCAL_RANK'] = str(local_rank)
-    # os.environ['MASTER_ADDR'] = str(args.master_addr)
-    # os.environ['MASTER_PORT'] = str(args.master_port)
-    os.environ['NCCL_SOCKET_IFNAME'] = 'hsn0'
-    if os.getenv("SLURM_STEP_NODELIST") is not None:
-        os.environ['MASTER_ADDR']  = parse_slurm_nodelist(os.environ["SLURM_STEP_NODELIST"])[0]
+    # Detect launch environment: SLURM (srun) vs torchrun / manual
+    if "SLURM_NTASKS" in os.environ:
+        # ---------- SLURM path ----------
+        world_size = int(os.environ['SLURM_NTASKS'])
+        global_rank = rank = int(os.environ['SLURM_PROCID'])
+        local_rank = int(os.environ['SLURM_LOCALID'])
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['RANK'] = str(global_rank)
+        os.environ['LOCAL_RANK'] = str(local_rank)
+        os.environ['NCCL_SOCKET_IFNAME'] = 'hsn0'
+        if os.getenv("SLURM_STEP_NODELIST") is not None:
+            os.environ['MASTER_ADDR'] = parse_slurm_nodelist(os.environ["SLURM_STEP_NODELIST"])[0]
+    else:
+        # ---------- torchrun / generic path ----------
+        # torchrun sets RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        global_rank = rank = int(os.environ.get('RANK', 0))
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        os.environ.setdefault('MASTER_ADDR', '127.0.0.1')
+        os.environ.setdefault('MASTER_PORT', '29500')
 
     if params is None or (params.use_ddp or params.use_fsdp):
         dist.init_process_group(

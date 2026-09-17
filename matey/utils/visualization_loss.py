@@ -125,6 +125,42 @@ def plot_curves(all_epochs, all_trains, all_vals, case_names, outname=""):
     plt.tight_layout()
     plt.savefig(f"./loss_curves_finalcomp{outname}.png", dpi=300)
 
+def plot_curves_oneplot(all_epochs, all_trains, all_vals, case_names, outname=""):
+    markers = ['o', 's', '^', 'D', 'v', '*', 'x', 'P', 'h']
+    colors = ['blue', 'green', 'red', 'orange', 'purple', 'brown', 'pink', 'gray', 'cyan']
+
+    # Train losses
+    fig, axs=plt.subplots(1,1, figsize=(8,5))
+    for i, name in enumerate(case_names):
+        marker = markers[i % len(markers)]
+        color = colors[i % len(colors)]
+        axs.plot(all_epochs[name], all_trains[name],
+                marker=marker, linestyle='-', mfc='none',
+                color=color, label=f'{name} Train')
+        #axs[0].plot(all_epochs[name], all_trains[name],
+        #         marker='o', linestyle='-', mfc='none',
+        #         label=f'{name} Train')
+
+    # Validation losses
+    for i, name in enumerate(case_names):
+        marker = markers[i % len(markers)]
+        color = colors[i % len(colors)]
+        axs.plot(all_epochs[name], all_vals[name],
+                marker=marker, linestyle='--', mfc='none',
+        #axs[1].plot(all_epochs[name], all_vals[name],
+        #         marker='s', linestyle='--', mfc='none',
+                 label=f'{name} Val')
+    axs.set_xlabel('Epoch')
+    axs.set_ylabel('Validation Loss')
+    axs.set_title('Validation Loss vs. Epoch')
+    axs.legend()
+    axs.grid(True)
+    axs.set_yscale('log')
+
+
+    plt.tight_layout()
+    plt.savefig(f"./loss_curves_oneplot{outname}.png", dpi=300)
+
 def plot_time_curves(all_epochs, all_times, case_names, outname=""):
     plt.figure(figsize=(8,5))
     for name in case_names:
@@ -157,8 +193,8 @@ def main():
     args = parser.parse_args()
     print(args)
 
-    if not args.case or len(args.case) < 2:
-        parser.error("Please provide at least two --case NAME PATTERN [PATTERN ...] entries")
+    if not args.case or len(args.case) < 1:
+        parser.error("Please provide at least one --case NAME PATTERN [PATTERN ...] entries")
 
     all_epochs = {}
     all_trains = {}
@@ -187,6 +223,7 @@ def main():
         case_names.append(name)
 
     plot_curves(all_epochs, all_trains, all_vals, case_names, outname=args.outname)
+    plot_curves_oneplot(all_epochs, all_trains, all_vals, case_names, outname=args.outname)
     plot_time_curves(all_epochs, all_times, case_names, outname=args.outname)
 
 

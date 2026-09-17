@@ -55,8 +55,8 @@ def normalize_spatiotemporal_persample_graph(x, batch, eps=1e-4, sequence_parall
             world_size = dist.get_world_size(sequence_parallel_group)
             mean_g = mean_g / world_size
             mean_x2_g = mean_x2_g / world_size
-        var_g = mean_x2_g - mean_g**2 #[G, C]
-        std_g = torch.clamp_min(torch.sqrt(var_g), eps)
+        var_g = torch.clamp_min(mean_x2_g - mean_g**2, eps**2) #[G, C]
+        std_g = torch.sqrt(var_g)
 
     mean_node = mean_g[batch].view(N, 1, C)
     std_node  = std_g[batch].view(N, 1, C)
